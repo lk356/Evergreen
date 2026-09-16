@@ -26,13 +26,13 @@ streaming services:
 
 ## Devices
 - Pixel 10 Pro (Android, primary)
-- Sony NW-A307 (Android 12, low-powered)
+- Sony NW-A307 (Android 14, build 3.06.00, kernel 4.19.157-perf+, low-powered)
 - Windows and Linux desktops running Spotify (later phases)
 
 ## Phases
 - [ ] **Phase 0 — Feasibility spike.** Log media-session events from Spotify on both
       Android devices. Confirm skip detection works and whether Spotify broadcasts
-      include track URIs.
+      include track URIs. _(in progress, branch `phase0-capture-spike`)_
 - [ ] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
       listening events, debug screen to verify events.
 - [ ] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
