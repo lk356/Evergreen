@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./local.properties)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.jks)",
+      "Read(./**/*.keystore)"
+    ]
+  }
+}
