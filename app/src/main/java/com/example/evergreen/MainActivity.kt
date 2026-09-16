@@ -1,47 +1,60 @@
 package com.example.evergreen
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import com.example.evergreen.spike.SpikeNotificationListenerService
+import com.example.evergreen.spike.SpikeScreen
 import com.example.evergreen.ui.theme.EvergreenTheme
 
 class MainActivity : ComponentActivity() {
+
+    // Re-read on every resume: the user grants access in Settings and comes
+    // back, so the value is stale the moment we leave the activity.
+    private val accessGranted = mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             EvergreenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
+                    SpikeScreen(
+                        accessGranted = accessGranted.value,
+                        onOpenNotificationSettings = ::openNotificationListenerSettings,
+                        onOpenAppInfo = ::openAppInfo,
+                        modifier = Modifier.padding(innerPadding),
                     )
                 }
             }
         }
     }
-}
 
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
+    override fun onResume() {
+        super.onResume()
+        accessGranted.value = SpikeNotificationListenerService.isAccessGranted(this)
+    }
 
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    EvergreenTheme {
-        Greeting("Android")
+    private fun openNotificationListenerSettings() {
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+    }
+
+    /** Where "Allow restricted settings" lives for sideloaded installs. */
+    private fun openAppInfo() {
+        startActivity(
+            Intent(
+                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", packageName, null),
+            ),
+        )
     }
 }
