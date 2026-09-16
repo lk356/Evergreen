@@ -8,6 +8,7 @@ import android.media.session.MediaSessionManager
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.core.content.ContextCompat
 
 /**
  * Exists for one reason: Android only hands out active media sessions to apps
@@ -23,6 +24,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
 
     private var sessionManager: MediaSessionManager? = null
     private val watchers = mutableMapOf<MediaSession.Token, SessionWatcher>()
+    private var broadcastReceiver: SpotifyBroadcastReceiver? = null
 
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
@@ -42,6 +44,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         SpikeLog.add(EventSource.SYSTEM, "notification listener connected")
+        registerSpotifyBroadcasts()
 
         val manager = getSystemService(MediaSessionManager::class.java)
         if (manager == null) {
@@ -81,6 +84,35 @@ class SpikeNotificationListenerService : NotificationListenerService() {
         sessionManager = null
         watchers.values.forEach { it.stop() }
         watchers.clear()
+        unregisterSpotifyBroadcasts()
+    }
+
+    // --- Spotify broadcasts -------------------------------------------------
+
+    /**
+     * Registered at runtime rather than in the manifest: since Android 8,
+     * manifest-declared receivers do not receive most implicit broadcasts, so a
+     * manifest entry would silently never fire.
+     */
+    private fun registerSpotifyBroadcasts() {
+        if (broadcastReceiver != null) return
+        val receiver = SpotifyBroadcastReceiver()
+        // RECEIVER_EXPORTED is mandatory from Android 13 for receivers that
+        // listen to other apps' broadcasts; without it this throws at runtime.
+        ContextCompat.registerReceiver(
+            this,
+            receiver,
+            SpotifyBroadcastReceiver.intentFilter(),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        broadcastReceiver = receiver
+        SpikeLog.add(EventSource.SYSTEM, "listening for Spotify broadcast intents")
+    }
+
+    private fun unregisterSpotifyBroadcasts() {
+        val receiver = broadcastReceiver ?: return
+        broadcastReceiver = null
+        runCatching { unregisterReceiver(receiver) }
     }
 
     // --- Media sessions -----------------------------------------------------
