@@ -250,6 +250,11 @@ abstract class SpotifyDao {
         SELECT id, serviceTrackId FROM service_tracks
          WHERE isrc IS NULL
            AND service = :service
+           -- Only real tracks. Spotify DJ commentary arrives as
+           -- `spotify:media:...`, which no track endpoint will resolve; leaving
+           -- it in the queue would mark it failed five times over five weeks to
+           -- learn something its identifier already says.
+           AND serviceTrackId LIKE :trackUriPrefix || '%'
            AND (isrcLookupAt IS NULL OR isrcLookupAt < :retryBefore)
            AND isrcLookupAttempts < :maxAttempts
          ORDER BY isrcLookupAt IS NOT NULL, isrcLookupAt ASC, id ASC
@@ -258,6 +263,7 @@ abstract class SpotifyDao {
     )
     abstract suspend fun serviceTracksNeedingIsrc(
         service: String,
+        trackUriPrefix: String,
         retryBefore: Long,
         maxAttempts: Int,
         limit: Int,
@@ -310,29 +316,61 @@ abstract class SpotifyDao {
     @Query("SELECT COUNT(*) FROM like_events")
     abstract fun likeEventCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM service_tracks WHERE service = :service")
-    abstract fun serviceTrackCount(service: String): Flow<Int>
-
-    @Query("SELECT COUNT(*) FROM service_tracks WHERE service = :service AND isrc IS NOT NULL")
-    abstract fun serviceTracksWithIsrcCount(service: String): Flow<Int>
+    /**
+     * Real tracks only.
+     *
+     * ISRC coverage is reported against this rather than against every row,
+     * because Spotify DJ commentary lands in `service_tracks` as
+     * `spotify:media:...` and can never have an ISRC. Counting it would make
+     * coverage drift downwards the more the DJ is used, which would look like a
+     * backfill that is falling behind rather than a category that does not apply.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM service_tracks
+         WHERE service = :service AND serviceTrackId LIKE :trackUriPrefix || '%'
+        """,
+    )
+    abstract fun serviceTrackCount(service: String, trackUriPrefix: String): Flow<Int>
 
     @Query(
         """
         SELECT COUNT(*) FROM service_tracks
-         WHERE service = :service AND isrc IS NULL AND isrcLookupError IS NOT NULL
+         WHERE service = :service AND serviceTrackId LIKE :trackUriPrefix || '%'
+           AND isrc IS NOT NULL
         """,
     )
-    abstract fun failedIsrcLookupCount(service: String): Flow<Int>
+    abstract fun serviceTracksWithIsrcCount(service: String, trackUriPrefix: String): Flow<Int>
+
+    /**
+     * Rows whose identifier is not a track URI at all — DJ commentary, and
+     * anything else Spotify plays through the same session.
+     *
+     * Counted and shown rather than hidden: these are real things that were
+     * played, they are stored as facts like everything else, and Phase 3 needs
+     * to know they exist in order to decide what to do with them.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM service_tracks
+         WHERE service = :service AND serviceTrackId NOT LIKE :trackUriPrefix || '%'
+        """,
+    )
+    abstract fun nonTrackServiceRowCount(service: String, trackUriPrefix: String): Flow<Int>
 
     @Query(
         """
         SELECT isrcLookupError AS reason, COUNT(*) AS count
           FROM service_tracks
-         WHERE service = :service AND isrc IS NULL AND isrcLookupError IS NOT NULL
+         WHERE service = :service AND serviceTrackId LIKE :trackUriPrefix || '%'
+           AND isrc IS NULL AND isrcLookupError IS NOT NULL
          GROUP BY isrcLookupError ORDER BY count DESC
         """,
     )
-    abstract fun failedIsrcLookupBreakdown(service: String): Flow<List<IsrcFailureCount>>
+    abstract fun failedIsrcLookupBreakdown(
+        service: String,
+        trackUriPrefix: String,
+    ): Flow<List<IsrcFailureCount>>
 
     // --- Same-song merge, dry run only ---------------------------------------
 

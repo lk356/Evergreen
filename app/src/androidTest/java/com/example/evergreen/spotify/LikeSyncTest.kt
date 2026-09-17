@@ -340,10 +340,30 @@ class LikeSyncTest {
         assertEquals(IsrcLookupError.ABSENT, db.dao().allServiceTracks().single().isrcLookupError)
     }
 
-    /** A non-track URI cannot be looked up and must not be retried forever. */
+    /**
+     * A non-track URI -- a podcast episode, DJ commentary -- never enters the
+     * queue at all, so it costs neither a request nor an attempt.
+     */
     @Test
-    fun anUnsupportedIdentifierIsRecordedRatherThanRetried() = runBlocking {
+    fun aNonTrackIdentifierIsNeverQueued() = runBlocking {
         recordSegmentFor("spotify:episode:podcast", "A Podcast")
+
+        sync().backfillIsrcs()
+
+        val row = db.dao().allServiceTracks().single()
+        assertNull("never attempted", row.isrcLookupAt)
+        assertEquals(0, row.isrcLookupAttempts)
+        assertEquals("never asked Spotify", 0, api.trackRequests)
+    }
+
+    /**
+     * A malformed *track* URI does reach the queue, because it looks like one.
+     * It must be recorded rather than retried, so a permanently unusable row
+     * cannot sit at the head of the queue forever.
+     */
+    @Test
+    fun aMalformedTrackIdentifierIsRecordedRatherThanRetried() = runBlocking {
+        recordSegmentFor("spotify:track:", "Malformed")
 
         sync().backfillIsrcs()
 
@@ -402,6 +422,67 @@ class LikeSyncTest {
         sync().syncLikes()
 
         assertTrue(db.spotifyDao().sameIsrcMergeCandidates().isEmpty())
+    }
+
+    // --- Spotify DJ ----------------------------------------------------------
+
+    /**
+     * Observed on a Pixel 10 Pro on 2026-09-17: DJ spoken commentary *is*
+     * published as a media-session track, but carries `spotify:media:<id>`
+     * rather than `spotify:track:<id>`, with a zero duration and the metadata
+     * "Up next" / "DJ X" / "DJ".
+     *
+     * That scheme difference is the whole reason DJ listening can be filtered at
+     * all, so it is pinned here. Commentary must never enter the ISRC queue: no
+     * track endpoint will resolve it, and leaving it in would burn five attempts
+     * over five weeks to rediscover what its identifier already says.
+     */
+    @Test
+    fun djCommentaryIsNeverQueuedForAnIsrcLookup() = runBlocking {
+        recordSegmentFor("spotify:media:2j7w4Q2yMxa9ekzCdGhKUc", "Up next")
+        recordSegmentFor("spotify:track:realsong", "A Real Song")
+        api.tracks["realsong"] = ApiResult.Ok(track("spotify:track:realsong", "A Real Song", isrc = "AAA111111111"))
+
+        val outcome = sync().backfillIsrcs()
+
+        assertEquals("only the real track was fetched", 1, api.trackRequests)
+        assertEquals(1, (outcome as SyncOutcome.Success).isrcsFilled)
+
+        val commentary = db.dao().allServiceTracks()
+            .single { it.serviceTrackId.startsWith("spotify:media:") }
+        assertNull("never attempted", commentary.isrcLookupAt)
+        assertEquals(0, commentary.isrcLookupAttempts)
+    }
+
+    /**
+     * Commentary is kept, not discarded -- it is a fact about what played, and
+     * the project's rule is that capture stores facts for scoring to interpret
+     * later. But it must not drag down ISRC coverage, which would make a
+     * category that does not apply look like a backfill falling behind.
+     */
+    @Test
+    fun djCommentaryIsCountedSeparatelyFromRealTracks() = runBlocking {
+        recordSegmentFor("spotify:media:2j7w4Q2yMxa9ekzCdGhKUc", "Up next")
+        api.pages += page(track("spotify:track:aaa", "One", isrc = "AAA111111111"))
+        sync().syncLikes()
+
+        assertEquals(
+            "coverage counts real tracks only",
+            1,
+            db.spotifyDao().serviceTrackCount(SERVICE_SPOTIFY, SpotifyApi.TRACK_URI_PREFIX).first(),
+        )
+        assertEquals(
+            1,
+            db.spotifyDao()
+                .serviceTracksWithIsrcCount(SERVICE_SPOTIFY, SpotifyApi.TRACK_URI_PREFIX).first(),
+        )
+        assertEquals(
+            "but the commentary is still stored and visible",
+            1,
+            db.spotifyDao()
+                .nonTrackServiceRowCount(SERVICE_SPOTIFY, SpotifyApi.TRACK_URI_PREFIX).first(),
+        )
+        assertEquals("and its segment was kept", 1, db.dao().allSegments().size)
     }
 
     private suspend fun recordSegmentFor(uri: String, title: String) {

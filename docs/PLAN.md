@@ -80,12 +80,14 @@ is empty.
 **Two things are outstanding before Phase 2 can be ticked:**
 1. The user has not yet connected a real Spotify account. Everything below the
    login is tested against scripted API answers, not against Spotify.
-2. **The Spotify DJ investigation has not been done.** It needs a device session
-   with DJ playback and cannot be done from the build machine. See
-   "Spotify DJ — still unexamined" below for the exact procedure.
+2. The same-song merge is **proposed but not implemented**, and nothing has been
+   merged. See "Same-song merging" under Phase 2 questions.
 
-**Next:** run the connection walkthrough, then the DJ session, then decide the
-same-song merge rule from the dry run's output.
+Device-verified on the Pixel 10 Pro: login, 380/380 likes synced with 100% ISRC
+coverage, the reconnect state, and an 8-minute Spotify DJ session. See
+"Phase 2 device verification" and "Spotify DJ — examined" below.
+
+**Next:** implement the merge rule (approved), then Phase 3 scoring.
 
 Phase 1 replaced the spike with a real capture pipeline: listening is stored as
 play segments in a Room database, one row per continuous listen, and the replay,
@@ -581,63 +583,201 @@ In rough order of likelihood:
 
 - Initial scoring parameters (decay half-life, skip penalty, grace period).
   Belongs to Phase 3.
-- **Spotify DJ — still unexamined. Not done in Phase 2, and recorded as not
-  done rather than guessed at.**
+### Phase 2 device verification (2026-09-17, Pixel 10 Pro, user-run)
 
-  This needs a device session with DJ playback running; it cannot be done from
-  the build machine, and nothing in the code can answer it. It should happen
-  **before Phase 3 scores anything**, because until it is known whether DJ
-  commentary is distinguishable, it is not known whether DJ-era listening can be
-  filtered or reweighted at all.
+| Check | Result |
+|---|---|
+| PKCE login via Custom Tab | ✅ |
+| Granted scope | ✅ `user-library-read` — exactly what was requested |
+| Likes synced | ✅ **380**, matching desktop Spotify's count |
+| ISRC coverage | ✅ **380/380, 100%** — all from the like sync, zero individual fetches |
+| Tokens encrypted at rest | ✅ one base64 blob, no readable token in `shared_prefs` |
+| Reconnect state after revoke | ✅ red card, "Connection expired — reconnect Spotify" |
+| Reconnect restores sync | ✅ |
+| Merge dry run | ✅ 2 ISRCs over 4 tracks, no false positives |
 
-  What is already true and makes this recoverable: capture stores `appPackage`
-  and the per-service track id on every segment and draws no conclusions. So if
-  commentary turns out to carry a distinct identifier, **DJ listens can be
-  filtered retroactively from data already recorded** — no recapture needed. If
-  it does not, that is the important finding, not a failure.
+**100% ISRC coverage from the like sync alone** is better than budgeted for. The
+individual-fetch path (needed because the batch endpoint was removed) had nothing
+to do for liked songs, and only ran for tracks played but not liked.
 
-  **Procedure** (run on the Pixel, roughly 15 minutes):
-  1. Open Evergreen, go to the **Live log** tab, tap **Clear**.
-  2. In Spotify, start **DJ** (Search → "DJ", or the DJ card on Home).
-  3. Let a full commentary segment play, then a song, then another commentary
-     segment. Do not skip yet.
-  4. Skip one song mid-commentary, and skip one song mid-song.
-  5. Let DJ auto-advance at least twice.
-  6. Return to Evergreen's **Live log** and read it, then check **Segments**.
+**Spotify's own counts disagree, and that is Spotify's doing.** Desktop reports
+380 saved tracks, mobile reports 374. The user confirmed the difference is
+unavailable tracks, which the mobile client hides and the desktop client does
+not. The Web API returns the full set, which is what the archive wants: a track
+going unavailable in one region should not silently vanish from listening
+history.
 
-  **Record, for each, exactly what was observed — including "nothing":**
-  - Does spoken commentary appear as a media-session track at all, or is there
-    simply no callback for it?
-  - If it does: what is the `mediaId`? A `spotify:track:` URI, a
-    `spotify:episode:` URI, something else, or absent? **This one decides
-    whether it can be filtered**, so quote it verbatim.
-  - What are the title/artist/album fields during commentary?
-  - Is `appPackage` still `com.spotify.music`?
-  - Does a commentary segment get written to the database, or does it fall below
-    a threshold and vanish?
-  - Is DJ playback distinguishable from normal playback by *any* field on the
-    stored row?
+**The consent screen asks for more than the scope does.** It lists "View your
+Spotify account data — name, username, profile picture, followers, public
+playlists" alongside the library line, despite only `user-library-read` being
+requested. The token response confirms only `user-library-read` was *granted*,
+so this is Spotify's consent copy being broader than the grant. Worth knowing so
+it is not mistaken for a scope leak later. Independently: the app contains no
+profile endpoint at all — the only four URLs it can reach are `/authorize`,
+`/api/token`, `/v1/me/tracks` and `/v1/tracks/{id}`, enforced by a host
+allowlist.
 
-  Then paste the findings here, including anything that turns out **not** to be
-  observable.
+### Verifying expiry needs a local nudge
 
-  Open scoring questions that follow from it, for Phase 3:
-  - DJ auto-advances and invites heavy skipping, so skip rates there may mean
-    something different from skips in a playlist the user built.
-  - A song the DJ chose was not chosen by the user. Should it count the same as
-    a deliberate play, or less?
+Revoking access at spotify.com/account/apps kills the **refresh** token but
+leaves the existing **access** token working until it expires on its own, about
+an hour later. A sync immediately after revoking therefore just succeeds —
+observed on device:
+
+```
+09-17 18:18:48  I LikeSync: like sync complete: 380 liked, 0 newly unliked
+```
+
+That is correct behaviour, not a bug, but it means the reconnect path cannot be
+tested by revoking alone without waiting an hour. The Spotify tab has a
+**"Force token refresh (test reconnect)"** button that discards the access token
+locally so the next sync must refresh. It fakes no state: the real refresh runs
+against the real endpoint, and a revoked grant then returns `invalid_grant` for
+real. Verified end to end.
+
+Also fixed while verifying: the connection card only re-read its state when the
+login flow returned, so a background expiry would have sat behind a stale
+"Connected". It now re-reads on resume.
+
+### Spotify DJ — examined 2026-09-17 (Pixel 10 Pro, ~8 minute session)
+
+**Commentary is observable, and it is distinguishable. Filtering is possible.**
+
+Captured live over adb while the user ran a DJ session: three commentary
+segments, ~17 track changes, several skips and a natural auto-advance. Read from
+two independent sources — Evergreen's own capture log (which records `mediaId`)
+and `dumpsys media_session` (which does not filter anything).
+
+**1. Does commentary surface as a media-session track?** **Yes.** Every spoken
+segment produced a metadata callback and a stored segment, exactly like a song.
+
+**2. What identifier does it carry?** This is the finding everything else rests
+on:
+
+```
+[METADATA] Up next — DJ X | album=DJ duration=(unknown) id=spotify:media:2j7w4Q2yMxa9ekzCdGhKUc
+[METADATA] Love me forever! — Ado [4:09] | album=Love me forever! duration=249000ms id=spotify:track:2j7w4Q2yMxa9ekzCdGhKUc
+```
+
+Commentary carries **`spotify:media:<id>`, not `spotify:track:<id>`**. A
+different URI scheme, on the same `mediaId` field the capture already stores.
+
+Note the two lines share the same opaque id — the commentary is keyed to the
+track it announces, differing only in scheme. In two of the three observed cases
+the id matched the *following* track ("Up next"); in the third it matched the
+preceding one. **So commentary has no identity of its own**, and cannot be
+looked up as an entity. It can only be recognised, which is all that is needed.
+Because the two URIs are different strings, they occupy different
+`service_tracks` rows and never collide.
+
+**3. Is DJ playback distinguishable from normal playback?** **Yes, by three
+independent signals**, any one of which is sufficient:
+
+| Signal | Commentary | A real track |
+|---|---|---|
+| `serviceTrackId` scheme | `spotify:media:` | `spotify:track:` |
+| duration | `0` (unknown) | real, in ms |
+| title / artist / album | `Up next` / `DJ X` / `DJ` | the real values |
+
+The scheme is the one to depend on. The metadata strings are user-visible text
+and will be localised or reworded; the URI scheme is structural.
+
+**What is NOT distinguishable:** a *song* the DJ chose looks exactly like a song
+the user chose. `appPackage` is `com.spotify.music` either way, and the track
+URI is an ordinary `spotify:track:`. Only the commentary rows around it reveal
+that a DJ session was in progress. So "was this play DJ-selected?" is
+answerable only by inference from neighbouring rows and their timestamps, not
+from the row itself. Recording that as a known limit rather than inventing a
+field for it.
+
+**What this means for the stored data**
+
+- All commentary collapses into **one canonical track** (`trackKey` =
+  `up next|dj x|dj`), because the metadata is identical every time. Convenient:
+  one row to filter, not thousands.
+- But each commentary segment creates **its own `service_tracks` row**, since
+  each carries a different `spotify:media:` id. Verified on device: 3 commentary
+  segments produced 3 service rows and 1 canonical track. **This grows
+  unboundedly with DJ use** and is worth watching.
+- Commentary segments store `listenedMs = 0`, `endPositionMs = 0`,
+  `trackDurationMs = 0`. Harmless to any scoring rule that requires listened
+  time above zero.
+
+**Changed in response**
+
+Commentary is **kept, not discarded** — it is a fact about what played, and the
+project's rule is that capture stores facts for scoring to interpret later.
+Filtering it at capture time would bake in a conclusion. But two things were
+fixed:
+
+- Non-track URIs are **excluded from the ISRC backfill queue**. No track
+  endpoint will resolve `spotify:media:`, and leaving it in would have burned
+  five attempts over five weeks to rediscover what the identifier already says.
+- ISRC coverage counts **real tracks only**, with commentary shown on its own
+  line. Otherwise coverage would drift downwards the more the DJ is used, making
+  a category that does not apply look like a backfill falling behind.
+
+Both pinned by instrumented tests, so a later change cannot quietly start
+treating commentary as a song.
+
+**Phase 3 can now decide this from data already recorded.** Nothing needs
+recapturing.
+
+### Crossfade inflates position reached — found during the same session
+
+DJ crossfades between tracks, and the transition shows up as a **large forward
+seek on the outgoing track**:
+
+```
+City Cook — Caravan Palace  listened=0:24  reached=3:09 (92%)  seeks=1 skipped=2:44
+Tokyo — Dwin, Kush Kush     listened=0:15  reached=2:05 (94%)  seeks=1 skipped=1:49
+```
+
+Twenty-four seconds heard, reported as 92% of the way through. Under the Phase 0
+logic — which read the amount played off the final position — both of these
+would have been recorded as near-complete plays of songs that were barely heard.
+
+This is the seek-to-end bug arriving through a route Phase 1 did not anticipate:
+not a user seeking, but the player's own crossfade. The Phase 1 design handles it
+correctly and without modification, because `listenedMs` accumulates only while
+playback actually runs and `endPositionMs` is stored separately. It is a third
+independent confirmation that **position reached must never be used as a proxy
+for how much was heard** — and a reminder that the two columns exist for a
+reason if anyone is ever tempted to collapse them.
 
 ### Phase 2 questions — answered
 
-- **Same-song merging.** ISRC **is** available (removed Feb 2026, reverted March
-  2026), so the rule can be built on it. **Nothing has been merged.** The debug
-  screen's "Merge dry run" reports which canonical tracks share an ISRC and how
-  many segments each holds, and changes nothing. The proposed rule — merge two
-  canonical tracks when their service rows share an ISRC, re-pointing segments
-  rather than deleting them — **still needs approval after looking at the dry
-  run's output on real data.** ISRCs are not perfectly unique in practice
-  (re-releases sometimes reuse one, remasters usually get a new one), so the
-  report is meant to be eyeballed rather than trusted.
+- **Same-song merging. Rule approved 2026-09-17; not yet implemented, nothing
+  merged.** ISRC is available (removed Feb 2026, reverted March 2026), and the
+  dry run over 380 real tracks found **2 ISRCs covering 4 tracks, with no false
+  positives**:
+
+  | ISRC | Tracks |
+  |---|---|
+  | `QZES82519626` | CAN'T GET HIGH — album *RENO (ALL IN)* / CAN'T GET HIGH — album *CAN'T GET HIGH* |
+  | `USQX92504223` | Dracula — album *Deadbeat* / Dracula — album *Dracula* |
+
+  Both are the textbook case: one album release, one standalone single, same
+  recording, split only because `trackKey` includes the album.
+
+  **The rule:** two canonical tracks merge when their `service_tracks` rows
+  share an ISRC. The survivor is whichever has more listening segments, ties
+  broken by lowest id (first seen). Merging re-points the loser's segments *and*
+  its service rows, then deletes the loser's `tracks` row. Every merge is logged
+  to a `track_merges` table. Manual trigger after a dry run, never automatic
+  during sync.
+
+  **Likes are unaffected**, because they attach to `service_tracks` rather than
+  to canonical tracks. Both the single and the album version stay in the archive
+  as separate entries; only the song the scorer sees is unified.
+
+  **Why merge at all:** unmerged, playing the single sometimes and the album
+  version other times produces two half-fed scores, each decaying as though the
+  song were half-abandoned.
+
+  **Known limit:** a remaster gets a fresh ISRC and so will *not* merge. That is
+  defensible — it is a different recording — but this rule catches same-recording
+  pairs only, not every "same song" pair.
 - **Protect history from deletes.** Done, and widened: **all three** foreign keys
   are now `RESTRICT`, not only `listening_segments → tracks`. See "Schema v2"
   above for why fixing one leaves a hole.

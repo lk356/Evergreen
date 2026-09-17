@@ -139,6 +139,7 @@ class LikeSync(
 
         val candidates = dao.serviceTracksNeedingIsrc(
             service = SERVICE_SPOTIFY,
+            trackUriPrefix = SpotifyApi.TRACK_URI_PREFIX,
             retryBefore = now() - RETRY_AFTER_FAILURE_MS,
             maxAttempts = MAX_ISRC_ATTEMPTS,
             limit = limit,

@@ -31,6 +31,7 @@ import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MergeCandidate
 import com.example.evergreen.data.SERVICE_SPOTIFY
 import com.example.evergreen.data.SyncKeys
+import com.example.evergreen.spotify.SpotifyApi.Companion.TRACK_URI_PREFIX
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyConnectionState
 import com.example.evergreen.spotify.SpotifySyncWorker
@@ -70,9 +71,14 @@ fun SpotifyTab(
     val likedNow by dao.likedNowCount().collectAsState(initial = 0)
     val archived by dao.archivedLikeCount().collectAsState(initial = 0)
     val events by dao.likeEventCount().collectAsState(initial = 0)
-    val serviceTracks by dao.serviceTrackCount(SERVICE_SPOTIFY).collectAsState(initial = 0)
-    val withIsrc by dao.serviceTracksWithIsrcCount(SERVICE_SPOTIFY).collectAsState(initial = 0)
-    val failures by dao.failedIsrcLookupBreakdown(SERVICE_SPOTIFY).collectAsState(initial = emptyList())
+    val serviceTracks by dao.serviceTrackCount(SERVICE_SPOTIFY, TRACK_URI_PREFIX)
+        .collectAsState(initial = 0)
+    val withIsrc by dao.serviceTracksWithIsrcCount(SERVICE_SPOTIFY, TRACK_URI_PREFIX)
+        .collectAsState(initial = 0)
+    val nonTrackRows by dao.nonTrackServiceRowCount(SERVICE_SPOTIFY, TRACK_URI_PREFIX)
+        .collectAsState(initial = 0)
+    val failures by dao.failedIsrcLookupBreakdown(SERVICE_SPOTIFY, TRACK_URI_PREFIX)
+        .collectAsState(initial = emptyList())
     val lastSync by dao.syncStateFlow(SyncKeys.LIKES_LAST_SYNCED_AT).collectAsState(initial = null)
     val backoffUntil by dao.syncStateFlow(SyncKeys.API_BACKOFF_UNTIL).collectAsState(initial = null)
     val backoffReason by dao.syncStateFlow(SyncKeys.API_BACKOFF_REASON).collectAsState(initial = null)
@@ -119,6 +125,16 @@ fun SpotifyTab(
             Stat("Failed lookups", "none")
         } else {
             failures.forEach { Stat("Failed: ${it.reason}", "${it.count}") }
+        }
+        if (nonTrackRows > 0) {
+            Stat("Non-track rows (DJ commentary)", "$nonTrackRows")
+            Text(
+                "Spotify DJ commentary is stored as `spotify:media:…` rather than " +
+                    "`spotify:track:…`. It is kept, not discarded, and excluded from " +
+                    "the coverage figures above because it can never have an ISRC.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Row(
