@@ -44,6 +44,30 @@ android {
     }
 }
 
+// Test classpath only — none of this reaches the shipped app.
+//
+// Room's MigrationTestHelper parses the exported schema JSON using
+// kotlinx-serialization. room-migration 2.8.5 was compiled against
+// serialization 1.8.x, where `GeneratedSerializer.typeParametersSerializers()`
+// has a default implementation and so is not generated into each serializer.
+// Something on the instrumented classpath pins -core to 1.7.3 "strictly", where
+// that method is still abstract, and runMigrationsAndValidate then dies with
+// AbstractMethodError on FieldBundle$$serializer.
+//
+// Forcing -core up to match -json realigns the pair. `force` is used rather
+// than a plain dependency because a "strictly" constraint outranks an ordinary
+// version request. Matched case-insensitively on "AndroidTest" because the
+// configuration that actually feeds the test APK is named
+// `debugAndroidTestRuntimeClasspath` — it does not start with "androidTest".
+// Production configurations are untouched.
+configurations.matching { it.name.contains("AndroidTest", ignoreCase = true) }.configureEach {
+    resolutionStrategy {
+        force("org.jetbrains.kotlinx:kotlinx-serialization-core:${libs.versions.kotlinxSerialization.get()}")
+        force("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:${libs.versions.kotlinxSerialization.get()}")
+    }
+}
+
+
 ksp {
     // Writes a JSON description of the database to app/schemas/ on every build.
     // These files are committed: they are what lets a future migration be
@@ -71,6 +95,7 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(libs.kotlinx.serialization.json)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
