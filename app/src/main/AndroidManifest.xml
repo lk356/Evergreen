@@ -3,10 +3,23 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-        INTERNET is the only permission Evergreen declares, and it arrives in
-        Phase 2 for one purpose: reading likes from the Spotify Web API. The
-        hosts that may be contacted are restricted in code (see SpotifyHttp),
-        because Android offers no manifest-level way to express it.
+        INTERNET is the only permission declared here, and it arrives in Phase 2
+        for one purpose: reading likes from the Spotify Web API. The hosts that
+        may be contacted are restricted in code (see SpotifyHttp), because
+        Android offers no manifest-level way to express it.
+
+        The *merged* manifest holds more than this one. androidx.work contributes
+        ACCESS_NETWORK_STATE, WAKE_LOCK, FOREGROUND_SERVICE and
+        RECEIVE_BOOT_COMPLETED, and androidx.core contributes a signature-level
+        DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION. Check with:
+
+            grep -o 'uses-permission android:name="[^"]*"'                 app/build/intermediates/merged_manifest/debug/*/AndroidManifest.xml
+
+        None of those are runtime permissions: none prompt the user, none grant
+        access to any personal data, and they exist so scheduled work can survive
+        a reboot, observe a network constraint and hold the CPU awake while it
+        runs. They are the cost of using WorkManager at all. Worth re-checking on
+        any dependency bump, since a library can add a permission without asking.
 
         Capture itself remains local-only. Listening history is written to the
         on-device database and is never uploaded anywhere.
