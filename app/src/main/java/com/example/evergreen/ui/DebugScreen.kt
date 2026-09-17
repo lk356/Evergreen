@@ -77,6 +77,9 @@ fun DebugScreen(
     accessGranted: Boolean,
     onOpenNotificationSettings: () -> Unit,
     onOpenAppInfo: () -> Unit,
+    onConnectSpotify: () -> Unit,
+    /** Bumped when the login flow returns, so the Spotify tab re-reads its state. */
+    connectionEpoch: Int,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -99,11 +102,20 @@ fun DebugScreen(
                 onClick = { selectedTab = 1 },
                 text = { Text("Live log") },
             )
+            Tab(
+                selected = selectedTab == 2,
+                onClick = { selectedTab = 2 },
+                text = { Text("Spotify") },
+            )
         }
 
         when (selectedTab) {
             0 -> SegmentsTab(accessGranted)
-            else -> LiveLogTab(accessGranted)
+            1 -> LiveLogTab(accessGranted)
+            else -> SpotifyTab(
+                onConnect = onConnectSpotify,
+                connectionEpoch = connectionEpoch,
+            )
         }
     }
 }
