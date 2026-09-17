@@ -63,6 +63,9 @@ abstract class EvergreenDatabase : RoomDatabase() {
 
     abstract fun dao(): EvergreenDao
 
+    /** Phase 2's writes. Kept separate so the capture path's DAO is untouched. */
+    abstract fun spotifyDao(): SpotifyDao
+
     companion object {
         private const val DB_NAME = "evergreen.db"
 
