@@ -60,25 +60,36 @@ streaming services:
 - [x] Developer options + USB debugging on both devices
 - [x] Spotify "Device Broadcast Status" enabled on both devices
 - [x] Spotify developer app created, own account allowlisted
-- [ ] Spotify extended streaming history requested (arrives later)
+- [x] Spotify extended streaming history requested (arrives later)
 - [x] GitHub CLI logged in, private repo created, first commit pushed
 
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 1 complete and device-verified.** Built and smoke-tested
-  on the NW-A307, then verified by the user on the Pixel 10 Pro 2026-09-17. All
-  four device checks passed — replay, repeat-one loop, seek-to-end and
-  straight-through. Branch `phase1-capture-mvp`.
+- Current phase: **Phase 1 complete and device-verified**, plus follow-ups on
+  branch `phase1-followups`.
 - Last update: 2026-09-17.
 
-Phase 1 replaced the spike with a real capture pipeline. Listening is now stored
-as **play segments** in a Room database — one row per continuous listen, not one
-per callback — and the replay, loop and seek-to-end bugs found after Phase 0 are
-fixed. `com.example.evergreen.spike` is deleted.
+Phase 1 replaced the spike with a real capture pipeline: listening is stored as
+play segments in a Room database, one row per continuous listen, and the replay,
+loop and seek-to-end bugs are fixed. Verified on the NW-A307 and the Pixel 10
+Pro.
 
-**Next:** Phase 2 (Spotify connection). Before relying on ISRC, verify against
-the live Spotify Web API reference that track responses still include it.
+Follow-ups after review (branch `phase1-followups`, no schema change):
+1. **Track identity now resolves by service ID before `trackKey`.** A known
+   Spotify URI arriving with changed metadata used to fork the canonical track
+   while the service row kept pointing at the original, leaving a segment's
+   `trackId` and `serviceTrackRowId` disagreeing. Covered by instrumented DAO
+   tests, confirmed to fail against the old order. Existing data checked:
+   **0 mismatched segments.**
+2. Wiping listening history now requires confirmation.
+3. Outdated androidx dependencies refreshed.
+4. This file updated.
+
+**Next:** Phase 2 (Spotify connection). See "Phase 2 questions" under Open
+questions — in particular, verify against the live Spotify Web API reference
+that track responses still return ISRC before designing the merge rule around
+it.
 
 ## Phase 0 results (2026-09-17)
 
@@ -321,6 +332,12 @@ position was near the end.
   than guess, the closing segment is held for 2 s and the reason is corrected if
   the metadata change turns up. This doubles as the write batching — nothing
   touches storage on a callback.
+- **Running instrumented tests uninstalls the app and destroys its database.**
+  `./gradlew connectedDebugAndroidTest` (and Android Studio's equivalent)
+  removes both APKs when the run finishes, taking the on-device listening
+  history with it. Harmless for throwaway test data, but it will silently wipe
+  real history later. Pull a copy first if the data matters, and prefer running
+  instrumented tests on a device that is not being used to accumulate history.
 - **Renaming the listener class invalidates the notification-access grant.**
   Android stores the grant against the full class name, so upgrading from the
   Phase 0 build leaves a stale entry pointing at the deleted spike class and
@@ -328,6 +345,12 @@ position was near the end.
 - **AGP 9 needs an escape hatch for KSP.** Its built-in Kotlin support rejects
   the `kotlin.sourceSets` DSL that KSP uses to register generated code, so
   `android.disallowKotlinSourceSets=false` is set in `gradle.properties`.
+  **This is a workaround on a flag AGP itself marks experimental, and a future
+  AGP release may remove it.** If a version bump fails to configure with
+  "Using kotlin.sourceSets DSL is not allowed with built-in Kotlin", that is
+  this flag being withdrawn: the fix will be a newer KSP that registers its
+  generated sources through `android.sourceSets` instead. Worth re-checking on
+  every AGP upgrade rather than being surprised by it.
 
 ### Device verification (2026-09-17, Pixel 10 Pro, user-run)
 
@@ -396,6 +419,28 @@ both, which is why they are separate columns.
   data already recorded. If it is not distinguishable, that is the thing worth
   knowing early. Worth a short device session in Phase 2, before Phase 3 starts
   scoring anything.
+
+### Phase 2 questions
+
+- **Same-song merging.** `trackKey` includes the album, so the single and the
+  album version of a song never share a canonical track — they arrive as two
+  rows with two service IDs. Decide the merge rule. ISRC is the obvious
+  candidate, but **verify against the live Spotify Web API reference that track
+  responses still return it** before designing around it; the API changed
+  significantly between February and July 2026. Until then the per-service row
+  holds a null `isrc` and nothing depends on it.
+- **Protect history from deletes.** The segment → track foreign key is currently
+  `ON DELETE CASCADE`, so deleting or merging a canonical track would silently
+  take its listening history with it — exactly the data the app exists to
+  accumulate. Change it to `RESTRICT` in the v2 migration, forcing any merge to
+  re-point its segments deliberately rather than destroy them.
+- **Login design.** Choose between AppAuth and a hand-written PKCE flow.
+  AppAuth is a new third-party dependency and needs approval before it goes in.
+  Store tokens with a key held in the Android Keystore, **not** the deprecated
+  `security-crypto` library. Show a clear "reconnect Spotify" notice when the
+  six-month refresh token expires, rather than failing silently. Check the
+  redirect URI rules in the Spotify developer dashboard before committing to
+  one.
 
 - Phase 3 scoring questions raised by the device testing above:
   - What backwards jump counts as a replay at all? Phase 1 stores every jump
