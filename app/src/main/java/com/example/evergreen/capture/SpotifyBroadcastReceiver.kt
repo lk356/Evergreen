@@ -1,4 +1,4 @@
-package com.example.evergreen.spike
+package com.example.evergreen.capture
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -6,13 +6,25 @@ import android.content.Intent
 import android.content.IntentFilter
 
 /**
- * Listens for Spotify's "Device Broadcast Status" intents and dumps every extra
- * they carry.
+ * Listens for Spotify's "Device Broadcast Status" intents and logs what they
+ * carry.
  *
- * The point of this class in Phase 0 is reconnaissance, not capture: we want to
- * see whether these broadcasts still include the track URI (historically the
- * `id` extra, e.g. `spotify:track:...`). If they do, matching in Phase 2 can use
- * an exact ID instead of guessing from artist and title.
+ * **This never writes to the database.** The media session is the primary
+ * source and the only one capture depends on: it does not require the user to
+ * have left "Device Broadcast Status" switched on, and it keeps working for
+ * Spotify Connect playback.
+ *
+ * It is kept for one narrow purpose. Step 0 found that broadcast
+ * `metadatachanged` fires *only* on a real track change — never on a loop or a
+ * restart — which makes it the most likely way to settle two questions still
+ * open at the end of Phase 0: whether queue auto-advance can be told apart from
+ * a manual "next", and what a session ending actually looks like. Because it
+ * writes nothing, it cannot contaminate the recorded history while it is being
+ * used to answer them.
+ *
+ * Note also that the two sources disagree on duration — the media session
+ * rounds to the second (109000 ms) where the broadcast is exact (108518 ms) —
+ * so figures from here must never be mixed into a media-session calculation.
  *
  * This is an undocumented Spotify feature that has changed without notice
  * before, so treat anything learned here as version-specific.
@@ -37,7 +49,7 @@ class SpotifyBroadcastReceiver : BroadcastReceiver() {
             }
         }
 
-        SpikeLog.add(
+        CaptureLog.add(
             source = EventSource.BROADCAST,
             summary = action.substringAfterLast('.'),
             detail = detail,

@@ -12,8 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
-import com.example.evergreen.spike.SpikeNotificationListenerService
-import com.example.evergreen.spike.SpikeScreen
+import com.example.evergreen.capture.CaptureNotificationListenerService
+import com.example.evergreen.ui.DebugScreen
 import com.example.evergreen.ui.theme.EvergreenTheme
 
 class MainActivity : ComponentActivity() {
@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             EvergreenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    SpikeScreen(
+                    DebugScreen(
                         accessGranted = accessGranted.value,
                         onOpenNotificationSettings = ::openNotificationListenerSettings,
                         onOpenAppInfo = ::openAppInfo,
@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        accessGranted.value = SpikeNotificationListenerService.isAccessGranted(this)
+        accessGranted.value = CaptureNotificationListenerService.isAccessGranted(this)
     }
 
     private fun openNotificationListenerSettings() {

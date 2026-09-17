@@ -38,8 +38,8 @@ streaming services:
 - [x] **Phase 0 — Feasibility spike.** Log media-session events from Spotify on both
       Android devices. Confirm skip detection works and whether Spotify broadcasts
       include track URIs. _(done 2026-09-17)_
-- [ ] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
-      listening events, debug screen to verify events.
+- [x] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
+      play segments, debug screen to verify them. _(done 2026-09-17)_
 - [ ] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
       like sync, track matching, canonical track table. Verify against the live
       Spotify Web API reference that track responses still include ISRC before
@@ -66,21 +66,19 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 0 complete.** Verified on both devices 2026-09-17.
-- Last update: 2026-09-17. Phase 0 merged to `main`; Phase 1 prompt revised
-  after further device testing.
+- Current phase: **Phase 1 complete and device-verified.** Built and smoke-tested
+  on the NW-A307, then verified by the user on the Pixel 10 Pro 2026-09-17. All
+  four device checks passed — replay, repeat-one loop, seek-to-end and
+  straight-through. Branch `phase1-capture-mvp`.
+- Last update: 2026-09-17.
 
-Phase 0 proved the capture approach works. Every test passed on the Pixel 10
-Pro and on the NW-A307, with no behavioural differences between them.
+Phase 1 replaced the spike with a real capture pipeline. Listening is now stored
+as **play segments** in a Room database — one row per continuous listen, not one
+per callback — and the replay, loop and seek-to-end bugs found after Phase 0 are
+fixed. `com.example.evergreen.spike` is deleted.
 
-**Next:** Phase 1 (Capture MVP), see `docs/PHASE1_PROMPT.md`. Carry the
-spike's findings across — in particular replay detection and event
-de-duplication, both of which are correctness issues, not polish.
-
-2026-09-17: further device testing found that restarts, repeat-one loops and
-seek-to-end are all mishandled — see "Carried into Phase 1" and "Step 0
-findings". The Phase 1 prompt was revised accordingly. Step 0 is already done,
-so Phase 1 can go straight to the data model.
+**Next:** Phase 2 (Spotify connection). Before relying on ISRC, verify against
+the live Spotify Web API reference that track responses still include it.
 
 ## Phase 0 results (2026-09-17)
 
@@ -214,16 +212,196 @@ Observed facts, relied on by Phase 1:
 9. **BUFFERING reports `speed=0.0`**, so it is already excluded from listened
    time by the existing position logic.
 
-Still unknown, worth watching for during Phase 1:
-- what a natural end-of-track auto-advance looks like with repeat off,
-- whether queue auto-advance is distinguishable from a manual "next",
+Answered in Phase 1 — see "Device verification" under "Phase 1 results":
+- ~~what a natural end-of-track auto-advance looks like with repeat off~~ —
+  observed: a plain `TRACK_CHANGE` ending within a percent or two of the
+  duration, with no distinct callback signature.
+- ~~whether queue auto-advance is distinguishable from a manual "next"~~ — **no**,
+  not from any media-session signal. Only position reached separates them, and
+  that alone is unsafe because a forward seek reaches the end too. Position
+  reached plus listened ms together do separate them.
+
+Still unknown:
 - the exact shape of a session ending (Spotify force-stopped).
+
+## Phase 1 results (2026-09-17)
+
+Built on branch `phase1-capture-mvp`. 41 unit tests, all passing. Verified on the
+Sony NW-A307 against live Spotify playback.
+
+### What the data model stores
+
+Three tables, designed for multiple services from day one:
+
+- **`tracks`** — the canonical song (title, artist, album, duration). One row per
+  song regardless of service. This is what Phase 3 scores.
+- **`service_tracks`** — one row per service identifier for a song, so the album
+  version and the single version can both point at one canonical track. The
+  nullable `isrc` column lives here, because an ISRC is learned from a service
+  and describes that service's recording. Null throughout Phase 1.
+- **`listening_segments`** — one row per **play segment**: a continuous stretch
+  of listening to one track. Not one row per callback.
+
+Schema version 1 is exported to `app/schemas/` and committed, so Phase 2's
+migration can be generated and tested rather than hand-written.
+
+### The rule that keeps Phase 1 out of Phase 3's way
+
+Segment rows store facts, never conclusions. There is **no outcome column** —
+no COMPLETED, no SKIPPED. Anything Phase 3 wants to conclude is recomputable
+from what is stored.
+
+The end-reason set was cut down accordingly. The original plan had a `REPLAY`
+value; that is a conclusion, not an observation. What capture can actually see
+is that the position jumped backwards, so the value is **`POSITION_JUMP_BACK`**,
+stored alongside the jump's `endJumpFromMs` and `endJumpToMs`. Every remaining
+value — `TRACK_CHANGE`, `SESSION_END`, `STALE`, `UNKNOWN` — is something that
+was observed.
+
+**The replay threshold is not decided in Phase 1, and deliberately is not
+stored.** Capture cuts a new segment at *every* backwards jump over 1000 ms —
+about 12x the measured 80 ms jitter floor, so it catches every deliberate action
+and no noise. That is a sensor setting, not a judgement about intent. Cutting
+finely is reversible: `SegmentGrouping.merge()` folds adjacent rows back together
+given any replay threshold, using the stored jump size. Cutting coarsely would
+not be reversible — a jump never recorded cannot be recovered.
+
+So "does skipping back ten seconds count as a replay?" is answered at read time,
+can be answered differently later, and needs no listening to be recaptured. The
+debug screen has a threshold selector (as recorded / 3s / 10s / 30s) so the
+Phase 3 decision can be made by looking at real listening rather than guessed at.
+
+### Listened time
+
+`listenedMs` accumulates by one rule: take the **smaller** of what the clock says
+was played (scaled by `playbackSpeed`) and what the position actually advanced.
+
+| Situation | Smaller term | Effect |
+|---|---|---|
+| normal playback | they agree | correct |
+| forward seek | the clock | the jumped-over part is excluded |
+| playback stalls silently | the position | no time is invented |
+| ~80 ms of backwards jitter | the position | loses up to 80 ms, never adds |
+
+It always errs downwards. Under-counting is recoverable; invented plays are not.
+
+### Verified on the NW-A307
+
+| Check | Result |
+|---|---|
+| Room schema created, 3 tables | ✅ |
+| Spotify URI captured as the service track id | ✅ `spotify:track:1xHutdgil2xlhdNLOL8Cr9` |
+| Allowlist gate | ✅ ignored 1 non-allowlisted session, name not recorded |
+| Metadata de-duplication | ✅ ~60 state callbacks produced 2 metadata rows |
+| Segment written on track change | ✅ |
+| `deviceId` is a random UUID, not a hardware id | ✅ |
+| Duration sources disagree, as documented | ✅ session 172000 ms vs broadcast 171807 ms |
+
+One stored row, read back off the device, showing capture recording only what it
+actually saw: the app was reinstalled mid-track, so it observed the last 25 s of
+a 2:52 song and stored exactly that — `listenedMs` 25106, `endPositionMs` 157013
+(91%), `lastSampleAgeMs` 25106 — rather than claiming a full play because the
+position was near the end.
+
+### Learned while building
+
+- **Steady playback emits no state callbacks at all.** Spotify publishes them on
+  changes, not on a timer: 25 s and 158 s gaps were both observed mid-track with
+  playback running normally. So `lastSampleAgeMs` is routinely large and is worth
+  having as a column — it tells Phase 3 how much of a row's `listenedMs` rests on
+  extrapolation. It also means the 30 s staleness guard sits closer to normal
+  behaviour than Phase 0 suggested, and should not be tightened.
+- **Bug found on device:** a finished segment is held briefly so it can still be
+  corrected (see below), and it was only released once the *next* segment had
+  accrued listening. When playback stops right after a track change, no further
+  listening ever accrues and the finished segment was never written. Now released
+  on elapsed time, driven by a timer, since callbacks stop when playback does.
+- **A track change can arrive as a position reading before its metadata**, which
+  is indistinguishable from a jump back to the start for that instant. Rather
+  than guess, the closing segment is held for 2 s and the reason is corrected if
+  the metadata change turns up. This doubles as the write batching — nothing
+  touches storage on a callback.
+- **Renaming the listener class invalidates the notification-access grant.**
+  Android stores the grant against the full class name, so upgrading from the
+  Phase 0 build leaves a stale entry pointing at the deleted spike class and
+  capture silently does not run. Access has to be re-granted once.
+- **AGP 9 needs an escape hatch for KSP.** Its built-in Kotlin support rejects
+  the `kotlin.sourceSets` DSL that KSP uses to register generated code, so
+  `android.disallowKotlinSourceSets=false` is set in `gradle.properties`.
+
+### Device verification (2026-09-17, Pixel 10 Pro, user-run)
+
+Thirteen segments recorded during a live test session, read back off the device.
+Each of the four checks is visible in the stored rows:
+
+| # | Track | Stored | Reading |
+|---|---|---|---|
+| 10 | Afterthought | heard 4:00 of 4:02 (99%), `POSITION_JUMP_BACK` 4:00.54 → 0:00 | **repeat-one loop captured.** Phase 0 logged nothing at all here |
+| 12 | Electro Swingity | reached 99%, **heard 8%**, 1 seek skipping 3:00 | **seek-to-end is not a completion.** Phase 0 called this COMPLETED |
+| 8 → 9 | Vois Sur Ton Chemin | 31s, jump back 31.25s, then 11s | **replay makes two segments**, neither labelled a skip |
+| 13 | bitkrushed | heard 1:32 of 1:34 (97%), one row | straight-through play is one segment, not several |
+| 3, 4 | Crazy La Paint | two ~1.5s fragments with ~1.1s and ~1.6s jumps back | short fragments stored, not labelled |
+
+### What this settled, and what it did not
+
+**Natural end-of-track auto-advance was observed** (#6 at 98%, #13 at 98%). It
+looks like an ordinary `TRACK_CHANGE` whose `endPositionMs` is within a percent
+or two of the duration. There is no distinct callback signature.
+
+**So queue auto-advance is _not_ distinguishable from a manual "next" by any
+signal the media session provides** — only by position reached. And that
+inference is not safe on its own: #12 also reached 99% and also auto-advanced,
+but had been seeked there and was barely heard. Position reached says *where
+playback got to*; only `listenedMs` says *whether it was heard*. Phase 3 needs
+both, which is why they are separate columns.
+
+**A session ending by force-stop is still not observed.**
+
+### Worth watching
+
+- Segments #3 and #4 are backwards jumps of 1.10s and 1.63s, a second or two
+  into a track — just above the 1000 ms cut. These may be deliberate double
+  presses of "previous", or they may be the player settling at track start. If
+  jumps of 1–2 s near position zero turn out to be player noise, the cut is
+  slightly too low. This costs nothing to get wrong: the jump size is stored on
+  every row, so such segments can be merged away later with no recapture.
+- Segment #8 closed with `lastSampleAgeMs` of 31.2s, just past the 30s staleness
+  guard, and essentially its whole `listenedMs` came from that one
+  extrapolation. The jump back then revealed the true position as 31.32s against
+  an extrapolated 31.31s — the extrapolation was right to within 10 ms. Good
+  evidence that the position logic is sound, and a reminder that long
+  callback-free stretches are normal rather than exceptional.
 
 ## Open questions — still open
 
 - Initial scoring parameters (decay half-life, skip penalty, grace period).
   Belongs to Phase 3.
+- **Spotify DJ — completely unexamined.** The DJ plays a curated stream with
+  spoken commentary between songs, and none of it has been tested against
+  capture. Things to find out before trusting DJ-era data:
+  - Does the spoken commentary surface as a media session track? If it does,
+    capture will currently record it as a listen of something that is not a
+    song.
+  - What identifier does commentary carry — a `spotify:track:` URI, an episode
+    URI, or none at all? Whether it can be filtered out depends entirely on
+    this, so it is the first thing to check.
+  - DJ auto-advances and invites heavy skipping, so skip rates there may mean
+    something different from skips in a playlist the user built.
+  - Scoring: a song the DJ chose was not chosen by the user. Should it count
+    the same as a deliberate play, or less?
+
+  Capture stores `appPackage` and the per-service track id on every segment and
+  draws no conclusions, so if commentary turns out to be distinguishable by its
+  identifier, DJ listens can be filtered or reweighted **retroactively** from
+  data already recorded. If it is not distinguishable, that is the thing worth
+  knowing early. Worth a short device session in Phase 2, before Phase 3 starts
+  scoring anything.
+
 - Phase 3 scoring questions raised by the device testing above:
+  - What backwards jump counts as a replay at all? Phase 1 stores every jump
+    with its size and does not decide this; `SegmentGrouping.merge()` applies
+    whatever answer Phase 3 picks, and the debug screen's threshold selector
+    shows the effect on real listening history.
   - How does a restart or replay count — as a second play, or as a stronger
     signal than two ordinary plays?
   - Do repeat-one loops count per loop or once, and with what diminishing

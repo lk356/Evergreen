@@ -3,8 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-        Evergreen deliberately declares NO permissions in Phase 0 — in
-        particular no INTERNET permission. The capture spike is local-only.
+        Evergreen deliberately declares NO permissions in Phase 1 — in
+        particular no INTERNET permission. Capture is local-only: listening
+        history is written to the on-device database and goes nowhere else.
+        Network access arrives in Phase 2, when Spotify is connected.
     -->
 
     <application
@@ -36,9 +38,9 @@
             only the system can.
         -->
         <service
-            android:name=".spike.SpikeNotificationListenerService"
+            android:name=".capture.CaptureNotificationListenerService"
             android:exported="true"
-            android:label="@string/spike_listener_label"
+            android:label="@string/capture_listener_label"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
