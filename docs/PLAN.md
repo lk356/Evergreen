@@ -30,9 +30,9 @@ streaming services:
 - Windows and Linux desktops running Spotify (later phases)
 
 ## Phases
-- [ ] **Phase 0 — Feasibility spike.** Log media-session events from Spotify on both
+- [x] **Phase 0 — Feasibility spike.** Log media-session events from Spotify on both
       Android devices. Confirm skip detection works and whether Spotify broadcasts
-      include track URIs. _(in progress, branch `phase0-capture-spike`)_
+      include track URIs. _(done 2026-09-17)_
 - [ ] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
       listening events, debug screen to verify events.
 - [ ] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
@@ -59,54 +59,82 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: Phase 0 — spike **built, awaiting device testing**
-- Last update: 2026-09-16, branch `phase0-capture-spike`
+- Current phase: **Phase 0 complete.** Verified on both devices 2026-09-17.
+- Last update: 2026-09-17, branch `phase0-capture-spike`
 
-Built and compiling (debug APK builds clean, 14 skip-detector unit tests pass):
-- `SpikeNotificationListenerService` — allowlisted to `com.spotify.music`;
-  never reads notification content.
-- `SessionWatcher` — logs metadata + playback state per session.
-- `SpotifyBroadcastReceiver` — dumps every extra from Device Broadcast Status
-  intents; registered at runtime, `RECEIVER_EXPORTED`.
-- `SkipDetector` — COMPLETED / SKIPPED / UNKNOWN, pure Kotlin, unit tested.
-- `SpikeScreen` — access status, last 100 events, clear.
+Phase 0 proved the capture approach works. Every test passed on the Pixel 10
+Pro and on the NW-A307, with no behavioural differences between them.
 
-**Next:** run the device test script (below) on the Pixel, then the NW-A307,
-and fill in the Open questions from the results.
+**Next:** Phase 1 (Capture MVP). Carry the spike's findings across — in
+particular replay detection and event de-duplication, both of which are
+correctness issues, not polish.
 
-## Phase 0 device test script
-Run on each device, watching the app screen or
-`adb logcat -s EvergreenSpike`:
-1. Play a song all the way to the end → expect `VERDICT ... COMPLETED`.
-2. Skip a song after ~10s → expect `VERDICT ... SKIPPED`.
-3. Pause, wait ~30s, resume → position must not advance while paused.
-4. Seek forward and backward → estimated position should track the seek.
-5. Play to a Spotify Connect device (speaker/other phone) → record whether
-   any events arrive at all.
-6. Lock the screen for one full track → check whether callbacks keep arriving
-   or the verdict comes back UNKNOWN ("stale").
+## Phase 0 results (2026-09-17)
 
-## Open questions
+Tested on Pixel 10 Pro and Sony NW-A307 (Android 14). Identical results on both.
+
+| Test | Result |
+|---|---|
+| Song played to the end | COMPLETED ✅ |
+| Skip after ~10s | SKIPPED ✅ |
+| Pause 30s, resume | Position correct, did not advance while paused ✅ |
+| Seek forward / back | Tracked correctly ✅ |
+| Spotify Connect playback | Events captured ✅ (better than expected) |
+| Screen locked for a full track | COMPLETED logged; callbacks kept arriving ✅ |
+| NW-A307 sideload + notification access | Granted without trouble ✅ |
+| NW-A307 physical buttons | Captured like any other transport control ✅ |
+
+## Open questions — resolved in Phase 0
+
 - **Does the NW-A307 allow notification-listener access for a sideloaded app?**
-  Unresolved — needs the device. Now known to run Android 14, so Google's
-  "restricted settings" block applies. Installing over USB (`adb install`)
-  usually bypasses it; if not, App info → ⋮ → Allow restricted settings, or
-  `adb shell cmd notification allow_listener <component>` as a fallback.
+  **Yes.** Installed over adb, access granted normally, no "restricted settings"
+  block encountered. The Walkman behaves like the Pixel in every test, including
+  its physical transport buttons. It is not the special case we planned around.
 - **Do Spotify broadcast intents include the track URI on current app versions?**
-  Unresolved — needs the device. The spike logs every extra, so the answer will
-  be visible directly. Two candidate routes are instrumented: the broadcast `id`
-  extra, and `METADATA_KEY_MEDIA_URI` / `METADATA_KEY_MEDIA_ID` on the media
-  session. If both come back empty, Phase 2 must match by artist/title/duration.
+  **Yes — and the media session carries it too**, as `mediaId`
+  (`spotify:track:...`) on the session metadata. The media-session route is the
+  better one to depend on: it does not require the user to have enabled "Device
+  Broadcast Status", and it keeps working for Spotify Connect playback. Phase 2
+  can match on exact Spotify URI rather than guessing from artist/title.
 - **How reliable is media-session position data for skip detection?**
-  Partly answered by construction: Android reports position as a *snapshot* plus
-  a monotonic timestamp, never a live value, so any consumer must extrapolate
-  forward, scale by `playbackSpeed`, freeze while paused, and clamp to duration.
-  All four are implemented and unit tested. What remains empirical is how often
-  Spotify actually publishes updates — hence tests 3, 4 and 6. The 30s staleness
-  threshold and 90% completion threshold are guesses awaiting calibration.
-- **Known limitation found while building:** media-session metadata has no
-  stable track ID, so the spike identifies tracks by title|artist|album. A track
-  repeated back-to-back looks like one continuous play. Acceptable for Phase 0;
-  Phase 1 needs a real identity story.
+  **Reliable enough.** Pause, resume, and seek all reported correct positions,
+  and the 30s staleness guard never fired — not even with the screen locked for a
+  whole track, which was the scenario we most expected to lose. Position handling
+  must still extrapolate from the snapshot + monotonic timestamp (see Phase 0
+  notes below); done naively it would be wrong.
+- **Spotify Connect:** playback to a remote device **is** captured, including
+  while Spotify is swiped away from recents. Force-stopping Spotify from Android
+  settings ends capture, as expected. This removes a design constraint we had
+  budgeted for.
+
+## Carried into Phase 1 (found while testing)
+
+- **Replays are invisible, and can be scored as skips.** Track identity is
+  `title|artist|album`, so a track restarting from 0:00 is not seen as a new
+  play. Pressing "previous" twice therefore restarts the track, then abandons it
+  a second later, and the near-complete first listen is recorded as SKIPPED.
+  This penalises exactly the songs a user likes enough to replay, so Phase 1
+  needs a replay boundary: a large backwards position jump within the same
+  track should close the current play segment and judge it, then start a new one.
+- **Events must be de-duplicated before they reach the database.** A single
+  track change emits roughly five or six log lines today: a media-session
+  METADATA line, a VERDICT line, one or more STATE lines, plus separate
+  BROADCAST lines for `metadatachanged`, `playbackstatechanged` and
+  `queuechanged`. Spotify also republishes playback state frequently on its own.
+  That is correct for a spike watching two sources deliberately, but written
+  straight to Room it would balloon the event table. Phase 1 should pick the
+  media session as the primary source and treat broadcasts as supplementary.
+- **Position is a snapshot, not a live value.** Android reports position plus a
+  monotonic timestamp. Any consumer must extrapolate forward, scale by
+  `playbackSpeed`, freeze while paused, and clamp to the track duration. All four
+  are implemented and unit tested in `SkipDetector`; keep them.
+- **Thresholds still need calibration.** 90% completion and the 30s staleness
+  guard were guesses. Both behaved correctly in testing but have not been tuned
+  against a real listening history.
+
+## Open questions — still open
+
 - Initial scoring parameters (decay half-life, skip penalty, grace period).
-  Not started; belongs to Phase 3.
+  Belongs to Phase 3.
+- How should a replay count towards a score — as a second play, or as strong
+  positive signal in its own right? Raised by the replay finding above.
