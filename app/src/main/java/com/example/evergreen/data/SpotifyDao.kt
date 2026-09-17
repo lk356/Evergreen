@@ -313,6 +313,9 @@ abstract class SpotifyDao {
     @Query("SELECT COUNT(*) FROM likes")
     abstract fun archivedLikeCount(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM likes")
+    abstract suspend fun archivedLikeCountOnce(): Int
+
     @Query("SELECT COUNT(*) FROM like_events")
     abstract fun likeEventCount(): Flow<Int>
 
@@ -407,6 +410,72 @@ abstract class SpotifyDao {
         """,
     )
     abstract suspend fun sameIsrcMergeCandidates(): List<MergeCandidate>
+
+    // --- Same-song merging ---------------------------------------------------
+
+    @Query("UPDATE listening_segments SET trackId = :survivorId WHERE trackId = :loserId")
+    protected abstract suspend fun repointSegments(survivorId: Long, loserId: Long): Int
+
+    @Query("UPDATE service_tracks SET trackId = :survivorId WHERE trackId = :loserId")
+    protected abstract suspend fun repointServiceTracks(survivorId: Long, loserId: Long): Int
+
+    @Query("SELECT * FROM tracks WHERE id = :id")
+    protected abstract suspend fun trackById(id: Long): TrackEntity?
+
+    @Query("DELETE FROM tracks WHERE id = :id")
+    protected abstract suspend fun deleteTrack(id: Long)
+
+    @Insert
+    protected abstract suspend fun insertMerge(merge: TrackMergeEntity)
+
+    @Query("SELECT * FROM track_merges ORDER BY mergedAt DESC, id DESC")
+    abstract suspend fun allMerges(): List<TrackMergeEntity>
+
+    @Query("SELECT COUNT(*) FROM track_merges")
+    abstract fun mergeCount(): Flow<Int>
+
+    /**
+     * Folds [loserId] into [survivorId].
+     *
+     * The order is the whole point. Segments and service rows are re-pointed
+     * **first**, and only then is the losing track deleted — so by the time the
+     * delete runs, nothing references it. Under the RESTRICT foreign keys added
+     * in schema v2, getting this backwards does not silently destroy listening
+     * history; it raises a constraint error and the transaction rolls back.
+     * That is the protection working, not an obstacle to route around.
+     *
+     * Nothing is deleted except the now-empty `tracks` row, and the merge is
+     * recorded so it stays explainable afterwards.
+     */
+    @Transaction
+    open suspend fun mergeTracks(
+        survivorId: Long,
+        loserId: Long,
+        isrc: String,
+        now: Long,
+    ): TrackMergeEntity {
+        require(survivorId != loserId) { "a track cannot be merged into itself" }
+        val loser = requireNotNull(trackById(loserId)) { "no track $loserId to merge" }
+        requireNotNull(trackById(survivorId)) { "no surviving track $survivorId" }
+
+        val segmentsMoved = repointSegments(survivorId, loserId)
+        val serviceRowsMoved = repointServiceTracks(survivorId, loserId)
+
+        val record = TrackMergeEntity(
+            survivorTrackId = survivorId,
+            mergedTrackKey = loser.trackKey,
+            mergedTitle = loser.title,
+            mergedArtist = loser.artist,
+            mergedAlbum = loser.album,
+            isrc = isrc,
+            segmentsMoved = segmentsMoved,
+            serviceRowsMoved = serviceRowsMoved,
+            mergedAt = now,
+        )
+        insertMerge(record)
+        deleteTrack(loserId)
+        return record
+    }
 }
 
 /** One reason ISRC lookups failed, and how often. */

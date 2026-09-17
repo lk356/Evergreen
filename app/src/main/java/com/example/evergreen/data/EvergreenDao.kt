@@ -205,6 +205,17 @@ abstract class EvergreenDao {
     @Query("SELECT COUNT(*) FROM tracks")
     abstract fun trackCount(): Flow<Int>
 
+    /** One-shot form of [mismatchedTrackIdCount], for tests and diagnostics. */
+    @Query(
+        """
+        SELECT COUNT(*)
+          FROM listening_segments s
+          JOIN service_tracks st ON st.id = s.serviceTrackRowId
+         WHERE s.trackId != st.trackId
+        """,
+    )
+    abstract suspend fun mismatchedTrackIdCountOnce(): Int
+
     @Query("SELECT * FROM tracks ORDER BY id")
     abstract suspend fun allTracks(): List<TrackEntity>
 

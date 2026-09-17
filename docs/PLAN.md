@@ -80,14 +80,16 @@ is empty.
 **Two things are outstanding before Phase 2 can be ticked:**
 1. The user has not yet connected a real Spotify account. Everything below the
    login is tested against scripted API answers, not against Spotify.
-2. The same-song merge is **proposed but not implemented**, and nothing has been
-   merged. See "Same-song merging" under Phase 2 questions.
+2. The same-song merge is implemented and tested, but **has not been run over
+   the real database**. The dry run shows the plan; running it is one tap behind
+   a confirmation. See "Same-song merging" under Phase 2 questions.
 
 Device-verified on the Pixel 10 Pro: login, 380/380 likes synced with 100% ISRC
 coverage, the reconnect state, and an 8-minute Spotify DJ session. See
 "Phase 2 device verification" and "Spotify DJ — examined" below.
 
-**Next:** implement the merge rule (approved), then Phase 3 scoring.
+**Next:** run the merge on the Pixel (2 pairs, 0 segments to move), then
+Phase 3 scoring.
 
 Phase 1 replaced the spike with a real capture pipeline: listening is stored as
 play segments in a Room database, one row per continuous listen, and the replay,
@@ -778,6 +780,19 @@ reason if anyone is ever tempted to collapse them.
   **Known limit:** a remaster gets a fresh ISRC and so will *not* merge. That is
   defensible — it is a different recording — but this rule catches same-recording
   pairs only, not every "same song" pair.
+
+  **Implemented in schema v3** (which only adds the `track_merges` audit table;
+  no existing table is touched). The order inside `mergeTracks` is load-bearing:
+  segments and service rows are re-pointed *first*, and only then is the losing
+  `tracks` row deleted. Under the v2 RESTRICT keys, getting that backwards does
+  not quietly destroy history — it raises a constraint error and the transaction
+  rolls back. The protection and the operation were designed together.
+
+  Tested with listening history on **both** sides of the merge, which the live
+  data does not yet have and which is the case where a mistake would cost
+  something: 8 segments in, 8 segments out, one canonical track, both Spotify
+  URIs still present and pointing at the survivor, both likes intact, no
+  dangling references, and the whole thing recorded in `track_merges`.
 - **Protect history from deletes.** Done, and widened: **all three** foreign keys
   are now `RESTRICT`, not only `listening_segments → tracks`. See "Schema v2"
   above for why fixing one leaves a hole.

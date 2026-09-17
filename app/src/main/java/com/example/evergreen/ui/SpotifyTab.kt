@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -28,7 +31,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.evergreen.data.EvergreenDatabase
-import com.example.evergreen.data.MergeCandidate
+import com.example.evergreen.data.MergePlanGroup
+import com.example.evergreen.data.SameSongMerge
 import com.example.evergreen.data.SERVICE_SPOTIFY
 import com.example.evergreen.data.SyncKeys
 import com.example.evergreen.spotify.SpotifyApi.Companion.TRACK_URI_PREFIX
@@ -83,7 +87,10 @@ fun SpotifyTab(
     val backoffUntil by dao.syncStateFlow(SyncKeys.API_BACKOFF_UNTIL).collectAsState(initial = null)
     val backoffReason by dao.syncStateFlow(SyncKeys.API_BACKOFF_REASON).collectAsState(initial = null)
 
-    var mergeCandidates by remember { mutableStateOf<List<MergeCandidate>?>(null) }
+    var mergePlan by remember { mutableStateOf<List<MergePlanGroup>?>(null) }
+    var confirmingMerge by remember { mutableStateOf(false) }
+    var mergeSummary by remember { mutableStateOf<String?>(null) }
+    val merges by dao.mergeCount().collectAsState(initial = 0)
 
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()),
@@ -149,7 +156,10 @@ fun SpotifyTab(
                 Text("Sync now")
             }
             OutlinedButton(onClick = {
-                scope.launch { mergeCandidates = dao.sameIsrcMergeCandidates() }
+                scope.launch {
+                    mergePlan = SameSongMerge.plan(dao.sameIsrcMergeCandidates())
+                    mergeSummary = null
+                }
             }) {
                 Text("Merge dry run")
             }
@@ -187,7 +197,62 @@ fun SpotifyTab(
             )
         }
 
-        MergeDryRun(mergeCandidates)
+        MergeDryRun(
+            plan = mergePlan,
+            mergesRun = merges,
+            summary = mergeSummary,
+            onMerge = { confirmingMerge = true },
+        )
+
+        // Merging is the only operation in this app that deletes a row, so it
+        // asks first -- every time, and after showing exactly what it will do.
+        val plan = mergePlan
+        if (confirmingMerge && plan != null) {
+            val tracks = plan.sumOf { it.losers.size }
+            val segments = plan.sumOf { it.segmentsToMove }
+            AlertDialog(
+                onDismissRequest = { confirmingMerge = false },
+                title = { Text("Merge $tracks track(s)?") },
+                text = {
+                    Text(
+                        "This folds $tracks canonical track(s) into their " +
+                            "counterparts and re-points $segments segment(s).\n\n" +
+                            "No listening history is deleted \u2014 segments move to " +
+                            "the surviving track. Your likes are unaffected: both " +
+                            "releases stay in the archive.\n\n" +
+                            "Every merge is recorded so it stays explainable, but " +
+                            "there is no undo button."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmingMerge = false
+                        scope.launch {
+                            var moved = 0
+                            var merged = 0
+                            plan.forEach { group ->
+                                group.losers.forEach { loser ->
+                                    val record = dao.mergeTracks(
+                                        survivorId = group.survivor.trackId,
+                                        loserId = loser.trackId,
+                                        isrc = group.isrc,
+                                        now = System.currentTimeMillis(),
+                                    )
+                                    moved += record.segmentsMoved
+                                    merged++
+                                }
+                            }
+                            mergeSummary =
+                                "Merged $merged track(s); $moved segment(s) re-pointed, none deleted."
+                            mergePlan = SameSongMerge.plan(dao.sameIsrcMergeCandidates())
+                        }
+                    }) { Text("Merge") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmingMerge = false }) { Text("Cancel") }
+                },
+            )
+        }
     }
 }
 
@@ -294,38 +359,70 @@ private fun ConnectionCard(
  * is a judgement about real data, so this reports and stops.
  */
 @Composable
-private fun MergeDryRun(candidates: List<MergeCandidate>?) {
-    if (candidates == null) return
+private fun MergeDryRun(
+    plan: List<MergePlanGroup>?,
+    mergesRun: Int,
+    summary: String?,
+    onMerge: () -> Unit,
+) {
+    if (plan == null) {
+        if (mergesRun > 0) {
+            SectionTitle("Merges")
+            Stat("Merges performed", "$mergesRun")
+        }
+        return
+    }
 
-    SectionTitle("Merge dry run — nothing has been changed")
-    if (candidates.isEmpty()) {
+    SectionTitle("Merge dry run — nothing has been changed yet")
+
+    summary?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+    }
+
+    if (plan.isEmpty()) {
         Text(
             "No two canonical tracks share an ISRC. Nothing would merge.",
             style = MaterialTheme.typography.bodySmall,
         )
+        if (mergesRun > 0) Stat("Merges performed so far", "$mergesRun")
         return
     }
 
-    val groups = candidates.groupBy { it.isrc }
     Text(
-        "${groups.size} ISRC(s) map to more than one canonical track, " +
-            "covering ${candidates.size} track(s).",
+        "${plan.size} recording(s) appear as more than one canonical track. " +
+            "Merging would fold ${plan.sumOf { it.losers.size }} track(s) in and " +
+            "re-point ${plan.sumOf { it.segmentsToMove }} segment(s).",
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(bottom = 6.dp),
     )
-    groups.forEach { (isrc, rows) ->
+
+    plan.forEach { group ->
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
             Column(modifier = Modifier.padding(8.dp)) {
-                Text(isrc, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                rows.forEach { row ->
+                Text(
+                    group.isrc,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "KEEP  ${group.survivor.title ?: "?"} — ${group.survivor.album ?: "?"} " +
+                        "(${group.survivor.segmentCount} segments)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                group.losers.forEach { loser ->
                     Text(
-                        "· ${row.title ?: "?"} — ${row.album ?: "?"} " +
-                            "(${row.segmentCount} segment${if (row.segmentCount == 1) "" else "s"})",
+                        "FOLD IN  ${loser.title ?: "?"} — ${loser.album ?: "?"} " +
+                            "(${loser.segmentCount} segments move)",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
         }
+    }
+
+    Button(onClick = onMerge, modifier = Modifier.padding(top = 8.dp)) {
+        Text("Run this merge")
     }
 }
 
