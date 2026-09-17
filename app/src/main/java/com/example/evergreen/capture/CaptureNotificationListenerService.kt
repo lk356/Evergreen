@@ -1,4 +1,4 @@
-package com.example.evergreen.spike
+package com.example.evergreen.capture
 
 import android.content.ComponentName
 import android.content.Context
@@ -20,11 +20,12 @@ import androidx.core.content.ContextCompat
  * [ALLOWED_PACKAGES]; every other session is dropped before its metadata is
  * read.
  */
-class SpikeNotificationListenerService : NotificationListenerService() {
+class CaptureNotificationListenerService : NotificationListenerService() {
 
     private var sessionManager: MediaSessionManager? = null
     private val watchers = mutableMapOf<MediaSession.Token, SessionWatcher>()
     private var broadcastReceiver: SpotifyBroadcastReceiver? = null
+    private var writer: SegmentWriter? = null
 
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
@@ -43,12 +44,14 @@ class SpikeNotificationListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
-        SpikeLog.add(EventSource.SYSTEM, "notification listener connected")
+        CaptureLog.add(EventSource.SYSTEM, "notification listener connected")
+
+        writer = SegmentWriter(applicationContext, DeviceId.get(applicationContext))
         registerSpotifyBroadcasts()
 
         val manager = getSystemService(MediaSessionManager::class.java)
         if (manager == null) {
-            SpikeLog.add(EventSource.SYSTEM, "MediaSessionManager unavailable")
+            CaptureLog.add(EventSource.SYSTEM, "MediaSessionManager unavailable")
             return
         }
         sessionManager = manager
@@ -60,7 +63,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
         } catch (e: SecurityException) {
             // Thrown when notification access is not actually granted, which can
             // happen briefly after the permission is toggled off.
-            SpikeLog.add(
+            CaptureLog.add(
                 EventSource.SYSTEM,
                 "denied access to media sessions",
                 detail = e.message,
@@ -69,7 +72,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
-        SpikeLog.add(EventSource.SYSTEM, "notification listener disconnected")
+        CaptureLog.add(EventSource.SYSTEM, "notification listener disconnected")
         teardown()
         super.onListenerDisconnected()
     }
@@ -82,9 +85,13 @@ class SpikeNotificationListenerService : NotificationListenerService() {
     private fun teardown() {
         sessionManager?.removeOnActiveSessionsChangedListener(sessionsChangedListener)
         sessionManager = null
+        // stop() flushes each watcher's open segment, so this must happen before
+        // the writer is shut down or the last listen of the session is lost.
         watchers.values.forEach { it.stop() }
         watchers.clear()
         unregisterSpotifyBroadcasts()
+        writer?.shutdown()
+        writer = null
     }
 
     // --- Spotify broadcasts -------------------------------------------------
@@ -106,7 +113,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
             ContextCompat.RECEIVER_EXPORTED,
         )
         broadcastReceiver = receiver
-        SpikeLog.add(EventSource.SYSTEM, "listening for Spotify broadcast intents")
+        CaptureLog.add(EventSource.SYSTEM, "listening for Spotify broadcast intents")
     }
 
     private fun unregisterSpotifyBroadcasts() {
@@ -124,7 +131,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
 
         val ignoredCount = controllers.size - allowed.size
         if (ignoredCount > 0) {
-            SpikeLog.add(
+            CaptureLog.add(
                 EventSource.SESSION,
                 "ignored $ignoredCount non-allowlisted session(s)",
                 detail = "package names not recorded, by policy",
@@ -137,9 +144,13 @@ class SpikeNotificationListenerService : NotificationListenerService() {
             liveTokens += token
             if (watchers.containsKey(token)) continue
 
-            val watcher = SessionWatcher(controller) { finished -> dropWatcher(finished) }
+            val watcher = SessionWatcher(
+                controller = controller,
+                onSegmentClosed = { segment -> writer?.write(segment) },
+                onSessionDestroyedCallback = { finished -> dropWatcher(finished) },
+            )
             watchers[token] = watcher
-            SpikeLog.add(
+            CaptureLog.add(
                 EventSource.SESSION,
                 "watching media session",
                 packageName = controller.packageName,
@@ -151,7 +162,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
         for (token in goneTokens) {
             val watcher = watchers.remove(token) ?: continue
             watcher.stop()
-            SpikeLog.add(
+            CaptureLog.add(
                 EventSource.SESSION,
                 "stopped watching media session",
                 packageName = watcher.packageName,
@@ -161,7 +172,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
 
     private fun dropWatcher(watcher: SessionWatcher) {
         val token = watchers.entries.firstOrNull { it.value === watcher }?.key ?: return
-        watchers.remove(token)?.stop()
+        watchers.remove(token)
     }
 
     companion object {
@@ -172,7 +183,7 @@ class SpikeNotificationListenerService : NotificationListenerService() {
         val ALLOWED_PACKAGES = setOf("com.spotify.music")
 
         fun componentName(context: Context): ComponentName =
-            ComponentName(context, SpikeNotificationListenerService::class.java)
+            ComponentName(context, CaptureNotificationListenerService::class.java)
 
         /**
          * True when the user has granted this app notification-listener access.
