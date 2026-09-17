@@ -33,7 +33,8 @@ Later phases add a self-hosted sync backend and Windows/Linux desktop agents.
 
 ## Stack and conventions
 - Kotlin, Jetpack Compose, Room, WorkManager, Kotlin coroutines/Flow.
-- minSdk 31 (Sony NW-A307 runs Android 12). Also tested on a Pixel 10 Pro.
+- minSdk 31 (kept as a floor; the Sony NW-A307 runs Android 14, build 3.06.00).
+  Also tested on a Pixel 10 Pro.
 - Keep the app lightweight: the NW-A307 has limited RAM and CPU.
 - Design the data model to support multiple services from day one
   (canonical track + per-service IDs, ISRC where available).

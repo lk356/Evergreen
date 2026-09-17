@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Evergreen</string>
+    <string name="spike_listener_label">Evergreen capture spike</string>
 </resources>
