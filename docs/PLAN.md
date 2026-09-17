@@ -86,10 +86,10 @@ Follow-ups after review (branch `phase1-followups`, no schema change):
 3. Outdated androidx dependencies refreshed.
 4. This file updated.
 
-**Next:** Phase 2 (Spotify connection). See "Phase 2 questions" under Open
-questions — in particular, verify against the live Spotify Web API reference
-that track responses still return ISRC before designing the merge rule around
-it.
+**Next:** Phase 2 (Spotify connection), see `docs/PHASE2_PROMPT.md`. The
+follow-ups are merged into `main`. Before designing the merge rule, verify
+against the live Spotify Web API reference that track responses still return
+ISRC — see "Phase 2 questions" under Open questions.
 
 ## Phase 0 results (2026-09-17)
 
