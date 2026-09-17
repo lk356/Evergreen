@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -18,12 +20,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Tab
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -118,6 +122,7 @@ private fun SegmentsTab(accessGranted: Boolean) {
     val mismatchCount by dao.mismatchedTrackIdCount().collectAsState(initial = 0)
 
     var thresholdIndex by rememberSaveable { mutableIntStateOf(0) }
+    var confirmingWipe by rememberSaveable { mutableStateOf(false) }
     val option = THRESHOLD_OPTIONS[thresholdIndex]
 
     // Merging is derived on every read, never stored.
@@ -165,11 +170,45 @@ private fun SegmentsTab(accessGranted: Boolean) {
                 modifier = Modifier.weight(1f),
             )
             OutlinedButton(
-                onClick = { scope.launch { dao.deleteEverything() } },
+                onClick = { confirmingWipe = true },
                 enabled = segmentCount > 0,
             ) {
                 Text("Wipe")
             }
+        }
+
+        // This is real listening history, it is not backed up anywhere by
+        // design, and there is no undo — so deleting it takes a deliberate
+        // second action rather than one stray tap.
+        if (confirmingWipe) {
+            AlertDialog(
+                onDismissRequest = { confirmingWipe = false },
+                title = { Text("Delete all listening history?") },
+                text = {
+                    Text(
+                        "This permanently deletes $segmentCount segment(s) across " +
+                            "$trackCount track(s).\n\nIt cannot be undone. Cloud backup " +
+                            "and device transfer are deliberately switched off for this " +
+                            "app, so there is no copy to restore from.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmingWipe = false
+                            scope.launch { dao.deleteEverything() }
+                        },
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Text("Delete everything")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmingWipe = false }) { Text("Cancel") }
+                },
+            )
         }
 
         // Diagnostic, normally invisible. Counts segments whose canonical track
