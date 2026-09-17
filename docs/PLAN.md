@@ -54,20 +54,20 @@ streaming services:
 - [x] Spotify "Device Broadcast Status" enabled on both devices
 - [x] Spotify developer app created, own account allowlisted
 - [ ] Spotify extended streaming history requested (arrives later)
-- [ ] GitHub CLI logged in, private repo created, first commit pushed
+- [x] GitHub CLI logged in, private repo created, first commit pushed
 
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
 - Current phase: **Phase 0 complete.** Verified on both devices 2026-09-17.
-- Last update: 2026-09-17, branch `phase0-capture-spike`
+- Last update: 2026-09-17. Branch `phase0-capture-spike` merged to `main`.
 
 Phase 0 proved the capture approach works. Every test passed on the Pixel 10
 Pro and on the NW-A307, with no behavioural differences between them.
 
-**Next:** Phase 1 (Capture MVP). Carry the spike's findings across — in
-particular replay detection and event de-duplication, both of which are
-correctness issues, not polish.
+**Next:** Phase 1 (Capture MVP), see `docs/PHASE1_PROMPT.md`. Carry the
+spike's findings across — in particular replay detection and event
+de-duplication, both of which are correctness issues, not polish.
 
 ## Phase 0 results (2026-09-17)
 
