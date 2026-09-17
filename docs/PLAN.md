@@ -66,8 +66,10 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 1 complete.** Built and verified on the NW-A307
-  2026-09-17, on branch `phase1-capture-mvp`.
+- Current phase: **Phase 1 complete and device-verified.** Built and smoke-tested
+  on the NW-A307, then verified by the user on the Pixel 10 Pro 2026-09-17. All
+  four device checks passed — replay, repeat-one loop, seek-to-end and
+  straight-through. Branch `phase1-capture-mvp`.
 - Last update: 2026-09-17.
 
 Phase 1 replaced the spike with a real capture pipeline. Listening is now stored
@@ -210,10 +212,16 @@ Observed facts, relied on by Phase 1:
 9. **BUFFERING reports `speed=0.0`**, so it is already excluded from listened
    time by the existing position logic.
 
-Still unknown after Phase 1 — see "Phase 1 results" for what was and was not
-observed:
-- what a natural end-of-track auto-advance looks like with repeat off,
-- whether queue auto-advance is distinguishable from a manual "next",
+Answered in Phase 1 — see "Device verification" under "Phase 1 results":
+- ~~what a natural end-of-track auto-advance looks like with repeat off~~ —
+  observed: a plain `TRACK_CHANGE` ending within a percent or two of the
+  duration, with no distinct callback signature.
+- ~~whether queue auto-advance is distinguishable from a manual "next"~~ — **no**,
+  not from any media-session signal. Only position reached separates them, and
+  that alone is unsafe because a forward seek reaches the end too. Position
+  reached plus listened ms together do separate them.
+
+Still unknown:
 - the exact shape of a session ending (Spotify force-stopped).
 
 ## Phase 1 results (2026-09-17)
@@ -321,14 +329,48 @@ position was near the end.
   the `kotlin.sourceSets` DSL that KSP uses to register generated code, so
   `android.disallowKotlinSourceSets=false` is set in `gradle.properties`.
 
-### Still not observed
+### Device verification (2026-09-17, Pixel 10 Pro, user-run)
 
-The three questions left open at the end of Phase 0 are still open. A manual
-"next" now has a recorded shape — metadata change, then `BUFFERING` at position
-~0 with `speed=0.0`, then `PLAYING` — but a natural end-of-track auto-advance was
-never captured during this work, so the comparison that would distinguish the two
-cannot be made yet. A session ending by force-stop was likewise not exercised.
-Recorded as not observed rather than guessed at.
+Thirteen segments recorded during a live test session, read back off the device.
+Each of the four checks is visible in the stored rows:
+
+| # | Track | Stored | Reading |
+|---|---|---|---|
+| 10 | Afterthought | heard 4:00 of 4:02 (99%), `POSITION_JUMP_BACK` 4:00.54 → 0:00 | **repeat-one loop captured.** Phase 0 logged nothing at all here |
+| 12 | Electro Swingity | reached 99%, **heard 8%**, 1 seek skipping 3:00 | **seek-to-end is not a completion.** Phase 0 called this COMPLETED |
+| 8 → 9 | Vois Sur Ton Chemin | 31s, jump back 31.25s, then 11s | **replay makes two segments**, neither labelled a skip |
+| 13 | bitkrushed | heard 1:32 of 1:34 (97%), one row | straight-through play is one segment, not several |
+| 3, 4 | Crazy La Paint | two ~1.5s fragments with ~1.1s and ~1.6s jumps back | short fragments stored, not labelled |
+
+### What this settled, and what it did not
+
+**Natural end-of-track auto-advance was observed** (#6 at 98%, #13 at 98%). It
+looks like an ordinary `TRACK_CHANGE` whose `endPositionMs` is within a percent
+or two of the duration. There is no distinct callback signature.
+
+**So queue auto-advance is _not_ distinguishable from a manual "next" by any
+signal the media session provides** — only by position reached. And that
+inference is not safe on its own: #12 also reached 99% and also auto-advanced,
+but had been seeked there and was barely heard. Position reached says *where
+playback got to*; only `listenedMs` says *whether it was heard*. Phase 3 needs
+both, which is why they are separate columns.
+
+**A session ending by force-stop is still not observed.**
+
+### Worth watching
+
+- Segments #3 and #4 are backwards jumps of 1.10s and 1.63s, a second or two
+  into a track — just above the 1000 ms cut. These may be deliberate double
+  presses of "previous", or they may be the player settling at track start. If
+  jumps of 1–2 s near position zero turn out to be player noise, the cut is
+  slightly too low. This costs nothing to get wrong: the jump size is stored on
+  every row, so such segments can be merged away later with no recapture.
+- Segment #8 closed with `lastSampleAgeMs` of 31.2s, just past the 30s staleness
+  guard, and essentially its whole `listenedMs` came from that one
+  extrapolation. The jump back then revealed the true position as 31.32s against
+  an extrapolated 31.31s — the extrapolation was right to within 10 ms. Good
+  evidence that the position logic is sound, and a reminder that long
+  callback-free stretches are normal rather than exceptional.
 
 ## Open questions — still open
 
