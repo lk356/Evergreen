@@ -115,6 +115,7 @@ private fun SegmentsTab(accessGranted: Boolean) {
     val rows by dao.recentSegments(limit = 200).collectAsState(initial = emptyList())
     val trackCount by dao.trackCount().collectAsState(initial = 0)
     val segmentCount by dao.segmentCount().collectAsState(initial = 0)
+    val mismatchCount by dao.mismatchedTrackIdCount().collectAsState(initial = 0)
 
     var thresholdIndex by rememberSaveable { mutableIntStateOf(0) }
     val option = THRESHOLD_OPTIONS[thresholdIndex]
@@ -169,6 +170,21 @@ private fun SegmentsTab(accessGranted: Boolean) {
             ) {
                 Text("Wipe")
             }
+        }
+
+        // Diagnostic, normally invisible. Counts segments whose canonical track
+        // disagrees with the canonical track of the service row they point at —
+        // possible only for rows written before the lookup order was fixed.
+        // Reported, never repaired: choosing which of the two tracks is the real
+        // one is a merge question for Phase 2.
+        if (mismatchCount > 0) {
+            Text(
+                text = "⚠ $mismatchCount segment(s) disagree with their service track. " +
+                    "Recorded before the identity fix; left alone for Phase 2 to merge.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
 
         HorizontalDivider()

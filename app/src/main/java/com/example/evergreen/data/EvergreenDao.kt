@@ -44,6 +44,14 @@ abstract class EvergreenDao {
     )
     protected abstract suspend fun findServiceTrackId(service: String, serviceTrackId: String): Long?
 
+    @Query(
+        "SELECT * FROM service_tracks WHERE service = :service AND serviceTrackId = :serviceTrackId LIMIT 1",
+    )
+    protected abstract suspend fun findServiceTrack(
+        service: String,
+        serviceTrackId: String,
+    ): ServiceTrackEntity?
+
     @Query("UPDATE service_tracks SET lastSeenAt = :at WHERE id = :id")
     protected abstract suspend fun touchServiceTrack(id: Long, at: Long)
 
@@ -54,9 +62,18 @@ abstract class EvergreenDao {
      * Resolves the canonical track, resolves the service identifier if there is
      * one, and writes the segment — all in one transaction.
      *
-     * "Insert and ignore a conflict, then look the row up" rather than "look up,
-     * then insert if missing": the unique indexes make the first form safe even
-     * if two writes race, because the database itself decides the winner.
+     * **The service identifier wins when we already know it.** A Spotify URI is
+     * exact; `trackKey` is a guess assembled from title, artist and album, and
+     * those change under us — a "Remastered" suffix appears, an album gets
+     * renamed, a device reports metadata in a different language. Resolving by
+     * `trackKey` first meant that a known URI arriving with changed metadata
+     * created a *second* canonical track, while the existing `service_tracks`
+     * row went on pointing at the first. The segment's `trackId` and its
+     * `serviceTrackRowId` then disagreed about which song had been played.
+     *
+     * So: look the service ID up first and adopt its canonical track. Fall back
+     * to `trackKey` only when there is no service ID at all, or when the service
+     * ID has never been seen before.
      */
     @Transaction
     open suspend fun recordSegment(
@@ -71,7 +88,65 @@ abstract class EvergreenDao {
     ): Long {
         val now = segment.endedAtMs
 
-        val insertedTrackId = insertTrackIfNew(
+        val known = serviceTrackId?.let { findServiceTrack(service, it) }
+
+        val trackId: Long
+        val serviceTrackRowId: Long?
+
+        if (known != null) {
+            // Known URI: this is the same song, whatever the metadata now says.
+            // The canonical track's title is deliberately left as first seen —
+            // rewriting it on every metadata wobble would churn the row and
+            // change what Phase 3 scored, for no gain.
+            trackId = known.trackId
+            serviceTrackRowId = known.id
+            touchTrack(trackId, now, durationMs)
+            touchServiceTrack(known.id, now)
+        } else {
+            trackId = resolveTrackByKey(trackKey, title, artist, album, durationMs, now)
+            serviceTrackRowId = serviceTrackId?.let { id ->
+                val inserted = insertServiceTrackIfNew(
+                    ServiceTrackEntity(
+                        trackId = trackId,
+                        service = service,
+                        serviceTrackId = id,
+                        isrc = null,
+                        durationMs = durationMs,
+                        firstSeenAt = now,
+                        lastSeenAt = now,
+                    ),
+                )
+                // IGNORE returns -1 if another writer inserted it first; the
+                // unique index remains the backstop.
+                if (inserted != -1L) {
+                    inserted
+                } else {
+                    findServiceTrackId(service, id)?.also { touchServiceTrack(it, now) }
+                }
+            }
+        }
+
+        return insertSegment(
+            segment.copy(trackId = trackId, serviceTrackRowId = serviceTrackRowId),
+        )
+    }
+
+    /**
+     * Finds or creates the canonical track for [trackKey].
+     *
+     * "Insert and ignore a conflict, then look the row up" rather than "look up,
+     * then insert if missing": the unique index makes the first form safe even
+     * if two writes race, because the database itself decides the winner.
+     */
+    private suspend fun resolveTrackByKey(
+        trackKey: String,
+        title: String?,
+        artist: String?,
+        album: String?,
+        durationMs: Long,
+        now: Long,
+    ): Long {
+        val inserted = insertTrackIfNew(
             TrackEntity(
                 trackKey = trackKey,
                 title = title,
@@ -82,39 +157,13 @@ abstract class EvergreenDao {
                 lastSeenAt = now,
             ),
         )
-        // IGNORE returns -1 when the row already existed.
-        val trackId = if (insertedTrackId != -1L) {
-            insertedTrackId
-        } else {
-            val existing = requireNotNull(findTrackId(trackKey)) {
-                "track $trackKey neither inserted nor found"
-            }
-            touchTrack(existing, now, durationMs)
-            existing
-        }
+        if (inserted != -1L) return inserted
 
-        val serviceTrackRowId = serviceTrackId?.let { id ->
-            val inserted = insertServiceTrackIfNew(
-                ServiceTrackEntity(
-                    trackId = trackId,
-                    service = service,
-                    serviceTrackId = id,
-                    isrc = null,
-                    durationMs = durationMs,
-                    firstSeenAt = now,
-                    lastSeenAt = now,
-                ),
-            )
-            if (inserted != -1L) {
-                inserted
-            } else {
-                findServiceTrackId(service, id)?.also { touchServiceTrack(it, now) }
-            }
+        val existing = requireNotNull(findTrackId(trackKey)) {
+            "track $trackKey neither inserted nor found"
         }
-
-        return insertSegment(
-            segment.copy(trackId = trackId, serviceTrackRowId = serviceTrackRowId),
-        )
+        touchTrack(existing, now, durationMs)
+        return existing
     }
 
     // --- Reads --------------------------------------------------------------
@@ -133,8 +182,37 @@ abstract class EvergreenDao {
     @Query("SELECT COUNT(*) FROM listening_segments")
     abstract fun segmentCount(): Flow<Int>
 
+    /**
+     * Segments whose canonical track disagrees with the canonical track of the
+     * service row they point at.
+     *
+     * Should always be zero. It can be non-zero for rows written before the
+     * lookup order in [recordSegment] was fixed, where a known URI arriving with
+     * changed metadata created a second canonical track. Diagnostic only —
+     * nothing repairs these automatically, because deciding which of the two
+     * tracks is the real one is a merge question that belongs to Phase 2.
+     */
+    @Query(
+        """
+        SELECT COUNT(*)
+          FROM listening_segments s
+          JOIN service_tracks st ON st.id = s.serviceTrackRowId
+         WHERE s.trackId != st.trackId
+        """,
+    )
+    abstract fun mismatchedTrackIdCount(): Flow<Int>
+
     @Query("SELECT COUNT(*) FROM tracks")
     abstract fun trackCount(): Flow<Int>
+
+    @Query("SELECT * FROM tracks ORDER BY id")
+    abstract suspend fun allTracks(): List<TrackEntity>
+
+    @Query("SELECT * FROM service_tracks ORDER BY id")
+    abstract suspend fun allServiceTracks(): List<ServiceTrackEntity>
+
+    @Query("SELECT * FROM listening_segments ORDER BY id")
+    abstract suspend fun allSegments(): List<ListeningSegmentEntity>
 
     @Query("DELETE FROM listening_segments")
     abstract suspend fun deleteAllSegments()
