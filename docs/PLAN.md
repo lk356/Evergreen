@@ -334,6 +334,27 @@ Recorded as not observed rather than guessed at.
 
 - Initial scoring parameters (decay half-life, skip penalty, grace period).
   Belongs to Phase 3.
+- **Spotify DJ — completely unexamined.** The DJ plays a curated stream with
+  spoken commentary between songs, and none of it has been tested against
+  capture. Things to find out before trusting DJ-era data:
+  - Does the spoken commentary surface as a media session track? If it does,
+    capture will currently record it as a listen of something that is not a
+    song.
+  - What identifier does commentary carry — a `spotify:track:` URI, an episode
+    URI, or none at all? Whether it can be filtered out depends entirely on
+    this, so it is the first thing to check.
+  - DJ auto-advances and invites heavy skipping, so skip rates there may mean
+    something different from skips in a playlist the user built.
+  - Scoring: a song the DJ chose was not chosen by the user. Should it count
+    the same as a deliberate play, or less?
+
+  Capture stores `appPackage` and the per-service track id on every segment and
+  draws no conclusions, so if commentary turns out to be distinguishable by its
+  identifier, DJ listens can be filtered or reweighted **retroactively** from
+  data already recorded. If it is not distinguishable, that is the thing worth
+  knowing early. Worth a short device session in Phase 2, before Phase 3 starts
+  scoring anything.
+
 - Phase 3 scoring questions raised by the device testing above:
   - What backwards jump counts as a replay at all? Phase 1 stores every jump
     with its size and does not decide this; `SegmentGrouping.merge()` applies
