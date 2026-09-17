@@ -67,6 +67,12 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         accessGranted.value = CaptureNotificationListenerService.isAccessGranted(this)
 
+        // The connection lives in the Keystore, not the database, so there is no
+        // Flow to observe and a background sync that expires it cannot notify
+        // the UI. Re-reading on resume is what stops the card showing a stale
+        // "Connected" after the refresh token has died.
+        connectionEpoch.intValue++
+
         // Keeps the schedule alive across reinstalls and reboots, and re-arms it
         // after a reconnect. KEEP means an existing schedule is not restarted,
         // so opening the app does not reset the interval.

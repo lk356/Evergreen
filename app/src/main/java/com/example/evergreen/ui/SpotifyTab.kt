@@ -139,6 +139,38 @@ fun SpotifyTab(
             }
         }
 
+        // Debug affordance, and the only practical way to exercise the
+        // reconnect path.
+        //
+        // Revoking access at spotify.com/account/apps kills the *refresh* token
+        // but leaves the existing access token working until it expires about an
+        // hour later, so a sync straight afterwards simply succeeds. This
+        // discards the access token locally, forcing the very next request to
+        // refresh -- which is when a revoked or six-month-expired grant actually
+        // comes back as invalid_grant and flips the app to "reconnect".
+        //
+        // It fakes nothing: the real refresh happens, against the real endpoint.
+        if (state is SpotifyConnectionState.Connected ||
+            state is SpotifyConnectionState.ExpiringSoon
+        ) {
+            OutlinedButton(
+                onClick = {
+                    SpotifyAuth(context).invalidateAccessToken()
+                    SpotifySyncWorker.syncNow(context)
+                },
+                modifier = Modifier.padding(top = 4.dp),
+            ) {
+                Text("Force token refresh (test reconnect)")
+            }
+            Text(
+                "Discards the access token so the next sync must refresh. " +
+                    "Revoke access at spotify.com/account/apps first to see the " +
+                    "reconnect state; otherwise the refresh just succeeds.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         MergeDryRun(mergeCandidates)
     }
 }
