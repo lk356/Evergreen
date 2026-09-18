@@ -542,7 +542,7 @@ internal fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun Stat(label: String, value: String) {
+internal fun Stat(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,

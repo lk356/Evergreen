@@ -131,6 +131,53 @@ abstract class ScoringDao {
         return rowsUnderOtherParameters(parameters.hash()) > 0
     }
 
+    /**
+     * The ranked list with enough of each track to read it, for the Scores tab.
+     *
+     * Joined here rather than looked up per row, because the list shows four
+     * hundred tracks and a query per row would make scrolling stutter on the
+     * NW-A307.
+     */
+    @Query(
+        """
+        SELECT s.trackId AS trackId,
+               s.score AS score,
+               -- `rank` is a reserved word in SQLite (the window function), so
+               -- the alias has to be quoted or the parser stops here.
+               s.`rank` AS `rank`,
+               t.title AS title,
+               t.artist AS artist,
+               t.durationMs AS durationMs,
+               EXISTS(
+                   SELECT 1 FROM evergreen_membership m
+                    WHERE m.trackId = s.trackId AND m.leftAt IS NULL
+               ) AS inPlaylist
+          FROM scores s
+          JOIN tracks t ON t.id = s.trackId
+         ORDER BY s.`rank`
+        """,
+    )
+    abstract fun rankedTracks(): Flow<List<RankedTrackRow>>
+
+    /** The liked service URI for a track, preferring one that is liked now. */
+    @Query(
+        """
+        SELECT st.serviceTrackId
+          FROM service_tracks st
+          LEFT JOIN likes l ON l.serviceTrackRowId = st.id
+         WHERE st.trackId = :trackId
+           AND st.service = :service
+           AND st.serviceTrackId LIKE :trackUriPrefix || '%'
+         ORDER BY (l.unlikedAt IS NULL AND l.id IS NOT NULL) DESC, st.id
+         LIMIT 1
+        """,
+    )
+    abstract suspend fun preferredServiceUri(
+        trackId: Long,
+        service: String,
+        trackUriPrefix: String,
+    ): String?
+
     // --- Evergreen membership -------------------------------------------------
 
     @Query("SELECT * FROM evergreen_membership WHERE leftAt IS NULL")
@@ -268,6 +315,17 @@ abstract class ScoringDao {
 
 /** A canonical track's best known length. */
 data class TrackDuration(val id: Long, val durationMs: Long)
+
+/** One row of the Scores tab's ranked list. */
+data class RankedTrackRow(
+    val trackId: Long,
+    val score: Double,
+    val rank: Int,
+    val title: String?,
+    val artist: String?,
+    val durationMs: Long,
+    val inPlaylist: Boolean,
+)
 
 /** One like or unlike, ready for the scorer. */
 data class LikeEventForScoring(

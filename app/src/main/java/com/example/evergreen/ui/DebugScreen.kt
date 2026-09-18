@@ -107,15 +107,21 @@ fun DebugScreen(
                 onClick = { selectedTab = 2 },
                 text = { Text("Spotify") },
             )
+            Tab(
+                selected = selectedTab == 3,
+                onClick = { selectedTab = 3 },
+                text = { Text("Scores") },
+            )
         }
 
         when (selectedTab) {
             0 -> SegmentsTab(accessGranted)
             1 -> LiveLogTab(accessGranted)
-            else -> SpotifyTab(
+            2 -> SpotifyTab(
                 onConnect = onConnectSpotify,
                 connectionEpoch = connectionEpoch,
             )
+            else -> ScoresTab()
         }
     }
 }
