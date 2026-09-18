@@ -509,6 +509,42 @@ leave ranks (100 and 130) are settings too. Section 3.6 already passes them
 to `Membership.decide` through `params`, and a snapshot has to record its
 cutoff or its ranking cannot be read back later. Defaults are unchanged.
 
+### Found during device verification (2026-09-18)
+
+**The Evergreen preview crashed both devices.**
+`NetworkOnMainThreadException`. The debug screen launches the dry run from
+`rememberCoroutineScope()`, which is Compose's *main-thread* dispatcher, and
+`ApiSource` is a plain blocking interface. Every test passed because they all
+drive it through `runBlocking` on the instrumentation thread, and the
+scheduled worker was fine because `CoroutineWorker` already runs off the main
+thread — so the same code was correct by one route and fatal by the other.
+
+The lesson worth keeping: **a `suspend` function is not automatically off the
+main thread.** It runs wherever its caller is unless it says otherwise. The
+fix puts the dispatcher inside the functions that block rather than asking
+callers to remember — `EvergreenSync.dryRun`/`sync` and `Snapshots.export` on
+`Dispatchers.IO`, and `ScoreService.ranking`/`breakdown` on
+`Dispatchers.Default`, that last one found before it bit: scoring 380 tracks
+is seconds of CPU on the Walkman and would have frozen the UI rather than
+crashing it.
+
+`EvergreenSyncTest` now drives the sync on `Dispatchers.Main`, as the UI
+does, and asserts the API is never reached from there.
+
+**The Scores tab showed one row on the NW-A307.** Its screen is 339 × 602 dp
+and the fixed header — two buttons, nine parameter rows, three counts — came
+to about 330 dp, leaving the list whatever was left. None of the header could
+be scrolled away because it sat outside the scrolling area. The tab is now a
+single `LazyColumn` with the header as an item, and the parameter summary
+collapses to one line. Worth remembering for every later screen: **the
+Walkman has about 60% of the Pixel's usable height**, so a layout that looks
+generous on the Pixel can leave nothing at all there.
+
+**A worktree build has no Spotify client ID.** `local.properties` is
+gitignored, so a build made from a git worktree reports "Not configured" and
+cannot refresh a token, which looks exactly like an expired connection.
+Copy the file into the worktree, or build from the main checkout.
+
 ### The mistake worth recording
 
 **Instrumented tests were run on the Walkman by accident**, destroying that
@@ -616,6 +652,9 @@ is always safe.
     - [ ] It reports **Files already imported: 1** and writes nothing
 
 **D. Read the scores before anything is written to Spotify**
+_Confirmed working on the NW-A307 on 2026-09-18: 380 scored, 348 above the
+floor. The list and the preview both needed fixes first; reinstall before
+redoing these._
 
 14. **Scores** tab → **Recompute**.
     - [ ] It says how many tracks were scored, and how long it took. If it
