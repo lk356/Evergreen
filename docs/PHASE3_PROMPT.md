@@ -36,10 +36,13 @@ done on the phone or in a web dashboard, give me click-by-click instructions.
   from Spotify's `added_at`; record floor 0.1; notifications and their
   permission are approved; 0.85 is the upper breakpoint; **schema v4 and v5
   are approved as described in sections 4.1 and 5.1 of the plan.** Only the
-  Pixel writes Evergreen; a database backup button comes early; instrumented
-  tests never run on the Pixel once history is imported; the import runs on
-  the Pixel as soon as step 5 lands; the app never touches a playlist it did
-  not create.
+  **Walkman (NW-A307)** writes Evergreen, because that is the device I
+  listen on; the Pixel is the development and test device. A database backup
+  button comes early; instrumented tests run on the Pixel or an emulator,
+  never on the Walkman; the import runs on the Walkman as soon as step 5
+  lands; the app never touches a playlist it did not create; unavailable
+  tracks need no special handling beyond being skipped and counted if the
+  add endpoint refuses them.
 - **The playlist endpoints were verified against the live reference on
   2026-09-17** and are listed in section 2 of the plan. They are the `/items`
   endpoints and `POST /me/playlists`; the `/tracks` endpoints and
@@ -78,10 +81,14 @@ believe otherwise, ask.
 Follow section 11 of the plan. Three orderings are deliberate; keep them:
 
 1. **The importer (steps 3 to 5) comes before the scorer.** As soon as step 5
-   lands, walk me through importing the real export on the Pixel, so that
-   every later step can be checked against six years of real listening.
-   Step 5b, the backup button, follows immediately, and you tell me to take
-   a backup before anything else touches the database.
+   lands, walk me through importing the real export on the Walkman, so that
+   every later step can be checked against six years of real listening. The
+   Walkman must first have the Phase 2 setup: Spotify connected, likes
+   synced, the same-song merge run; walk me through those too, since Phase
+   2 was only verified on the Pixel. Step 5b, the backup button, follows
+   immediately, and you tell me to take a backup before anything else
+   touches the database. Import a copy on the Pixel as well so the test
+   device has realistic data.
 2. **The explain-the-score tab (step 11) comes before any Spotify write
    (step 12 onwards).** I want to look at real scores, and adjust the
    parameters if they look wrong, before the app can change anything on
@@ -123,8 +130,12 @@ Follow section 11 of the plan. Three orderings are deliberate; keep them:
 - **Network access only to `accounts.spotify.com` and `api.spotify.com`**,
   through the existing host allowlist. No new hosts.
 - **Running instrumented tests uninstalls the app and destroys its
-  database.** Once the history is imported, never run them on the Pixel.
-  Use the Walkman or an emulator, and say which before you run them.
+  database.** Never run them on the Walkman; it holds the real history. Use
+  the Pixel or an emulator, and say which before you run them.
+- **Every step is checked on the Walkman before it is called done.** Same
+  Android version as the Pixel, but less memory and a slower CPU. Developing
+  on the Pixel alone would leave the device that actually runs Evergreen
+  untested.
 - Tokens stay outside the database; the backup button copies the database
   only, so a backup can never contain a credential.
 
@@ -133,8 +144,8 @@ Follow section 11 of the plan. Three orderings are deliberate; keep them:
 - **Unavailable tracks.** Spotify's desktop client shows 380 liked songs and
   the phone shows 374; the difference is tracks unavailable in this region.
   Adding one to a playlist may be refused. A refused URI must not abort the
-  run: record it, skip it, carry on. Find out what the add endpoint actually
-  does with such a URI and record the answer in `PLAN.md`.
+  run: skip it, count it, carry on. Nothing more is needed; snapshots keep
+  the track either way.
 - **The consent screen will change.** Requesting the two playlist scopes
   forces a reconnect and a consent screen that lists more than the scopes
   ask for; that was seen in Phase 2 and is Spotify's copy, not a scope leak.

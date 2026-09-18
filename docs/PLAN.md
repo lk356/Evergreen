@@ -98,10 +98,11 @@ same-song merge has been run: 2 audit rows in `track_merges`.
   `playlist-read-private`) and one new permission (`POST_NOTIFICATIONS`).
 
 **Decisions answered 2026-09-17** (section 10 of the plan): all eight
-approved as recommended, plus five raised afterwards (one writer device, an
-early database backup button, no instrumented tests on the Pixel after the
-import, import right after step 5, never touch a playlist the app did not
-create). Schema v4 and v5, the two playlist scopes and the notification
+approved as recommended, plus six raised afterwards: **the Walkman is the
+writer device and the Pixel is the test bed**, an early database backup
+button, instrumented tests never on the Walkman, import right after step 5,
+never touch a playlist the app did not create, and unavailable tracks need no
+special handling. Schema v4 and v5, the two playlist scopes and the notification
 permission are pre-approved as described in the plan.
 
 **Next:** merge `phase3-planning` into `main`, then paste

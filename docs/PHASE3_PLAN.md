@@ -475,12 +475,22 @@ question, not a granted one.
 
 ### Raised after the answers, adopted unless struck
 
-9. **One device writes Evergreen.** Each device has its own database until
-   Phase 6, so two devices running the sync would fight over one playlist
-   with two different rankings. A per-device setting "This device writes
-   Evergreen" (in `sync_state`, default off) is turned on once, on the Pixel.
-   The Walkman captures only; its history reaches the Pixel in Phase 6. The
-   import also runs only on the writer device.
+9. **One device writes Evergreen, and it is the Walkman.** Each device has
+   its own database until Phase 6, so two devices running the sync would
+   fight over one playlist with two different rankings. A per-device setting
+   "This device writes Evergreen" (in `sync_state`, default off) is turned on
+   once, on the NW-A307, because that is the device the user mostly listens
+   on. The Pixel is the development and test device: plugged into adb, runs
+   the instrumented tests, shows the logs. The import also runs only on the
+   writer device. Cost on the Walkman: about five requests a day and one
+   scoring pass over the load window, which is why the load window in 3.5
+   and the streaming import in 4.2 matter. The Walkman needs the Phase 2
+   setup first: connect Spotify, sync likes, run the same-song merge.
+
+   **Compatibility rule that follows:** every step is checked on the Walkman
+   before it is called done, not only on the Pixel. Same Android version, but
+   less memory and a slower CPU; anything that feels slow on the Pixel will be
+   unusable there.
 10. **A database backup button now, not in Phase 4.** After the import, the
     database is the most valuable thing in the project, and running
     instrumented tests destroys it. "Back up database" on the debug screen
@@ -488,12 +498,20 @@ question, not a granted one.
     location the user picks in the system "create document" dialog. The
     database holds no tokens, so nothing secret leaves. One step, no schema
     change, no dependency.
-11. **Instrumented tests never run on the Pixel once the history is
-    imported.** They uninstall the app. Use the Walkman or an emulator.
+11. **Instrumented tests never run on the Walkman.** They uninstall the app
+    and destroy its database, and the Walkman holds the real history. The
+    Pixel or an emulator runs them. The Pixel's own database is disposable
+    test data from here on; back it up first if that ever changes.
 12. **Import timing.** Build the importer early (steps 3 to 5) and run the
-    real import on the Pixel as soon as step 5 lands, before scoring exists,
-    so the explain view in step 11 shows six years of real listening rather
-    than a fortnight.
+    real import on the Walkman as soon as step 5 lands, before scoring
+    exists, so the explain view in step 11 shows six years of real listening
+    rather than a fortnight. A second import on the Pixel gives the test
+    device realistic data too; it is a copy, not the record.
+14. **Unavailable tracks need no special handling.** A snapshot already
+    stores each entry's track and service URI at the time, so a track that
+    later goes unavailable stays visible in the month it was alive. If the
+    add endpoint refuses such a URI, the sync skips it, counts it and carries
+    on; nothing more.
 13. **The app never touches a playlist it did not create.** It writes only to
     the playlist whose id it stored, looks a playlist up by name only when no
     id is stored and only among playlists the user owns, and has no code path
@@ -514,7 +532,7 @@ wait for a yes before the code is written.
 | 2 | `ScoringCurve` and `Decay` pure functions. | 1, 2 |
 | 3 | **[approval]** Schema v4: `source`, `sourceEndReason`, nullable position fields, `EndReason.IMPORTED`; `MergedSegment` and the debug row null-tolerant. | 12 |
 | 4 | History parser (streaming, field allowlist). | 8 |
-| 5 | Importer: file picker, batching, idempotence, overlap rule, progress on the Spotify tab; backfill narrowing. Then the real import on the Pixel. | 13, 14 |
+| 5 | Importer: file picker, batching, idempotence, overlap rule, progress on the Spotify tab; backfill narrowing. Then the real import on the Walkman. | 13, 14 |
 | 5b | "Back up database" button and the "This device writes Evergreen" setting (decisions 9 and 10). | manual, on device |
 | 6 | `DjSessions`. | 5 |
 | 7 | `TrackScorer` with `ScoreBreakdown`. | 3 |
@@ -527,7 +545,7 @@ wait for a yes before the code is written.
 | 14 | `EvergreenSyncWorker` scheduling; unlike removal. | 15 |
 | 15 | Snapshots: worker, storage, list on the debug tab, export on demand. | 16 |
 | 16 | **[approval]** Notifications and `POST_NOTIFICATIONS`. | manual |
-| 17 | Device verification on the Pixel: import the real export, review scores, run the dry run, confirm the first write, check the playlist in Spotify. Update `PLAN.md`. Merge. | — |
+| 17 | Device verification on the Walkman: Spotify connected, likes synced, merge run, export imported, scores reviewed, dry run, first write confirmed, playlist checked in Spotify. Update `PLAN.md`. Merge. | — |
 
 Step 11 before step 12 is deliberate: the user sees real scores before the
 app can write anything to Spotify.
