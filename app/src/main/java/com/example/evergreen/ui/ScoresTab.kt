@@ -6,7 +6,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -23,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,6 +75,7 @@ fun ScoresTab(modifier: Modifier = Modifier) {
     var status by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<RankedTrackRow?>(null) }
     var editingParameters by remember { mutableStateOf(false) }
+    var parametersExpanded by rememberSaveable { mutableStateOf(false) }
 
     // Fill the cache on first open so the tab is never inexplicably empty.
     LaunchedEffect(Unit) {
@@ -83,71 +87,88 @@ fun ScoresTab(modifier: Modifier = Modifier) {
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                enabled = !busy,
-                onClick = {
-                    scope.launch {
-                        busy = true
-                        status = null
-                        val started = System.currentTimeMillis()
-                        val ranking = service.ranking(force = true)
-                        val took = System.currentTimeMillis() - started
-                        status = "Scored ${ranking.tracks.size} tracks in ${took}ms."
-                        busy = false
-                    }
-                },
+    val alive = ranked.count { it.score > parameters.recordFloor }
+
+    // One LazyColumn for the whole tab, header included, rather than a fixed
+    // header above a scrolling list.
+    //
+    // The NW-A307's screen is 339 x 602 dp, and the header -- two buttons, nine
+    // parameter rows and three counts -- came to about 330 dp of it. The list
+    // got whatever was left, which was roughly one row, and none of the header
+    // could be scrolled away because it sat outside the scrolling area. Making
+    // every part of the tab an item means the list uses the whole screen as
+    // soon as the header scrolls off.
+    LazyColumn(modifier = modifier.fillMaxSize()) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(if (busy) "Scoring…" else "Recompute")
-            }
-            OutlinedButton(onClick = { editingParameters = true }, enabled = !busy) {
-                Text("Parameters")
-            }
-        }
-        status?.let { message ->
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-
-        ParameterSummary(parameters)
-
-        val alive = ranked.count { it.score > parameters.recordFloor }
-        SectionTitle("Ranking")
-        Stat("Liked tracks scored", "${ranked.size}")
-        Stat("Still alive (above ${format(parameters.recordFloor)})", "$alive")
-        Stat("In the Evergreen playlist", "${ranked.count { it.inPlaylist }}")
-
-        if (ranked.isEmpty()) {
-            Text(
-                "No scores yet. Sync your likes on the Spotify tab, then tap Recompute.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
-
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(ranked, key = { it.trackId }) { row ->
-                // The two cutoffs drawn as lines, so the distance to each is
-                // visible rather than having to be worked out from the numbers.
-                if (row.rank == parameters.playlistJoinRank + 1) {
-                    CutoffLine("playlist cutoff — rank ${parameters.playlistJoinRank}")
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        scope.launch {
+                            busy = true
+                            status = null
+                            val started = System.currentTimeMillis()
+                            val ranking = service.ranking(force = true)
+                            val took = System.currentTimeMillis() - started
+                            status = "Scored ${ranking.tracks.size} tracks in ${took} ms."
+                            busy = false
+                        }
+                    },
+                ) {
+                    Text(if (busy) "Scoring…" else "Recompute")
                 }
-                if (row.rank == parameters.playlistLeaveRank + 1) {
-                    CutoffLine("drop-out cutoff — rank ${parameters.playlistLeaveRank}")
+                OutlinedButton(onClick = { editingParameters = true }, enabled = !busy) {
+                    Text("Parameters")
                 }
-                RankedRow(row, parameters) { selected = row }
+            }
+            status?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            ParameterSummary(
+                parameters = parameters,
+                expanded = parametersExpanded,
+                onToggle = { parametersExpanded = !parametersExpanded },
+            )
+
+            SectionTitle("Ranking")
+            Stat("Liked tracks scored", "${ranked.size}")
+            Stat("Still alive (above ${format(parameters.recordFloor)})", "$alive")
+            Stat("In the Evergreen playlist", "${ranked.count { it.inPlaylist }}")
+
+            if (ranked.isEmpty()) {
+                Text(
+                    "No scores yet. Sync your likes on the Spotify tab, then tap Recompute.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
         }
+
+        items(ranked, key = { it.trackId }) { row ->
+            // The two cutoffs drawn as lines, so the distance to each is
+            // visible rather than having to be worked out from the numbers.
+            if (row.rank == parameters.playlistJoinRank + 1) {
+                CutoffLine("playlist cutoff — rank ${parameters.playlistJoinRank}")
+            }
+            if (row.rank == parameters.playlistLeaveRank + 1) {
+                CutoffLine("drop-out cutoff — rank ${parameters.playlistLeaveRank}")
+            }
+            RankedRow(row, parameters) { selected = row }
+        }
+
+        // The last row would otherwise sit under the navigation bar.
+        item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
     }
 
     selected?.let { row ->
@@ -285,7 +306,15 @@ private fun BreakdownDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
-                    LazyColumn(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    // Bounded, so the list of events cannot push the totals
+                    // above it off a 602 dp screen. A track with six years of
+                    // history can have hundreds of contributions.
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp)
+                            .padding(top = 6.dp),
+                    ) {
                         items(current.contributions) { contribution ->
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
@@ -352,20 +381,57 @@ private fun describe(kind: ContributionKind, note: ContributionNote): String = w
     ContributionNote.SCORED -> if (kind == ContributionKind.LISTEN) "played" else "like"
 }
 
+/**
+ * The settings in force: one line, expanding to all nine.
+ *
+ * Collapsed by default because this is reference material and the ranking is
+ * what the tab is for. Nine rows is most of a 602 dp screen, and on the Walkman
+ * that meant scrolling past the parameters every time to reach the list.
+ */
 @Composable
-private fun ParameterSummary(parameters: ScoringParameters) {
+private fun ParameterSummary(
+    parameters: ScoringParameters,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
     SectionTitle("Parameters in force")
-    Stat("Half-life", "${format(parameters.halfLifeDays)} days")
-    Stat(
-        "Fraction heard breakpoints",
-        "${format(parameters.lowerBreakpoint)} / ${format(parameters.upperBreakpoint)}",
-    )
-    Stat("Rejection weight", format(parameters.negativeWeight))
-    Stat("A like is worth", "${format(parameters.likeWeight)} plays")
-    Stat("Replay jump threshold", "${parameters.replayJumpThresholdMs / 1000}s")
-    Stat("Daily cap per track", "${format(parameters.dailyCapPlays)} plays")
-    Stat("Record floor", format(parameters.recordFloor))
-    Stat("Playlist ranks", "join ${parameters.playlistJoinRank}, leave ${parameters.playlistLeaveRank}")
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "${format(parameters.halfLifeDays)}d half-life · " +
+                "${format(parameters.lowerBreakpoint)}–${format(parameters.upperBreakpoint)} · " +
+                "like ${format(parameters.likeWeight)} · cap ${format(parameters.dailyCapPlays)}",
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = if (expanded) "less" else "more",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+
+    if (expanded) {
+        Stat("Half-life", "${format(parameters.halfLifeDays)} days")
+        Stat(
+            "Fraction heard breakpoints",
+            "${format(parameters.lowerBreakpoint)} / ${format(parameters.upperBreakpoint)}",
+        )
+        Stat("Rejection weight", format(parameters.negativeWeight))
+        Stat("A like is worth", "${format(parameters.likeWeight)} plays")
+        Stat("Replay jump threshold", "${parameters.replayJumpThresholdMs / 1000}s")
+        Stat("Daily cap per track", "${format(parameters.dailyCapPlays)} plays")
+        Stat("Record floor", format(parameters.recordFloor))
+        Stat(
+            "Playlist ranks",
+            "join ${parameters.playlistJoinRank}, leave ${parameters.playlistLeaveRank}",
+        )
+    }
 }
 
 /**

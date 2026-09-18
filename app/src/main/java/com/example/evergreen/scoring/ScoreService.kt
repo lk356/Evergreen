@@ -3,6 +3,8 @@ package com.example.evergreen.scoring
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.ListeningSegmentEntity
 import com.example.evergreen.data.ScoreEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** A ranking, and whether it came from the cache or was just computed. */
 data class Ranking(
@@ -46,7 +48,17 @@ class ScoreService(
     suspend fun ranking(
         nowMs: Long = System.currentTimeMillis(),
         force: Boolean = false,
-    ): Ranking {
+    ): Ranking = withContext(Dispatchers.Default) { rankingOnThisThread(nowMs, force) }
+
+    /**
+     * Scoring is real work: four hundred tracks over the segments of 450 days,
+     * which on the NW-A307 is seconds rather than milliseconds. It runs on
+     * [Dispatchers.Default] because the Scores tab calls it from Compose's
+     * main-thread scope, where it would freeze the UI -- the same class of
+     * mistake as the network call that crashed the Evergreen preview, but
+     * showing up as a hang rather than an exception.
+     */
+    private suspend fun rankingOnThisThread(nowMs: Long, force: Boolean): Ranking {
         val parameters = parameters()
 
         if (!force && !scoringDao.isCacheStale(parameters)) {
@@ -90,11 +102,13 @@ class ScoreService(
      * at a time, on demand, and storing every contribution for four hundred
      * tracks would be a second copy of the listening history.
      */
-    suspend fun breakdown(trackId: Long, nowMs: Long = System.currentTimeMillis()): ScoreBreakdown? {
+    suspend fun breakdown(
+        trackId: Long,
+        nowMs: Long = System.currentTimeMillis(),
+    ): ScoreBreakdown? = withContext(Dispatchers.Default) {
         val parameters = parameters()
         val input = loadInputs(parameters, nowMs, onlyTrackIds = listOf(trackId)).firstOrNull()
-            ?: return null
-        return scorer.score(input, parameters, nowMs, loadDjWindows(parameters, nowMs))
+        input?.let { scorer.score(it, parameters, nowMs, loadDjWindows(parameters, nowMs)) }
     }
 
     /** Every liked track still above the record floor — "what is alive". */

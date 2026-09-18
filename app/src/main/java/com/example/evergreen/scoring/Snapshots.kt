@@ -8,6 +8,8 @@ import com.example.evergreen.data.SnapshotEntryEntity
 import com.example.evergreen.spotify.ApiResult
 import com.example.evergreen.spotify.ApiSource
 import com.example.evergreen.spotify.SpotifyApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -134,7 +136,15 @@ class Snapshots(
      * The Web API has no folders, so the naming convention is all there is —
      * `Evergreen — 2026 August` sorts next to its siblings.
      */
-    suspend fun export(snapshotId: Long, api: ApiSource): String? {
+    suspend fun export(snapshotId: Long, api: ApiSource): String? = withContext(Dispatchers.IO) {
+        exportOnThisThread(snapshotId, api)
+    }
+
+    /**
+     * Off the main thread for the same reason [export] is: the debug screen
+     * calls this from Compose's main-thread scope, and [ApiSource] blocks.
+     */
+    private suspend fun exportOnThisThread(snapshotId: Long, api: ApiSource): String? {
         val snapshot = scoringDao.snapshotById(snapshotId) ?: return null
         val uris = scoringDao.snapshotPlaylistEntries(snapshotId).mapNotNull { it.serviceTrackId }
         if (uris.isEmpty()) return null

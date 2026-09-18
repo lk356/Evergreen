@@ -8,6 +8,8 @@ import com.example.evergreen.data.SyncKeys
 import com.example.evergreen.scoring.Membership
 import com.example.evergreen.scoring.MembershipDecision
 import com.example.evergreen.scoring.ScoreService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** What a sync did, or would do. Counts only; never a row. */
 data class EvergreenSyncResult(
@@ -78,10 +80,29 @@ class EvergreenSync(
      * Reads the playlist from Spotify, so it costs two requests and tells the
      * truth about drift, rather than reporting what the app believes.
      */
-    suspend fun dryRun(): EvergreenSyncResult = run(apply = false)
+    suspend fun dryRun(): EvergreenSyncResult = onIoThread { run(apply = false) }
 
     /** Computes and applies, subject to every guard below. */
-    suspend fun sync(): EvergreenSyncResult = run(apply = true)
+    suspend fun sync(): EvergreenSyncResult = onIoThread { run(apply = true) }
+
+    /**
+     * Moves the work off whatever thread the caller is on.
+     *
+     * **This function owns its dispatcher rather than trusting callers**, and
+     * that is the fix for a real crash: the debug screen's "Preview Evergreen
+     * sync" button launched from `rememberCoroutineScope()`, which is Compose's
+     * *main-thread* dispatcher, and the first HTTP call threw
+     * `NetworkOnMainThreadException`. The scheduled worker never hit it because
+     * `CoroutineWorker` already runs off the main thread, so the same code was
+     * fine by one route and fatal by the other.
+     *
+     * A `suspend` function is not automatically off the main thread — it runs
+     * wherever its caller is unless it says otherwise — and [ApiSource] is a
+     * plain blocking interface. Putting the rule here means no future caller
+     * can get it wrong, which is worth more than a comment telling them not to.
+     */
+    private suspend fun <T> onIoThread(block: suspend () -> T): T =
+        withContext(Dispatchers.IO) { block() }
 
     private suspend fun run(apply: Boolean): EvergreenSyncResult {
         val at = now()
