@@ -200,6 +200,8 @@ fun SpotifyTab(
             )
         }
 
+        DeviceCard()
+
         HistoryImportCard()
 
         MergeDryRun(
@@ -534,7 +536,7 @@ private fun HistoryImportCard() {
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+internal fun SectionTitle(text: String) {
     HorizontalDivider(modifier = Modifier.padding(top = 14.dp, bottom = 6.dp))
     Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
 }
