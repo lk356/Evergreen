@@ -40,4 +40,14 @@ object SyncKeys {
 
     /** Why we are backing off, for the debug screen. */
     const val API_BACKOFF_REASON = "api_backoff_reason"
+
+    /**
+     * The scoring parameters, as one JSON object in `valueText`.
+     *
+     * Here rather than in a table of their own because they are a single small
+     * value read as a unit, and because a snapshot stores the same JSON string
+     * verbatim — the two have to be the same shape or a snapshot could not be
+     * read back with the settings that produced it.
+     */
+    const val SCORING_PARAMETERS = "scoring_parameters"
 }
