@@ -40,12 +40,13 @@ streaming services:
       include track URIs. _(done 2026-09-17)_
 - [x] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
       play segments, debug screen to verify them. _(done 2026-09-17)_
-- [~] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
-      like sync, track matching, canonical track table. _Built and unit/instrument
-      tested on branch `phase2-spotify`; awaiting the user's first real login and
-      the Spotify DJ device session before it can be called done._
-- [ ] **Phase 3 — Core feature.** Scoring, daily Evergreen playlist sync,
+- [x] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
+      like sync, track matching, canonical track table. _(done 2026-09-17;
+      merged to `main`, device-verified, same-song merge run on the Pixel)_
+- [~] **Phase 3 — Core feature.** Scoring, daily Evergreen playlist sync,
       monthly snapshots. Seed scores from Spotify extended streaming history.
+      _Decisions in `docs/PHASE3_DECISIONS.md`, calibration done, plan in
+      `docs/PHASE3_PLAN.md` awaiting approval._
 - [ ] **Phase 4 — Usability.** Real UI, snapshot search, like widget,
       scoring settings, data export/backup.
 - [ ] **Phase 5 — Cross-service.** Second service adapter (likely Tidal),
@@ -66,30 +67,40 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 2 built, not yet device-verified.** Branch
-  `phase2-spotify`.
+- Current phase: **Phase 3 planned, not yet started.** Branch
+  `phase3-planning` holds the docs; code will go on `phase3-scoring`.
 - Last update: 2026-09-17.
 
-Phase 2 added the Spotify connection: PKCE login, Keystore-encrypted tokens,
-schema v2 with RESTRICT foreign keys and the like archive, like sync, ISRC
-backfill, WorkManager scheduling and a Spotify debug tab. 54 instrumented and
-68 unit tests pass on the Pixel 10 Pro. The capture path is untouched —
-`git diff main..phase2-spotify -- app/src/main/java/com/example/evergreen/capture/`
-is empty.
+**Phase 2 is done.** Merged to `main`, device-verified on the Pixel 10 Pro
+(login, 380/380 likes, 100% ISRC coverage, reconnect, DJ session), and the
+same-song merge has been run: 2 audit rows in `track_merges`.
 
-**Two things are outstanding before Phase 2 can be ticked:**
-1. The user has not yet connected a real Spotify account. Everything below the
-   login is tested against scripted API answers, not against Spotify.
-2. The same-song merge is implemented and tested, but **has not been run over
-   the real database**. The dry run shows the plan; running it is one tap behind
-   a confirmation. See "Same-song merging" under Phase 2 questions.
+**Phase 3 planning (2026-09-17):**
 
-Device-verified on the Pixel 10 Pro: login, 380/380 likes synced with 100% ISRC
-coverage, the reconnect state, and an 8-minute Spotify DJ session. See
-"Phase 2 device verification" and "Spotify DJ — examined" below.
+- `docs/PHASE3_DECISIONS.md` is the handoff from the planning Project and
+  answers every question in `docs/PHASE3_QUESTIONS.md`.
+- **Check 0a:** Spotify DJ commentary rows are stored at capture and filtered
+  only at read time. No capture change needed.
+- **Check 0b, the calibration:** run over the extended streaming history
+  (77,369 rows, 2020–2026) against the 380 synced likes. **Half-life 45
+  days** (the liked-track return curve crosses 50% at 41–48 days under every
+  definition tried; the fallback was 90). **Fraction-heard breakpoints 0.20
+  and 0.85** (the lower one is sharp; the upper is a soft reading, 0.80
+  defensible). Full tables in section 3.1 of the decisions. The analysis
+  script was throwaway and is not in the repository.
+- `docs/PHASE3_PLAN.md` is the implementation plan: 17 steps, each one
+  commit, with the test list. Five playlist endpoints were verified against
+  the live reference and **all differ from the pre-2026 tutorials**
+  (`/items` not `/tracks`, `POST /me/playlists`, remove body uses `items`).
+- Two schema migrations are proposed (v4: import columns on
+  `listening_segments`; v5: `scores` cache, `evergreen_membership`,
+  `snapshots`). Two new scopes (`playlist-modify-private`,
+  `playlist-read-private`) and one new permission (`POST_NOTIFICATIONS`).
 
-**Next:** run the merge on the Pixel (2 pairs, 0 segments to move), then
-Phase 3 scoring.
+**Next:** the user answers the eight decisions in section 10 of
+`docs/PHASE3_PLAN.md` (import scope, playlist read-back, app-owned playlist,
+like timestamp, record floor, notification permission, upper breakpoint,
+schema v4/v5). Then step 1 of the plan on branch `phase3-scoring`.
 
 Phase 1 replaced the spike with a real capture pipeline: listening is stored as
 play segments in a Room database, one row per continuous listen, and the replay,
@@ -583,8 +594,11 @@ In rough order of likelihood:
 
 ## Open questions — still open
 
-- Initial scoring parameters (decay half-life, skip penalty, grace period).
-  Belongs to Phase 3.
+- ~~Initial scoring parameters (decay half-life, skip penalty, grace period).~~
+  Decided and calibrated 2026-09-17: see `docs/PHASE3_DECISIONS.md` section
+  3. The skip penalty and grace period were replaced by the fraction-heard
+  curve and the like event weight.
+- The eight Phase 3 build decisions in `docs/PHASE3_PLAN.md` section 10.
 ### Phase 2 device verification (2026-09-17, Pixel 10 Pro, user-run)
 
 | Check | Result |
