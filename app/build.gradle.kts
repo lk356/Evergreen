@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -109,6 +110,67 @@ configurations.matching { it.name.contains("AndroidTest", ignoreCase = true) }.c
     }
 }
 
+
+// Refuse to run instrumented tests on the Walkman.
+//
+// `connectedAndroidTest` uninstalls both APKs when it finishes, taking the
+// app's database with them. On the Pixel that is harmless -- its database is
+// disposable test data. On the NW-A307 it is the real listening history,
+// including the imported streaming history, which Spotify will not export again
+// on demand.
+//
+// This is not hypothetical. It happened on 2026-09-18: the Pixel was unplugged,
+// the Walkman was plugged in, and a `connectedDebugAndroidTest` that had been
+// safe five minutes earlier wiped the Walkman instead. A rule that lives only
+// in a document protects nothing when the thing that changed is which cable is
+// in the laptop, so the rule lives here, where the build can enforce it.
+//
+// Override with -PallowWalkmanTests=true if you genuinely mean it.
+// Resolved through the provider API so the configuration cache tracks it.
+// `android.sdkDirectory` is not exposed by AGP 9's DSL, and local.properties is
+// deliberately never read by this build beyond the client ID.
+val adbExecutable = providers.environmentVariable("ANDROID_HOME")
+    .orElse(providers.environmentVariable("ANDROID_SDK_ROOT"))
+    .orElse(providers.systemProperty("user.home").map { home -> "$home/Android/Sdk" })
+    .map { sdk -> "$sdk/platform-tools/adb" }
+val allowWalkmanTests = providers.gradleProperty("allowWalkmanTests")
+
+tasks.matching { it.name.startsWith("connected") && it.name.contains("AndroidTest") }
+    .configureEach {
+        val adbPath = adbExecutable
+        val allowed = allowWalkmanTests
+        doFirst {
+            if (allowed.orNull == "true") return@doFirst
+
+            val adb = File(adbPath.get())
+            if (!adb.exists()) return@doFirst
+
+            val attached = runCatching {
+                ProcessBuilder(adb.absolutePath, "devices", "-l")
+                    .redirectErrorStream(true)
+                    .start()
+                    .inputStream.bufferedReader().readText()
+            }.getOrNull() ?: return@doFirst
+
+            // Declared here rather than at script level: the configuration
+            // cache cannot serialize a reference to a script object, so a
+            // captured top-level val would make every build report a problem.
+            val walkmanMarkers = listOf("NW_A300", "NW-A300", "NW_A307", "NW-A307")
+            val walkman = attached.lines().firstOrNull { line ->
+                walkmanMarkers.any { marker -> line.contains(marker, ignoreCase = true) }
+            }
+            if (walkman != null) {
+                throw GradleException(
+                    "Refusing to run instrumented tests: a Sony Walkman is attached.\n" +
+                        "  $walkman\n" +
+                        "Running them uninstalls the app and destroys its database, and the " +
+                        "Walkman holds the real listening history.\n" +
+                        "Unplug it and use the Pixel or an emulator, or pass " +
+                        "-PallowWalkmanTests=true if you really mean it.",
+                )
+            }
+        }
+    }
 
 ksp {
     // Writes a JSON description of the database to app/schemas/ on every build.

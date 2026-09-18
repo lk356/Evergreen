@@ -512,6 +512,195 @@ class EvergreenMigrationTest {
         migrated.close()
     }
 
+    // --- v4 -> v5 ------------------------------------------------------------
+
+    /**
+     * v5 only adds tables, so unlike v2 and v4 nothing here can lose history.
+     * The test is still worth having for the opposite reason: to prove that it
+     * really is additive, and that the existing rows — including the ones v4
+     * just rebuilt — are untouched by it.
+     */
+    @Test
+    fun migrate4To5_addsTheNewTablesAndDisturbsNothing() {
+        helper.createDatabase(TEST_DB, 4).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO tracks
+                    (id, trackKey, title, artist, album, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 'metadata|willix|metadata', 'Metadata', 'Willix', 'Metadata',
+                        109000, 1000, 2000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO service_tracks
+                    (id, trackId, service, serviceTrackId, isrc, isrcLookupAt, isrcLookupAttempts,
+                     isrcLookupError, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 1, 'spotify', 'spotify:track:4h3K5he5ItFqJB1MVHMKJV', 'GBAYE1500860',
+                        1500, 1, NULL, 109000, 1000, 2000)
+                """.trimIndent(),
+            )
+            // One captured row and one imported row, so both shapes v4 allows
+            // are present across the migration.
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs, endedAtMs,
+                     startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason)
+                VALUES (1, 1, 1, 'com.spotify.music', 'test-device', 1000, 110000,
+                        0, 109000, 109000, 109000, 0, 0, 'TRACK_CHANGE', NULL, NULL,
+                        100, 110000, 'CAPTURE', NULL)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs, endedAtMs,
+                     startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason)
+                VALUES (2, 1, 1, 'com.spotify.music', 'spotify-history-import', 500000, 609000,
+                        NULL, NULL, 109000, 0, NULL, NULL, 'IMPORTED', NULL, NULL,
+                        NULL, 700000, 'IMPORT_SPOTIFY_HISTORY', 'trackdone')
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO likes
+                    (id, serviceTrackRowId, serviceAddedAtMs, firstSeenLikedAt, lastSeenLikedAt,
+                     unlikedAt)
+                VALUES (1, 1, 1600000000000, 1700000000000, 1700000000000, NULL)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO sync_state (`key`, valueMs, valueText)
+                VALUES ('scoring_parameters', 1700000000000, '{"halfLifeDays":45.0}')
+                """.trimIndent(),
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 5, true)
+
+        // The four new tables exist and are empty, rather than absent.
+        for (table in listOf("scores", "evergreen_membership", "snapshots", "snapshot_entries")) {
+            migrated.query("SELECT COUNT(*) FROM $table").use { c ->
+                c.moveToFirst()
+                assertEquals("$table should exist and be empty", 0, c.getInt(0))
+            }
+        }
+
+        // Everything that was there before still is, both segment shapes intact.
+        migrated.query("SELECT COUNT(*) FROM listening_segments").use { c ->
+            c.moveToFirst()
+            assertEquals(2, c.getInt(0))
+        }
+        migrated.query(
+            "SELECT source, startPositionMs, listenedMs, sourceEndReason " +
+                "FROM listening_segments WHERE id = 2",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("IMPORT_SPOTIFY_HISTORY", c.getString(0))
+            assertTrue("the imported row's nulls survive", c.isNull(1))
+            assertEquals(109_000L, c.getLong(2))
+            assertEquals("trackdone", c.getString(3))
+        }
+        migrated.query("SELECT serviceAddedAtMs FROM likes WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(
+                "Spotify's added_at is what likes decay from, so it must survive",
+                1_600_000_000_000L,
+                c.getLong(0),
+            )
+        }
+        migrated.query(
+            "SELECT valueText FROM sync_state WHERE `key` = 'scoring_parameters'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("""{"halfLifeDays":45.0}""", c.getString(0))
+        }
+        migrated.close()
+    }
+
+    /**
+     * The new tables must actually accept what Phase 3 will put in them,
+     * including the snapshot's parameters JSON — without which a snapshot's
+     * scores become unreadable the first time the scoring is retuned.
+     */
+    @Test
+    fun migrate4To5_acceptsScoresMembershipAndSnapshots() {
+        helper.createDatabase(TEST_DB, 4).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO tracks
+                    (id, trackKey, title, artist, album, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 'a|b|c', 'A', 'B', 'C', 200000, 1000, 2000)
+                """.trimIndent(),
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 5, true)
+
+        migrated.execSQL(
+            "INSERT INTO scores (trackId, score, rank, computedAt, parametersHash) " +
+                "VALUES (1, 4.25, 7, 1700000000000, 'abc123')",
+        )
+        migrated.execSQL(
+            """
+            INSERT INTO evergreen_membership
+                (trackId, joinedAt, leftAt, joinReason, leaveReason, rankAtJoin, rankAtLeave)
+            VALUES (1, 1700000000000, NULL, 'JOINED_BY_RANK', NULL, 7, NULL)
+            """.trimIndent(),
+        )
+        migrated.execSQL(
+            """
+            INSERT INTO snapshots
+                (id, monthKey, label, takenAt, parametersJson, playlistSize, trackCount,
+                 exportedPlaylistId, exportedAt)
+            VALUES (1, '2026-08', '2026 August', 1700000000000, '{"halfLifeDays":45.0}',
+                    100, 380, NULL, NULL)
+            """.trimIndent(),
+        )
+        migrated.execSQL(
+            """
+            INSERT INTO snapshot_entries
+                (snapshotId, trackId, rank, score, serviceTrackId, title, artist, inPlaylist)
+            VALUES (1, 1, 7, 4.25, 'spotify:track:aaa', 'A', 'B', 1)
+            """.trimIndent(),
+        )
+
+        migrated.query("SELECT score, rank, parametersHash FROM scores WHERE trackId = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(4.25, c.getDouble(0), 1e-9)
+            assertEquals(7, c.getInt(1))
+            assertEquals("abc123", c.getString(2))
+        }
+        migrated.query("SELECT parametersJson, monthKey FROM snapshots WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("""{"halfLifeDays":45.0}""", c.getString(0))
+            assertEquals("2026-08", c.getString(1))
+        }
+        migrated.query("SELECT inPlaylist, serviceTrackId FROM snapshot_entries").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(1, c.getInt(0))
+            assertEquals("spotify:track:aaa", c.getString(1))
+        }
+
+        // One snapshot per month, so the daily worker can run harmlessly.
+        assertThrows(SQLiteConstraintException::class.java) {
+            migrated.execSQL(
+                """
+                INSERT INTO snapshots
+                    (monthKey, label, takenAt, parametersJson, playlistSize, trackCount)
+                VALUES ('2026-08', '2026 August', 1700000000001, '{}', 100, 380)
+                """.trimIndent(),
+            )
+        }
+        migrated.close()
+    }
+
     private fun freshV2Database(): EvergreenDatabase {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return Room.inMemoryDatabaseBuilder(context, EvergreenDatabase::class.java)
