@@ -463,6 +463,43 @@ accumulating history — running them uninstalls the app):
 8. **Schema v4 and v5** as described in 4.1 and 5.1. `CLAUDE.md` requires
    approval for schema changes; the plan is the proposal.
 
+### Answers, 2026-09-17
+
+All eight approved as recommended: import everything; read the playlist back
+(`playlist-read-private` granted); the playlist is app-owned; likes decay from
+Spotify's `added_at`, falling back to first-observed; record floor 0.1; the
+`POST_NOTIFICATIONS` permission is approved; upper breakpoint 0.85 as a
+tunable; schema v4 and v5 approved as described in 4.1 and 5.1. If the
+implementation needs to deviate from those descriptions, that is a new
+question, not a granted one.
+
+### Raised after the answers, adopted unless struck
+
+9. **One device writes Evergreen.** Each device has its own database until
+   Phase 6, so two devices running the sync would fight over one playlist
+   with two different rankings. A per-device setting "This device writes
+   Evergreen" (in `sync_state`, default off) is turned on once, on the Pixel.
+   The Walkman captures only; its history reaches the Pixel in Phase 6. The
+   import also runs only on the writer device.
+10. **A database backup button now, not in Phase 4.** After the import, the
+    database is the most valuable thing in the project, and running
+    instrumented tests destroys it. "Back up database" on the debug screen
+    checkpoints the write-ahead log and writes a copy of the file to a
+    location the user picks in the system "create document" dialog. The
+    database holds no tokens, so nothing secret leaves. One step, no schema
+    change, no dependency.
+11. **Instrumented tests never run on the Pixel once the history is
+    imported.** They uninstall the app. Use the Walkman or an emulator.
+12. **Import timing.** Build the importer early (steps 3 to 5) and run the
+    real import on the Pixel as soon as step 5 lands, before scoring exists,
+    so the explain view in step 11 shows six years of real listening rather
+    than a fortnight.
+13. **The app never touches a playlist it did not create.** It writes only to
+    the playlist whose id it stored, looks a playlist up by name only when no
+    id is stored and only among playlists the user owns, and has no code path
+    that deletes a playlist. Snapshot exports create a new playlist each time
+    and are never modified afterwards.
+
 ---
 
 ## 11. Steps
@@ -477,7 +514,8 @@ wait for a yes before the code is written.
 | 2 | `ScoringCurve` and `Decay` pure functions. | 1, 2 |
 | 3 | **[approval]** Schema v4: `source`, `sourceEndReason`, nullable position fields, `EndReason.IMPORTED`; `MergedSegment` and the debug row null-tolerant. | 12 |
 | 4 | History parser (streaming, field allowlist). | 8 |
-| 5 | Importer: file picker, batching, idempotence, overlap rule, progress on the Spotify tab; backfill narrowing. | 13, 14 |
+| 5 | Importer: file picker, batching, idempotence, overlap rule, progress on the Spotify tab; backfill narrowing. Then the real import on the Pixel. | 13, 14 |
+| 5b | "Back up database" button and the "This device writes Evergreen" setting (decisions 9 and 10). | manual, on device |
 | 6 | `DjSessions`. | 5 |
 | 7 | `TrackScorer` with `ScoreBreakdown`. | 3 |
 | 8 | `Ranker` in memory, load window, and the recompute test. | 4 |

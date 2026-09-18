@@ -97,10 +97,16 @@ same-song merge has been run: 2 audit rows in `track_merges`.
   `snapshots`). Two new scopes (`playlist-modify-private`,
   `playlist-read-private`) and one new permission (`POST_NOTIFICATIONS`).
 
-**Next:** the user answers the eight decisions in section 10 of
-`docs/PHASE3_PLAN.md` (import scope, playlist read-back, app-owned playlist,
-like timestamp, record floor, notification permission, upper breakpoint,
-schema v4/v5). Then step 1 of the plan on branch `phase3-scoring`.
+**Decisions answered 2026-09-17** (section 10 of the plan): all eight
+approved as recommended, plus five raised afterwards (one writer device, an
+early database backup button, no instrumented tests on the Pixel after the
+import, import right after step 5, never touch a playlist the app did not
+create). Schema v4 and v5, the two playlist scopes and the notification
+permission are pre-approved as described in the plan.
+
+**Next:** merge `phase3-planning` into `main`, then paste
+`docs/PHASE3_PROMPT.md` into Claude Code to start step 1 on branch
+`phase3-scoring`.
 
 Phase 1 replaced the spike with a real capture pipeline: listening is stored as
 play segments in a Room database, one row per continuous listen, and the replay,
