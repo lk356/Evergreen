@@ -97,6 +97,9 @@ abstract class EvergreenDatabase : RoomDatabase() {
     /** Phase 3's scoring reads and writes, separate for the same reason. */
     abstract fun scoringDao(): ScoringDao
 
+    /** The streaming-history import's reads and bookkeeping. */
+    abstract fun importDao(): ImportDao
+
     companion object {
         private const val DB_NAME = "evergreen.db"
 

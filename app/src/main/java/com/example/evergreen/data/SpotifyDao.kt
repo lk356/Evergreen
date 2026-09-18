@@ -58,11 +58,35 @@ abstract class SpotifyDao {
            SET lastSeenAt = :at,
                isrc = COALESCE(:isrc, isrc),
                isrcLookupAt = CASE WHEN :isrc IS NOT NULL THEN :at ELSE isrcLookupAt END,
-               isrcLookupError = CASE WHEN :isrc IS NOT NULL THEN NULL ELSE isrcLookupError END
+               isrcLookupError = CASE WHEN :isrc IS NOT NULL THEN NULL ELSE isrcLookupError END,
+               -- Fills an unknown duration, never replaces a known one.
+               --
+               -- Needed since the streaming-history import: the export carries
+               -- no durations, so a track first seen by the import has a
+               -- service row with durationMs = 0. Without this, liking that
+               -- track later would leave the row at 0 forever and its imported
+               -- plays would stay unscoreable -- "how much of it was heard" has
+               -- no answer without a length. Filling it is what lets the import
+               -- run once, early, rather than being re-run after every like.
+               --
+               -- Only when the stored value is 0, because 0 means "not known"
+               -- while any other value was observed, and sources disagree about
+               -- durations by a few hundred milliseconds. Overwriting an
+               -- observed length with another source's would make percentages
+               -- quietly inconsistent between rows.
+               durationMs = CASE
+                   WHEN durationMs = 0 AND :durationMs > 0 THEN :durationMs
+                   ELSE durationMs
+               END
          WHERE id = :id
         """,
     )
-    protected abstract suspend fun touchServiceTrack(id: Long, at: Long, isrc: String?)
+    protected abstract suspend fun touchServiceTrack(
+        id: Long,
+        at: Long,
+        isrc: String?,
+        durationMs: Long,
+    )
 
     /**
      * Finds or creates the rows for a track the *service* told us about.
@@ -91,7 +115,7 @@ abstract class SpotifyDao {
         now: Long,
     ): Long {
         findServiceTrack(service, serviceTrackId)?.let { known ->
-            touchServiceTrack(known.id, now, isrc)
+            touchServiceTrack(known.id, now, isrc, durationMs)
             return known.id
         }
 
@@ -124,7 +148,7 @@ abstract class SpotifyDao {
 
         // Lost a race; the unique index decided the winner.
         val existing = requireNotNull(findServiceTrack(service, serviceTrackId))
-        touchServiceTrack(existing.id, now, isrc)
+        touchServiceTrack(existing.id, now, isrc, durationMs)
         return existing.id
     }
 
@@ -255,6 +279,27 @@ abstract class SpotifyDao {
            -- it in the queue would mark it failed five times over five weeks to
            -- learn something its identifier already says.
            AND serviceTrackId LIKE :trackUriPrefix || '%'
+           -- Only rows the app has a reason to care about: something liked, or
+           -- something this device actually watched being played.
+           --
+           -- The streaming-history import adds about 12,000 tracks that were
+           -- played once, years ago, and never liked. Since Spotify removed the
+           -- batch track endpoint in February 2026 an ISRC costs one request
+           -- per track, so backfilling all of them would be 12,000 requests --
+           -- five times over, with the retry allowance -- against a quota that
+           -- is per developer account and unpublished, to learn nothing about
+           -- any song in Evergreen. An imported-only row gets its ISRC for
+           -- free if the track is ever liked, inside the like sync.
+           AND (
+                EXISTS (
+                    SELECT 1 FROM likes l WHERE l.serviceTrackRowId = service_tracks.id
+                )
+                OR EXISTS (
+                    SELECT 1 FROM listening_segments s
+                     WHERE s.serviceTrackRowId = service_tracks.id
+                       AND s.source = 'CAPTURE'
+                )
+           )
            AND (isrcLookupAt IS NULL OR isrcLookupAt < :retryBefore)
            AND isrcLookupAttempts < :maxAttempts
          ORDER BY isrcLookupAt IS NOT NULL, isrcLookupAt ASC, id ASC

@@ -50,4 +50,25 @@ object SyncKeys {
      * read back with the settings that produced it.
      */
     const val SCORING_PARAMETERS = "scoring_parameters"
+
+    /**
+     * Prefix for "this export file has been imported", one row per file, keyed
+     * by the SHA-256 of its contents.
+     *
+     * A prefix and many rows rather than one row holding a list: the lookup is
+     * a primary-key hit, and two imports finishing near each other cannot
+     * overwrite one another's record.
+     */
+    const val HISTORY_IMPORT_FILE_PREFIX = "history_import_file:"
+
+    /**
+     * Whether *this* device is the one that writes the Evergreen playlist.
+     *
+     * Off by default, and turned on once, on the Walkman. Until Phase 6 each
+     * device has its own database, so two devices running the sync would fight
+     * over one playlist with two different rankings — each undoing the other's
+     * writes every day, against a quota neither can see. The import runs only
+     * on the writer device for the same reason.
+     */
+    const val EVERGREEN_WRITER_DEVICE = "evergreen_writer_device"
 }

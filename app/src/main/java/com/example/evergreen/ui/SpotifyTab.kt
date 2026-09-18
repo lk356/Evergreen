@@ -1,5 +1,7 @@
 package com.example.evergreen.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,6 +37,7 @@ import com.example.evergreen.data.MergePlanGroup
 import com.example.evergreen.data.SameSongMerge
 import com.example.evergreen.data.SERVICE_SPOTIFY
 import com.example.evergreen.data.SyncKeys
+import com.example.evergreen.history.HistoryImportController
 import com.example.evergreen.spotify.SpotifyApi.Companion.TRACK_URI_PREFIX
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyConnectionState
@@ -196,6 +199,8 @@ fun SpotifyTab(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+
+        HistoryImportCard()
 
         MergeDryRun(
             plan = mergePlan,
@@ -424,6 +429,108 @@ private fun MergeDryRun(
     Button(onClick = onMerge, modifier = Modifier.padding(top = 8.dp)) {
         Text("Run this merge")
     }
+}
+
+/**
+ * "Import streaming history": the Spotify export, read into the segment table.
+ *
+ * The picker is the system "Open document" screen, so the app needs no storage
+ * permission at all — it is handed a one-off read grant for the single file the
+ * user chose, and has no ability to look at anything else.
+ *
+ * Progress and results are counts only. Never a row of the export, which
+ * contains an IP address on every line.
+ */
+@Composable
+private fun HistoryImportCard() {
+    val context = LocalContext.current
+    val importDao = remember(context) { EvergreenDatabase.get(context).importDao() }
+    val state by HistoryImportController.state.collectAsState()
+    val imported by importDao.importedSegmentCount().collectAsState(initial = 0)
+    val filesImported by importDao.importedFileCount().collectAsState(initial = 0)
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { HistoryImportController.start(context, it) } }
+
+    SectionTitle("Streaming history import")
+    Stat("Imported plays", "$imported")
+    Stat("Files imported", "$filesImported")
+
+    when (val current = state) {
+        is HistoryImportController.State.Idle -> Unit
+
+        is HistoryImportController.State.Running -> {
+            Text(
+                text = "Importing… ${current.progress.rowsRead} rows read, " +
+                    "${current.progress.segmentsWritten} written",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Text(
+                "Leave this screen open. Six years of history takes a few minutes " +
+                    "on the Walkman.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        is HistoryImportController.State.Done -> {
+            val r = current.result
+            Text(
+                text = "Import finished",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Stat("Files read", "${r.filesRead}")
+            if (r.filesSkippedAlreadyImported > 0) {
+                Stat("Files already imported", "${r.filesSkippedAlreadyImported}")
+            }
+            Stat("Rows read", "${r.rowsRead}")
+            Stat("Plays written", "${r.segmentsWritten}")
+            Stat("Not tracks (podcasts etc.)", "${r.rowsWithoutTrackUri}")
+            if (r.rowsWithoutTimestamp > 0) Stat("Unreadable timestamps", "${r.rowsWithoutTimestamp}")
+            if (r.rowsAlreadyImported > 0) Stat("Already imported", "${r.rowsAlreadyImported}")
+            if (r.rowsCoveredByCapture > 0) Stat("Covered by capture", "${r.rowsCoveredByCapture}")
+            TextButton(onClick = { HistoryImportController.dismiss() }) { Text("Dismiss") }
+        }
+
+        is HistoryImportController.State.Failed -> {
+            Text(
+                text = current.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { HistoryImportController.dismiss() }) { Text("Dismiss") }
+        }
+    }
+
+    OutlinedButton(
+        onClick = {
+            // No MIME filter beyond these: Android reports the export zip as
+            // application/zip, application/x-zip-compressed or
+            // application/octet-stream depending on the file manager, and a
+            // filter that misses would leave the file greyed out with no
+            // explanation. The content is sniffed from its first four bytes
+            // instead.
+            picker.launch(arrayOf("application/zip", "application/json", "application/octet-stream"))
+        },
+        enabled = state !is HistoryImportController.State.Running,
+        modifier = Modifier.padding(top = 8.dp),
+    ) {
+        Text("Import streaming history")
+    }
+    Text(
+        "Pick the Spotify export zip, or a single Streaming_History_Audio_*.json " +
+            "from inside it. Running it twice imports nothing twice. Only the seven " +
+            "fields the app needs are read; the rest of each row, including your IP " +
+            "address, is skipped by name and never stored.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
