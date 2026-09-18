@@ -1,5 +1,6 @@
 package com.example.evergreen.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -43,6 +44,33 @@ enum class EndReason {
 
     /** The segment ended but there was not enough information to say how. */
     UNKNOWN,
+
+    /**
+     * The end was not observed by this app; the row came from an import.
+     *
+     * An observation about provenance, not a conclusion about what the user
+     * did. The export's own code for why the stream stopped is kept verbatim in
+     * [ListeningSegmentEntity.sourceEndReason], where it stays a fact about the
+     * play rather than being translated into one of the values above -- which
+     * would be this app claiming to have seen something it did not.
+     */
+    IMPORTED,
+}
+
+/**
+ * Where a segment row came from.
+ *
+ * Provenance is a fact, which is why this column is allowed under the rule that
+ * segments store facts and not conclusions. It exists so that the debug screen,
+ * the import's de-duplication and the tests can tell a captured row from an
+ * imported one without inferring it from which columns happen to be null.
+ */
+enum class SegmentSource {
+    /** Observed live by this app's capture path. */
+    CAPTURE,
+
+    /** Read from a Spotify "extended streaming history" export. */
+    IMPORT_SPOTIFY_HISTORY,
 }
 
 /**
@@ -99,6 +127,9 @@ enum class EndReason {
         Index(value = ["startedAtMs"]),
         Index(value = ["deviceId"]),
         Index(value = ["serviceTrackRowId"]),
+        // The importer asks "is there already an imported row for this service
+        // track at this instant?" once per row, 77,000 times.
+        Index(value = ["source"]),
     ],
 )
 data class ListeningSegmentEntity(
@@ -130,9 +161,17 @@ data class ListeningSegmentEntity(
      * [endPositionMs] is the "position reached", and it is the fact that tells a
      * repeat-one loop (ends near the duration) apart from a mid-track restart
      * (ends somewhere in the middle).
+     *
+     * **Nullable since schema v4, and null on every imported row.** The Spotify
+     * export records how long a stream lasted but never where in the track it
+     * got to. Null therefore means "not observed", which is different from 0
+     * ("observed at the start") -- and the difference matters, because a row
+     * reaching position 0 is a track that was cut off immediately while a row
+     * with no position is a play whose shape is simply unknown. Storing 0 for
+     * both would be inventing a measurement.
      */
-    val startPositionMs: Long,
-    val endPositionMs: Long,
+    val startPositionMs: Long?,
+    val endPositionMs: Long?,
 
     /**
      * Milliseconds actually heard.
@@ -152,9 +191,15 @@ data class ListeningSegmentEntity(
      */
     val trackDurationMs: Long,
 
-    /** How many forward jumps were seen, and how much was jumped over in total. */
-    val forwardSeekCount: Int,
-    val seekedForwardMs: Long,
+    /**
+     * How many forward jumps were seen, and how much was jumped over in total.
+     *
+     * Nullable since schema v4, for the same reason as the position fields: the
+     * export cannot say, and "no seeks were seen" is a different statement from
+     * "nobody was watching".
+     */
+    val forwardSeekCount: Int?,
+    val seekedForwardMs: Long?,
 
     val endReason: EndReason,
 
@@ -177,8 +222,31 @@ data class ListeningSegmentEntity(
      * extrapolation rather than on something observed, and Phase 3 can discount
      * the row accordingly. Recording the uncertainty beats silently presenting a
      * guess as a measurement.
+     *
+     * Nullable since schema v4: an imported row rests on no extrapolation at
+     * all, so there is no age to report.
      */
-    val lastSampleAgeMs: Long,
+    val lastSampleAgeMs: Long?,
 
     val createdAt: Long,
+
+    /**
+     * Where this row came from. Defaults to [SegmentSource.CAPTURE], which is
+     * what every row written before schema v4 was.
+     */
+    @ColumnInfo(defaultValue = "CAPTURE")
+    val source: SegmentSource = SegmentSource.CAPTURE,
+
+    /**
+     * The export's own `reason_end` code for an imported row -- `trackdone`,
+     * `fwdbtn`, `endplay` and the like. Null on captured rows.
+     *
+     * Kept even though the scorer does not read it. It is a fact about the play
+     * that cost nothing to store and cannot be recovered once the export is
+     * deleted, and the project's rule is that facts are stored so conclusions
+     * can be drawn later. It is also the only cross-check available on whether
+     * the fraction-heard curve agrees with Spotify's own view of what was a
+     * skip.
+     */
+    val sourceEndReason: String? = null,
 )

@@ -308,7 +308,10 @@ private fun SegmentRow(listen: MergedSegment, titles: Map<Long, SegmentWithTrack
             text = buildString {
                 append("heard ").append(formatMs(listen.listenedMs))
                 heard?.let { append(" (").append((it * 100).toInt()).append("%)") }
-                append("   reached ").append(formatMs(listen.endPositionMs))
+                // An imported row has no position at all, so it says so
+                // rather than showing a zero it never observed.
+                append("   reached ")
+                append(listen.endPositionMs?.let { formatMs(it) } ?: "—")
                 reached?.let { append(" (").append((it * 100).toInt()).append("%)") }
                 append(" of ").append(formatMs(listen.trackDurationMs))
             },
@@ -319,18 +322,25 @@ private fun SegmentRow(listen: MergedSegment, titles: Map<Long, SegmentWithTrack
         )
 
         val notes = buildList {
-            if (listen.forwardSeekCount > 0) {
+            val seeks = listen.forwardSeekCount ?: 0
+            if (seeks > 0) {
                 add(
-                    "${listen.forwardSeekCount} forward seek(s), " +
-                        "${formatMs(listen.seekedForwardMs)} skipped",
+                    "$seeks forward seek(s), " +
+                        "${formatMs(listen.seekedForwardMs ?: 0)} skipped",
                 )
             }
             first.endJumpFromMs?.let { from ->
                 val to = first.endJumpToMs ?: 0
                 add("jumped back ${formatMs(from)} -> ${formatMs(to)}")
             }
-            if (first.lastSampleAgeMs > 30_000) {
-                add("last reading was ${formatMs(first.lastSampleAgeMs)} old")
+            if ((first.lastSampleAgeMs ?: 0) > 30_000) {
+                add("last reading was ${formatMs(first.lastSampleAgeMs ?: 0)} old")
+            }
+            if (listen.isImported) {
+                // Worth saying on the row itself: an imported listen has no
+                // position, no seeks and no jumps, so its blanks are the
+                // export's silence rather than a capture bug.
+                add("imported" + first.sourceEndReason?.let { " ($it)" }.orEmpty())
             }
         }
         if (notes.isNotEmpty()) {
@@ -506,6 +516,8 @@ private fun endReasonColor(reason: EndReason): Color = when (reason) {
     EndReason.POSITION_JUMP_BACK -> MaterialTheme.colorScheme.primary
     EndReason.TRACK_CHANGE -> MaterialTheme.colorScheme.onSurfaceVariant
     EndReason.SESSION_END -> MaterialTheme.colorScheme.tertiary
+    // Not an error, just not observed by this app: the row was imported.
+    EndReason.IMPORTED -> MaterialTheme.colorScheme.secondary
     EndReason.STALE, EndReason.UNKNOWN -> MaterialTheme.colorScheme.error
 }
 

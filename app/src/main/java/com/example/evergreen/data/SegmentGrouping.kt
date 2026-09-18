@@ -12,20 +12,45 @@ data class MergedSegment(
     val trackId: Long,
     val startedAtMs: Long,
     val endedAtMs: Long,
-    val startPositionMs: Long,
-    val endPositionMs: Long,
+    /**
+     * Null when no row in this listen recorded a position -- which is every
+     * imported row, since the Spotify export says how long a stream lasted but
+     * never where in the track it reached. See [ListeningSegmentEntity].
+     */
+    val startPositionMs: Long?,
+    val endPositionMs: Long?,
     val listenedMs: Long,
     val trackDurationMs: Long,
-    val forwardSeekCount: Int,
-    val seekedForwardMs: Long,
+    /** Null when no row in this listen was in a position to observe seeks. */
+    val forwardSeekCount: Int?,
+    val seekedForwardMs: Long?,
     val endReason: EndReason,
+    /**
+     * Where the rows came from. More than one value only if a future import
+     * ever folds into captured rows, which today it cannot: imported rows carry
+     * no jump fields, so [SegmentGrouping.merge] never joins them to anything.
+     */
+    val sources: Set<SegmentSource>,
 ) {
     /** True when more than one stored row was folded together. */
     val isMerged: Boolean get() = rows.size > 1
 
-    /** How far through the track this listen got, as a fraction, or null. */
+    /** True when this listen came from an import rather than from capture. */
+    val isImported: Boolean get() = SegmentSource.CAPTURE !in sources
+
+    /**
+     * How far through the track this listen got, as a fraction, or null.
+     *
+     * Null both when the duration is unknown and when no position was recorded.
+     * Says *where playback reached*, which is not the same as how much was
+     * heard -- a forward seek or a crossfade reaches the end of a track that was
+     * barely listened to. Use [listenedFraction] to score; this is for display.
+     */
     val positionReachedFraction: Double?
-        get() = if (trackDurationMs > 0) endPositionMs.toDouble() / trackDurationMs else null
+        get() {
+            val reached = endPositionMs ?: return null
+            return if (trackDurationMs > 0) reached.toDouble() / trackDurationMs else null
+        }
 
     /** How much of the track was actually heard, as a fraction, or null. */
     val listenedFraction: Double?
@@ -102,9 +127,13 @@ object SegmentGrouping {
             // which is exactly why the two are stored separately.
             listenedMs = rows.sumOf { it.listenedMs },
             trackDurationMs = rows.maxOf { it.trackDurationMs },
-            forwardSeekCount = rows.sumOf { it.forwardSeekCount },
-            seekedForwardMs = rows.sumOf { it.seekedForwardMs },
+            // Summed over the rows that recorded anything, and null when none
+            // did. Adding nulls in as zeroes would turn "nobody was watching"
+            // into "no seeks happened", which is a claim the data cannot make.
+            forwardSeekCount = rows.mapNotNull { it.forwardSeekCount }.ifEmpty { null }?.sum(),
+            seekedForwardMs = rows.mapNotNull { it.seekedForwardMs }.ifEmpty { null }?.sum(),
             endReason = last.endReason,
+            sources = rows.mapTo(mutableSetOf()) { it.source },
         )
     }
 }
