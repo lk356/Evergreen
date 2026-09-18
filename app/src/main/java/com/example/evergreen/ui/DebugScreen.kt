@@ -11,10 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +39,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.capture.CaptureEvent
 import com.example.evergreen.capture.CaptureLog
-import com.example.evergreen.capture.CaptureNotificationListenerService
 import com.example.evergreen.capture.EventSource
 import com.example.evergreen.data.EndReason
 import com.example.evergreen.data.EvergreenDatabase
@@ -85,7 +81,11 @@ fun DebugScreen(
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
     Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        AccessCard(
+        // Nothing at all once access is granted. See AccessBanner: the full
+        // card costs a sixth of the Walkman's screen on every tab, and says
+        // nothing that is news. It lives on the Live log tab instead, which is
+        // where someone looks when capture has stopped working.
+        AccessBanner(
             accessGranted = accessGranted,
             onOpenNotificationSettings = onOpenNotificationSettings,
             onOpenAppInfo = onOpenAppInfo,
@@ -116,7 +116,11 @@ fun DebugScreen(
 
         when (selectedTab) {
             0 -> SegmentsTab(accessGranted)
-            1 -> LiveLogTab(accessGranted)
+            1 -> LiveLogTab(
+                accessGranted = accessGranted,
+                onOpenNotificationSettings = onOpenNotificationSettings,
+                onOpenAppInfo = onOpenAppInfo,
+            )
             2 -> SpotifyTab(
                 onConnect = onConnectSpotify,
                 connectionEpoch = connectionEpoch,
@@ -379,10 +383,26 @@ private fun SegmentRow(listen: MergedSegment, titles: Map<Long, SegmentWithTrack
 // --- Live log ----------------------------------------------------------------
 
 @Composable
-private fun LiveLogTab(accessGranted: Boolean) {
+private fun LiveLogTab(
+    accessGranted: Boolean,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenAppInfo: () -> Unit,
+) {
     val events by CaptureLog.events.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // The full access card, in both states, lives here rather than above
+        // every tab. This is the capture diagnostic tab: if nothing is being
+        // recorded, whether the listener still has access is the first thing
+        // to check, and it is the only place the "GRANTED" state is worth the
+        // space it costs.
+        AccessCard(
+            accessGranted = accessGranted,
+            onOpenNotificationSettings = onOpenNotificationSettings,
+            onOpenAppInfo = onOpenAppInfo,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -454,68 +474,6 @@ private fun EventRow(event: CaptureEvent) {
 }
 
 // --- Shared ------------------------------------------------------------------
-
-@Composable
-private fun AccessCard(
-    accessGranted: Boolean,
-    onOpenNotificationSettings: () -> Unit,
-    onOpenAppInfo: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        // Theme container colours rather than fixed ones, so the card stays
-        // readable in dark mode.
-        colors = CardDefaults.cardColors(
-            containerColor = if (accessGranted) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            },
-            contentColor = if (accessGranted) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onErrorContainer
-            },
-        ),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = if (accessGranted) {
-                    "Notification access: GRANTED"
-                } else {
-                    "Notification access: NOT GRANTED"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = if (accessGranted) {
-                    "Capturing media sessions from ${
-                        CaptureNotificationListenerService.ALLOWED_PACKAGES.joinToString()
-                    }."
-                } else {
-                    "Needed to read media sessions. Notification contents are never read."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Row(
-                modifier = Modifier.padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = onOpenNotificationSettings) {
-                    Text(if (accessGranted) "Settings" else "Grant access")
-                }
-                // Android blocks sideloaded apps from taking notification access
-                // until "Allow restricted settings" is used, which lives on the
-                // app info screen.
-                OutlinedButton(onClick = onOpenAppInfo) {
-                    Text("App info")
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun endReasonColor(reason: EndReason): Color = when (reason) {
