@@ -71,4 +71,25 @@ object SyncKeys {
      * on the writer device for the same reason.
      */
     const val EVERGREEN_WRITER_DEVICE = "evergreen_writer_device"
+
+    /**
+     * The id of the playlist this app created, or adopted by name once.
+     *
+     * The app writes only to this playlist. Discovery by name happens only when
+     * this is absent, so a playlist belonging to someone else that happens to
+     * be called Evergreen can never be adopted after the first run.
+     */
+    const val EVERGREEN_PLAYLIST_ID = "evergreen_playlist_id"
+
+    /** When Evergreen was last written, enforcing at most one write a day. */
+    const val EVERGREEN_LAST_WRITTEN_AT = "evergreen_last_written_at"
+
+    /**
+     * When the user confirmed the first write.
+     *
+     * Until this is set, every sync computes its diff and writes nothing. The
+     * same pattern as the same-song merge: the first irreversible action is
+     * shown in full and confirmed once.
+     */
+    const val EVERGREEN_WRITE_CONFIRMED_AT = "evergreen_write_confirmed_at"
 }

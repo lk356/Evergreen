@@ -70,6 +70,20 @@ abstract class ScoringDao {
     open suspend fun hasStoredScoringParameters(): Boolean =
         syncState(SyncKeys.SCORING_PARAMETERS)?.valueText != null
 
+    // --- Small sync_state values the Evergreen sync keeps ----------------------
+
+    open suspend fun syncStateMs(key: String): Long? = syncState(key)?.valueMs
+
+    open suspend fun syncStateText(key: String): String? = syncState(key)?.valueText
+
+    open suspend fun putSyncMs(key: String, at: Long) =
+        putSyncState(SyncStateEntity(key = key, valueMs = at))
+
+    open suspend fun putSyncText(key: String, text: String) =
+        putSyncState(SyncStateEntity(key = key, valueText = text))
+
+    open fun syncValueFlow(key: String): Flow<SyncStateEntity?> = syncStateFlow(key)
+
     // --- The score cache ------------------------------------------------------
 
     @Query("SELECT * FROM scores ORDER BY rank")
