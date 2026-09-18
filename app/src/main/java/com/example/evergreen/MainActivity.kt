@@ -1,5 +1,6 @@
 package com.example.evergreen
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -51,9 +52,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * The only runtime permission this app asks for.
+     *
+     * Asked once, on first launch, and never again -- Android itself stops
+     * showing the dialog after a refusal, and nagging through a rationale
+     * screen would be asking for something the app works perfectly well
+     * without. Nothing is gated on the answer; a refusal costs the warnings and
+     * nothing else.
+     */
+    private val requestNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* Granted or not, the app behaves the same. */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        Notifications.createChannels(this)
+        if (!Notifications.canPost(this)) {
+            requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         setContent {
             EvergreenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->

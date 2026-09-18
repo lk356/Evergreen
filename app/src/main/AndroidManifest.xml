@@ -3,10 +3,24 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-        INTERNET is the only permission declared here, and it arrives in Phase 2
-        for one purpose: reading likes from the Spotify Web API. The hosts that
-        may be contacted are restricted in code (see SpotifyHttp), because
-        Android offers no manifest-level way to express it.
+        Two permissions are declared here.
+
+        INTERNET arrives in Phase 2 for one purpose: reading likes from, and in
+        Phase 3 writing the Evergreen playlist to, the Spotify Web API. The
+        hosts that may be contacted are restricted in code (see SpotifyHttp),
+        because Android offers no manifest-level way to express it.
+
+        POST_NOTIFICATIONS arrives in Phase 3, and is the only runtime
+        permission this app has ever asked for. It exists for one notification
+        that is on by default: "reconnect Spotify". That is the app's only
+        silent failure — the refresh token expires six months after the original
+        login, and until it is renewed the likes stop syncing and Evergreen
+        stops being written, with nothing on screen to say so unless the app is
+        opened. Two other channels (snapshots, playlist changes) are built but
+        default to off.
+
+        Declining it costs nothing but the warnings. Nothing in the app is
+        gated on it.
 
         The *merged* manifest holds more than this one. androidx.work contributes
         ACCESS_NETWORK_STATE, WAKE_LOCK, FOREGROUND_SERVICE and
@@ -27,6 +41,7 @@
         No analytics, advertising or crash-reporting SDKs — ever.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"

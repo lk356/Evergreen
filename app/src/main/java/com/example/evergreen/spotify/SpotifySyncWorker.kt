@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.evergreen.Notifications
 import com.example.evergreen.data.EvergreenDatabase
 import java.util.concurrent.TimeUnit
 
@@ -34,15 +35,32 @@ class SpotifySyncWorker(
         if (!auth.isConfigured) return Result.success()
 
         when (auth.connectionState()) {
-            is SpotifyConnectionState.NotConnected,
-            is SpotifyConnectionState.Expired,
-            -> {
+            is SpotifyConnectionState.Expired -> {
                 // Nothing to do and nothing to retry. Scheduled work is
                 // cancelled so a dead connection does not wake the device twice
                 // a day forever; connecting schedules it again.
+                //
+                // This is the app's one silent failure, so it is the one thing
+                // that interrupts: the six-month refresh token has died and
+                // nothing on the device would say so until the app was opened.
+                Log.i(TAG, "connection expired; cancelling scheduled sync until reconnected")
+                Notifications.postReconnectRequired(applicationContext)
+                cancel(applicationContext)
+                return Result.success()
+            }
+
+            is SpotifyConnectionState.NotConnected -> {
+                // Never connected, or deliberately disconnected. Not a failure
+                // and not something to be told about.
                 Log.i(TAG, "not connected; cancelling scheduled sync until reconnected")
                 cancel(applicationContext)
                 return Result.success()
+            }
+
+            // The two-week advance warning, so a reconnect can happen before
+            // anything stops rather than after.
+            is SpotifyConnectionState.ExpiringSoon -> {
+                Notifications.postReconnectRequired(applicationContext, expiringSoon = true)
             }
 
             else -> Unit
@@ -71,6 +89,7 @@ class SpotifySyncWorker(
             is SyncOutcome.BackedOff -> Result.success()
 
             is SyncOutcome.NeedsReconnect -> {
+                Notifications.postReconnectRequired(applicationContext)
                 cancel(applicationContext)
                 Result.success()
             }

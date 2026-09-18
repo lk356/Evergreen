@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.evergreen.Notifications
 import com.example.evergreen.data.EvergreenDatabase
 import java.util.concurrent.TimeUnit
 
@@ -69,6 +70,7 @@ class EvergreenSyncWorker(
             }
 
             EvergreenSyncResult.Outcome.NEEDS_RECONNECT -> {
+                Notifications.postReconnectRequired(applicationContext)
                 cancel(applicationContext)
                 Result.success()
             }
@@ -81,6 +83,13 @@ class EvergreenSyncWorker(
             // write and must not look like a failure.
             else -> {
                 Log.i(TAG, "evergreen sync: ${result.outcome} ${result.message.orEmpty()}")
+                if (result.added > 0 || result.removed > 0) {
+                    Notifications.postPlaylistChanged(
+                        applicationContext,
+                        added = result.added,
+                        removed = result.removed,
+                    )
+                }
                 Result.success()
             }
         }

@@ -9,6 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.example.evergreen.Notifications
 import com.example.evergreen.data.EvergreenDatabase
 import java.util.concurrent.TimeUnit
 
@@ -36,6 +37,11 @@ class SnapshotWorker(
         return when (val result = Snapshots(db).takeIfDue()) {
             is SnapshotResult.Taken -> {
                 Log.i(TAG, "took snapshot ${result.monthKey} of ${result.trackCount} tracks")
+                Notifications.postSnapshotTaken(
+                    applicationContext,
+                    label = result.label,
+                    trackCount = result.trackCount,
+                )
                 Result.success()
             }
             // All three are ordinary: not the right day, already have one, or
