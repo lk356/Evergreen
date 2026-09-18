@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Evergreen talks to exactly two hosts, both Spotify's, both over HTTPS.
+
+    Cleartext HTTP is already off by default on modern Android; it is stated
+    explicitly here so that a future change cannot re-enable it by accident.
+
+    This file cannot restrict *which* hosts the app may reach — Android has no
+    such control. That restriction is enforced in code instead: every request
+    goes through SpotifyHttp, which refuses any host outside its allowlist, and
+    a unit test asserts it.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

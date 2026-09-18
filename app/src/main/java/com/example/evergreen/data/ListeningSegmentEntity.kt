@@ -66,13 +66,32 @@ enum class EndReason {
             entity = TrackEntity::class,
             parentColumns = ["id"],
             childColumns = ["trackId"],
-            onDelete = ForeignKey.CASCADE,
+            // RESTRICT since schema v2, previously CASCADE.
+            //
+            // Under CASCADE, deleting one canonical track silently deleted
+            // every segment recorded against it — the listening history this
+            // app exists to accumulate, destroyed by a single DELETE. The risk
+            // is not hypothetical: merging two canonical tracks means deleting
+            // one of them.
+            //
+            // RESTRICT makes the database refuse such a delete. A merge must
+            // therefore re-point its segments first and say so explicitly,
+            // rather than losing them by omission.
+            onDelete = ForeignKey.RESTRICT,
         ),
         ForeignKey(
             entity = ServiceTrackEntity::class,
             parentColumns = ["id"],
             childColumns = ["serviceTrackRowId"],
-            onDelete = ForeignKey.SET_NULL,
+            // RESTRICT since schema v2, previously SET NULL.
+            //
+            // SET NULL was the same loss wearing a quieter coat: deleting a
+            // service row blanked this column, leaving segments that still knew
+            // how long they were listened to but no longer which Spotify
+            // recording they were. The column stays nullable — plenty of
+            // segments never had a service id at all — but a row that *has* one
+            // may not have it taken away.
+            onDelete = ForeignKey.RESTRICT,
         ),
     ],
     indices = [

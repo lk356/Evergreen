@@ -40,10 +40,10 @@ streaming services:
       include track URIs. _(done 2026-09-17)_
 - [x] **Phase 1 — Capture MVP.** Allowlisted listener service, Room database of
       play segments, debug screen to verify them. _(done 2026-09-17)_
-- [ ] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
-      like sync, track matching, canonical track table. Verify against the live
-      Spotify Web API reference that track responses still include ISRC before
-      relying on it.
+- [~] **Phase 2 — Spotify connection.** PKCE login, encrypted token storage,
+      like sync, track matching, canonical track table. _Built and unit/instrument
+      tested on branch `phase2-spotify`; awaiting the user's first real login and
+      the Spotify DJ device session before it can be called done._
 - [ ] **Phase 3 — Core feature.** Scoring, daily Evergreen playlist sync,
       monthly snapshots. Seed scores from Spotify extended streaming history.
 - [ ] **Phase 4 — Usability.** Real UI, snapshot search, like widget,
@@ -66,9 +66,30 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 1 complete and device-verified**, plus follow-ups on
-  branch `phase1-followups`.
+- Current phase: **Phase 2 built, not yet device-verified.** Branch
+  `phase2-spotify`.
 - Last update: 2026-09-17.
+
+Phase 2 added the Spotify connection: PKCE login, Keystore-encrypted tokens,
+schema v2 with RESTRICT foreign keys and the like archive, like sync, ISRC
+backfill, WorkManager scheduling and a Spotify debug tab. 54 instrumented and
+68 unit tests pass on the Pixel 10 Pro. The capture path is untouched —
+`git diff main..phase2-spotify -- app/src/main/java/com/example/evergreen/capture/`
+is empty.
+
+**Two things are outstanding before Phase 2 can be ticked:**
+1. The user has not yet connected a real Spotify account. Everything below the
+   login is tested against scripted API answers, not against Spotify.
+2. The same-song merge is implemented and tested, but **has not been run over
+   the real database**. The dry run shows the plan; running it is one tap behind
+   a confirmation. See "Same-song merging" under Phase 2 questions.
+
+Device-verified on the Pixel 10 Pro: login, 380/380 likes synced with 100% ISRC
+coverage, the reconnect state, and an 8-minute Spotify DJ session. See
+"Phase 2 device verification" and "Spotify DJ — examined" below.
+
+**Next:** run the merge on the Pixel (2 pairs, 0 segments to move), then
+Phase 3 scoring.
 
 Phase 1 replaced the spike with a real capture pipeline: listening is stored as
 play segments in a Room database, one row per continuous listen, and the replay,
@@ -395,52 +416,391 @@ both, which is why they are separate columns.
   evidence that the position logic is sound, and a reminder that long
   callback-free stretches are normal rather than exceptional.
 
+## Phase 2 results (2026-09-17)
+
+Built on branch `phase2-spotify`. 54 instrumented + 68 unit tests, all passing
+on the Pixel 10 Pro. **Not yet exercised against a real Spotify account.**
+
+### The API was verified first, and three things had changed
+
+`CLAUDE.md` says to check every endpoint against the live reference rather than
+trusting training data. That paid for itself three times.
+
+| Question | Answer | Where checked |
+|---|---|---|
+| Does the track object still return `isrc`? | **Yes** — but it was *removed* for development-mode apps in Feb 2026 and **reverted in March 2026**. Present on `GET /tracks/{id}` and inside `GET /me/tracks`, not deprecated. | changes/february-2026, changes/march-2026, reference/get-track |
+| Current endpoint for reading likes? | **`GET /me/tracks`, unchanged.** The `/me/library` consolidation moved only the *writes* (`PUT`/`DELETE`). The read stayed put and is listed under "endpoints still available". | changes/february-2026, reference/get-users-saved-tracks |
+| Scopes needed? | **`user-library-read` only.** | concepts/scopes |
+| Redirect URI schemes? | HTTPS, loopback, or a custom scheme. `com.example.evergreen://auth` was **accepted by the dashboard**, despite reports of custom schemes being rejected on apps created after 9 April 2025. | blog/2025-02-12 security requirements, dashboard |
+| Refresh token lifetime? | **Six months from the original authorization**, not extended by refreshing. Expiry is `400 {"error":"invalid_grant"}`; Spotify says discard and re-login, do not retry. | blog/2026-06-18 |
+| Rate limits? | Rolling **30-second** window; 429 carries `Retry-After` **in seconds**; `QUOTA_EXCEEDED` is a `reason` field in the error body, enforced differently from rate limits and with no published numbers. | concepts/rate-limits, concepts/api-calls |
+
+### ⚠️ The batch track endpoint is gone
+
+**`GET /tracks?ids=` ("Get Several Tracks") was removed for development-mode apps
+in February 2026.** Spotify's own migration guide says to *"fetch items
+individually instead"*. The Phase 2 brief asked for batched ISRC lookups; that is
+no longer possible, and this is the workaround:
+
+| Source of a track | How its ISRC arrives | Cost |
+|---|---|---|
+| One of your liked songs | free, inside the `GET /me/tracks` like sync | ~1 request per **50** tracks |
+| Listened to but not liked | `GET /tracks/{id}`, individually | 1 request per track |
+
+So the bulk case stayed cheap by accident of the saved-track response carrying
+full track objects. Only the unliked tail costs one request each — paced,
+capped per run, and recorded so a failure resumes rather than re-fetching.
+
+Also removed in Feb 2026 and worth knowing before Phase 3: **`POST
+/users/{user_id}/playlists`**, replaced by **`POST /me/playlists`**.
+
+### ⚠️ Spotify has no playlist folders, and never has
+
+Checked because the original plan mentioned creating "playlists/folders". The
+Web API cannot create, read or list folders. It is a long-standing gap, not a
+scope we are missing. Phase 3/4 options, none needing folders:
+
+- one live `Evergreen` playlist, rewritten as scores move (**recommended**);
+- snapshots exported as `Evergreen — 2026 August`, which sort together and can
+  be dragged into a folder by hand, once;
+- snapshots kept in-app and searchable, exported only on request (already the
+  plan).
+
+### Schema v2
+
+Generated by Room from the committed `schemas/1.json`, not hand-written.
+
+**All three foreign keys became `RESTRICT`**, not just the one the brief named.
+Fixing `listening_segments → tracks` alone leaves a hole: a merge re-points the
+segments, then deletes the losing track, which cascades away its `service_tracks`
+row — the Spotify URI and the ISRC — and the old `SET NULL` on
+`serviceTrackRowId` then blanks the segments' link to it. The segments would
+survive with their listened time intact and no record of *which recording* they
+were. Same table rebuild either way.
+
+Consequence worth remembering: **`deleteEverything()` can no longer rely on a
+cascade.** It deletes children before parents explicitly, and there is a test
+for it. Any future bulk delete has to do the same or it will hit a constraint
+failure — which is the behaviour we asked for.
+
+**The like archive is two tables**, following the Phase 1 rule that facts and
+conclusions are stored separately:
+- `like_events` — append-only, never deleted. Every like, unlike and re-like.
+- `likes` — current state per service track; `unlikedAt IS NULL` is the only
+  meaning of "liked now".
+
+Events are written only on *transitions*. One row per liked song per sync would
+be thousands of rows a day describing nothing having happened.
+
+`service_tracks` gained `isrcLookupAt` / `isrcLookupAttempts` /
+`isrcLookupError`, so a failed lookup is retryable without re-fetching — which
+matters much more now that a re-fetch costs one request per track.
+
+### The rule that stops a rate limit destroying the archive
+
+The reconciliation that marks songs unliked **runs only after a sync that read
+every page**. A run stopped by a 429, a dropped connection or a flat battery is,
+from the database's side, indistinguishable from the user having unliked every
+song it did not reach. Without the guard, one rate limit would mass-unlike the
+archive. There is a test named for exactly that.
+
+### Auth
+
+Hand-written PKCE, ~200 lines, chosen over AppAuth. The reasoning shifted during
+the phase and is worth recording: the user said they may not maintain this
+project actively, which initially sounded like an argument *for* a library.
+It is the opposite. OAuth 2.0 + PKCE is a settled standard with no reason to
+rot, whereas an unmaintained app carrying AppAuth carries whatever CVE turns up
+in AppAuth with nobody watching. What actually breaks is Spotify changing
+endpoints — three times this year — and no library helps with that.
+
+So the code is built to fail **loudly and legibly**: every endpoint carries the
+reference URL and the date it was checked, all network access funnels through
+one file, and refresh expiry is a visible state rather than a silent stall.
+
+Security decisions, each with a test:
+- `SecureRandom` verifier, `S256` only — there is no code path that can emit
+  `plain`;
+- the verifier never reaches the browser;
+- single-use `state`, compared in constant time;
+- **host allowlist in code** (`accounts.spotify.com`, `api.spotify.com`) — exact
+  match, so `api.spotify.com.evil.test` is refused; Android has no manifest-level
+  way to express this;
+- cleartext refused even to an allowed host;
+- no client secret in any request;
+- AES-256-GCM with a non-extractable Android Keystore key, StrongBox where
+  available; **not** `security-crypto`, which is deprecated;
+- tokens live outside the Room database, so a future database export physically
+  cannot contain a credential;
+- nothing logs a token, code or verifier.
+
+A custom-scheme redirect can in principle be hijacked by another app. That is
+precisely the attack PKCE defends against: the intercepted code cannot be
+redeemed without the verifier, which never leaves the process.
+
+### Learned while building
+
+- **Development-mode apps must allowlist even the owner.** The dashboard showed
+  **0/5 users** although the prep checklist claimed the account was allowlisted.
+  Spotify: *"Users may be able to log into a development mode app without having
+  been allowlisted... However, API requests... will receive a 403."* Login looks
+  fine and every request then fails — a confusing failure worth knowing the shape
+  of. The API layer logs the likely cause on a 403.
+- **`room-testing` 2.8.5 needs `kotlinx-serialization-core` 1.8.1.** The
+  instrumented classpath pins `-core` to 1.7.3 `strictly` while `-json` resolves
+  to 1.8.1, and `runMigrationsAndValidate` dies with `AbstractMethodError` on
+  `FieldBundle$$serializer` — `GeneratedSerializer.typeParametersSerializers()`
+  is defaulted in 1.8.x and still abstract in 1.7.x. Fixed with a `force` on the
+  androidTest configurations. The matcher has to be
+  `contains("AndroidTest", ignoreCase = true)`, because the configuration that
+  feeds the test APK is `debugAndroidTestRuntimeClasspath` and does not start
+  with "androidTest".
+- **Room auto-migration handles a foreign-key change** by rebuilding the table,
+  copying every row and running `foreign_key_check`. It only needed a
+  `@ColumnInfo(defaultValue = "0")` on the new non-null column.
+- **A "now" injected into one class is not enough.** `PendingAuthStore` had its
+  own clock while `SpotifyAuth` had an injectable one, so a staleness check could
+  disagree with the timestamp an attempt was saved with. Found by the tests.
+
+### If the Spotify connection breaks, check these first
+
+In rough order of likelihood:
+
+1. **"Connection expired"** on the Spotify tab — the six-month refresh token
+   died. Tap **Reconnect Spotify**. Expected roughly twice a year; not a bug.
+2. **Everything 403s** — the account is no longer on the app's allowlist.
+   Dashboard → the app → **User Management**.
+3. **Login never returns** — the redirect URI in the dashboard no longer matches
+   `SPOTIFY_REDIRECT_URI` in `app/build.gradle.kts`. They must match exactly,
+   including case and trailing slash.
+4. **"Not configured"** — `spotify.clientId` is missing from `local.properties`
+   (gitignored, so it does not survive a fresh clone).
+5. **A 404 or a changed field** — Spotify moved something again. Every endpoint
+   in `SpotifyApi.kt` and `SpotifyAuth.kt` carries the reference URL and the date
+   it was last verified. Re-check those pages.
+6. **Development mode requires the owner to hold Spotify Premium.** If the
+   subscription lapses, the app stops working.
+
 ## Open questions — still open
 
 - Initial scoring parameters (decay half-life, skip penalty, grace period).
   Belongs to Phase 3.
-- **Spotify DJ — completely unexamined.** The DJ plays a curated stream with
-  spoken commentary between songs, and none of it has been tested against
-  capture. Things to find out before trusting DJ-era data:
-  - Does the spoken commentary surface as a media session track? If it does,
-    capture will currently record it as a listen of something that is not a
-    song.
-  - What identifier does commentary carry — a `spotify:track:` URI, an episode
-    URI, or none at all? Whether it can be filtered out depends entirely on
-    this, so it is the first thing to check.
-  - DJ auto-advances and invites heavy skipping, so skip rates there may mean
-    something different from skips in a playlist the user built.
-  - Scoring: a song the DJ chose was not chosen by the user. Should it count
-    the same as a deliberate play, or less?
+### Phase 2 device verification (2026-09-17, Pixel 10 Pro, user-run)
 
-  Capture stores `appPackage` and the per-service track id on every segment and
-  draws no conclusions, so if commentary turns out to be distinguishable by its
-  identifier, DJ listens can be filtered or reweighted **retroactively** from
-  data already recorded. If it is not distinguishable, that is the thing worth
-  knowing early. Worth a short device session in Phase 2, before Phase 3 starts
-  scoring anything.
+| Check | Result |
+|---|---|
+| PKCE login via Custom Tab | ✅ |
+| Granted scope | ✅ `user-library-read` — exactly what was requested |
+| Likes synced | ✅ **380**, matching desktop Spotify's count |
+| ISRC coverage | ✅ **380/380, 100%** — all from the like sync, zero individual fetches |
+| Tokens encrypted at rest | ✅ one base64 blob, no readable token in `shared_prefs` |
+| Reconnect state after revoke | ✅ red card, "Connection expired — reconnect Spotify" |
+| Reconnect restores sync | ✅ |
+| Merge dry run | ✅ 2 ISRCs over 4 tracks, no false positives |
 
-### Phase 2 questions
+**100% ISRC coverage from the like sync alone** is better than budgeted for. The
+individual-fetch path (needed because the batch endpoint was removed) had nothing
+to do for liked songs, and only ran for tracks played but not liked.
 
-- **Same-song merging.** `trackKey` includes the album, so the single and the
-  album version of a song never share a canonical track — they arrive as two
-  rows with two service IDs. Decide the merge rule. ISRC is the obvious
-  candidate, but **verify against the live Spotify Web API reference that track
-  responses still return it** before designing around it; the API changed
-  significantly between February and July 2026. Until then the per-service row
-  holds a null `isrc` and nothing depends on it.
-- **Protect history from deletes.** The segment → track foreign key is currently
-  `ON DELETE CASCADE`, so deleting or merging a canonical track would silently
-  take its listening history with it — exactly the data the app exists to
-  accumulate. Change it to `RESTRICT` in the v2 migration, forcing any merge to
-  re-point its segments deliberately rather than destroy them.
-- **Login design.** Choose between AppAuth and a hand-written PKCE flow.
-  AppAuth is a new third-party dependency and needs approval before it goes in.
-  Store tokens with a key held in the Android Keystore, **not** the deprecated
-  `security-crypto` library. Show a clear "reconnect Spotify" notice when the
-  six-month refresh token expires, rather than failing silently. Check the
-  redirect URI rules in the Spotify developer dashboard before committing to
-  one.
+**Spotify's own counts disagree, and that is Spotify's doing.** Desktop reports
+380 saved tracks, mobile reports 374. The user confirmed the difference is
+unavailable tracks, which the mobile client hides and the desktop client does
+not. The Web API returns the full set, which is what the archive wants: a track
+going unavailable in one region should not silently vanish from listening
+history.
+
+**The consent screen asks for more than the scope does.** It lists "View your
+Spotify account data — name, username, profile picture, followers, public
+playlists" alongside the library line, despite only `user-library-read` being
+requested. The token response confirms only `user-library-read` was *granted*,
+so this is Spotify's consent copy being broader than the grant. Worth knowing so
+it is not mistaken for a scope leak later. Independently: the app contains no
+profile endpoint at all — the only four URLs it can reach are `/authorize`,
+`/api/token`, `/v1/me/tracks` and `/v1/tracks/{id}`, enforced by a host
+allowlist.
+
+### Verifying expiry needs a local nudge
+
+Revoking access at spotify.com/account/apps kills the **refresh** token but
+leaves the existing **access** token working until it expires on its own, about
+an hour later. A sync immediately after revoking therefore just succeeds —
+observed on device:
+
+```
+09-17 18:18:48  I LikeSync: like sync complete: 380 liked, 0 newly unliked
+```
+
+That is correct behaviour, not a bug, but it means the reconnect path cannot be
+tested by revoking alone without waiting an hour. The Spotify tab has a
+**"Force token refresh (test reconnect)"** button that discards the access token
+locally so the next sync must refresh. It fakes no state: the real refresh runs
+against the real endpoint, and a revoked grant then returns `invalid_grant` for
+real. Verified end to end.
+
+Also fixed while verifying: the connection card only re-read its state when the
+login flow returned, so a background expiry would have sat behind a stale
+"Connected". It now re-reads on resume.
+
+### Spotify DJ — examined 2026-09-17 (Pixel 10 Pro, ~8 minute session)
+
+**Commentary is observable, and it is distinguishable. Filtering is possible.**
+
+Captured live over adb while the user ran a DJ session: three commentary
+segments, ~17 track changes, several skips and a natural auto-advance. Read from
+two independent sources — Evergreen's own capture log (which records `mediaId`)
+and `dumpsys media_session` (which does not filter anything).
+
+**1. Does commentary surface as a media-session track?** **Yes.** Every spoken
+segment produced a metadata callback and a stored segment, exactly like a song.
+
+**2. What identifier does it carry?** This is the finding everything else rests
+on:
+
+```
+[METADATA] Up next — DJ X | album=DJ duration=(unknown) id=spotify:media:2j7w4Q2yMxa9ekzCdGhKUc
+[METADATA] Love me forever! — Ado [4:09] | album=Love me forever! duration=249000ms id=spotify:track:2j7w4Q2yMxa9ekzCdGhKUc
+```
+
+Commentary carries **`spotify:media:<id>`, not `spotify:track:<id>`**. A
+different URI scheme, on the same `mediaId` field the capture already stores.
+
+Note the two lines share the same opaque id — the commentary is keyed to the
+track it announces, differing only in scheme. In two of the three observed cases
+the id matched the *following* track ("Up next"); in the third it matched the
+preceding one. **So commentary has no identity of its own**, and cannot be
+looked up as an entity. It can only be recognised, which is all that is needed.
+Because the two URIs are different strings, they occupy different
+`service_tracks` rows and never collide.
+
+**3. Is DJ playback distinguishable from normal playback?** **Yes, by three
+independent signals**, any one of which is sufficient:
+
+| Signal | Commentary | A real track |
+|---|---|---|
+| `serviceTrackId` scheme | `spotify:media:` | `spotify:track:` |
+| duration | `0` (unknown) | real, in ms |
+| title / artist / album | `Up next` / `DJ X` / `DJ` | the real values |
+
+The scheme is the one to depend on. The metadata strings are user-visible text
+and will be localised or reworded; the URI scheme is structural.
+
+**What is NOT distinguishable:** a *song* the DJ chose looks exactly like a song
+the user chose. `appPackage` is `com.spotify.music` either way, and the track
+URI is an ordinary `spotify:track:`. Only the commentary rows around it reveal
+that a DJ session was in progress. So "was this play DJ-selected?" is
+answerable only by inference from neighbouring rows and their timestamps, not
+from the row itself. Recording that as a known limit rather than inventing a
+field for it.
+
+**What this means for the stored data**
+
+- All commentary collapses into **one canonical track** (`trackKey` =
+  `up next|dj x|dj`), because the metadata is identical every time. Convenient:
+  one row to filter, not thousands.
+- But each commentary segment creates **its own `service_tracks` row**, since
+  each carries a different `spotify:media:` id. Verified on device: 3 commentary
+  segments produced 3 service rows and 1 canonical track. **This grows
+  unboundedly with DJ use** and is worth watching.
+- Commentary segments store `listenedMs = 0`, `endPositionMs = 0`,
+  `trackDurationMs = 0`. Harmless to any scoring rule that requires listened
+  time above zero.
+
+**Changed in response**
+
+Commentary is **kept, not discarded** — it is a fact about what played, and the
+project's rule is that capture stores facts for scoring to interpret later.
+Filtering it at capture time would bake in a conclusion. But two things were
+fixed:
+
+- Non-track URIs are **excluded from the ISRC backfill queue**. No track
+  endpoint will resolve `spotify:media:`, and leaving it in would have burned
+  five attempts over five weeks to rediscover what the identifier already says.
+- ISRC coverage counts **real tracks only**, with commentary shown on its own
+  line. Otherwise coverage would drift downwards the more the DJ is used, making
+  a category that does not apply look like a backfill falling behind.
+
+Both pinned by instrumented tests, so a later change cannot quietly start
+treating commentary as a song.
+
+**Phase 3 can now decide this from data already recorded.** Nothing needs
+recapturing.
+
+### Crossfade inflates position reached — found during the same session
+
+DJ crossfades between tracks, and the transition shows up as a **large forward
+seek on the outgoing track**:
+
+```
+City Cook — Caravan Palace  listened=0:24  reached=3:09 (92%)  seeks=1 skipped=2:44
+Tokyo — Dwin, Kush Kush     listened=0:15  reached=2:05 (94%)  seeks=1 skipped=1:49
+```
+
+Twenty-four seconds heard, reported as 92% of the way through. Under the Phase 0
+logic — which read the amount played off the final position — both of these
+would have been recorded as near-complete plays of songs that were barely heard.
+
+This is the seek-to-end bug arriving through a route Phase 1 did not anticipate:
+not a user seeking, but the player's own crossfade. The Phase 1 design handles it
+correctly and without modification, because `listenedMs` accumulates only while
+playback actually runs and `endPositionMs` is stored separately. It is a third
+independent confirmation that **position reached must never be used as a proxy
+for how much was heard** — and a reminder that the two columns exist for a
+reason if anyone is ever tempted to collapse them.
+
+### Phase 2 questions — answered
+
+- **Same-song merging. Rule approved 2026-09-17; not yet implemented, nothing
+  merged.** ISRC is available (removed Feb 2026, reverted March 2026), and the
+  dry run over 380 real tracks found **2 ISRCs covering 4 tracks, with no false
+  positives**:
+
+  | ISRC | Tracks |
+  |---|---|
+  | `QZES82519626` | CAN'T GET HIGH — album *RENO (ALL IN)* / CAN'T GET HIGH — album *CAN'T GET HIGH* |
+  | `USQX92504223` | Dracula — album *Deadbeat* / Dracula — album *Dracula* |
+
+  Both are the textbook case: one album release, one standalone single, same
+  recording, split only because `trackKey` includes the album.
+
+  **The rule:** two canonical tracks merge when their `service_tracks` rows
+  share an ISRC. The survivor is whichever has more listening segments, ties
+  broken by lowest id (first seen). Merging re-points the loser's segments *and*
+  its service rows, then deletes the loser's `tracks` row. Every merge is logged
+  to a `track_merges` table. Manual trigger after a dry run, never automatic
+  during sync.
+
+  **Likes are unaffected**, because they attach to `service_tracks` rather than
+  to canonical tracks. Both the single and the album version stay in the archive
+  as separate entries; only the song the scorer sees is unified.
+
+  **Why merge at all:** unmerged, playing the single sometimes and the album
+  version other times produces two half-fed scores, each decaying as though the
+  song were half-abandoned.
+
+  **Known limit:** a remaster gets a fresh ISRC and so will *not* merge. That is
+  defensible — it is a different recording — but this rule catches same-recording
+  pairs only, not every "same song" pair.
+
+  **Implemented in schema v3** (which only adds the `track_merges` audit table;
+  no existing table is touched). The order inside `mergeTracks` is load-bearing:
+  segments and service rows are re-pointed *first*, and only then is the losing
+  `tracks` row deleted. Under the v2 RESTRICT keys, getting that backwards does
+  not quietly destroy history — it raises a constraint error and the transaction
+  rolls back. The protection and the operation were designed together.
+
+  Tested with listening history on **both** sides of the merge, which the live
+  data does not yet have and which is the case where a mistake would cost
+  something: 8 segments in, 8 segments out, one canonical track, both Spotify
+  URIs still present and pointing at the survivor, both likes intact, no
+  dangling references, and the whole thing recorded in `track_merges`.
+- **Protect history from deletes.** Done, and widened: **all three** foreign keys
+  are now `RESTRICT`, not only `listening_segments → tracks`. See "Schema v2"
+  above for why fixing one leaves a hole.
+- **Login design.** Hand-written PKCE, not AppAuth. `androidx.browser` added for
+  a Custom Tab (RFC 8252's recommendation for native apps); no third-party
+  dependency added. Tokens in an Android Keystore key, not `security-crypto`.
+  Reconnect is a distinct visible state with a two-week advance warning. Redirect
+  URI `com.example.evergreen://auth`, confirmed accepted by the dashboard.
 
 - Phase 3 scoring questions raised by the device testing above:
   - What backwards jump counts as a replay at all? Phase 1 stores every jump

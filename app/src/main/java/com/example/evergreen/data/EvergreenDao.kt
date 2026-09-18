@@ -205,6 +205,17 @@ abstract class EvergreenDao {
     @Query("SELECT COUNT(*) FROM tracks")
     abstract fun trackCount(): Flow<Int>
 
+    /** One-shot form of [mismatchedTrackIdCount], for tests and diagnostics. */
+    @Query(
+        """
+        SELECT COUNT(*)
+          FROM listening_segments s
+          JOIN service_tracks st ON st.id = s.serviceTrackRowId
+         WHERE s.trackId != st.trackId
+        """,
+    )
+    abstract suspend fun mismatchedTrackIdCountOnce(): Int
+
     @Query("SELECT * FROM tracks ORDER BY id")
     abstract suspend fun allTracks(): List<TrackEntity>
 
@@ -220,10 +231,31 @@ abstract class EvergreenDao {
     @Query("DELETE FROM tracks")
     abstract suspend fun deleteAllTracks()
 
-    /** Wipes everything. Debug-screen affordance; cascades to service_tracks. */
+    @Query("DELETE FROM service_tracks")
+    abstract suspend fun deleteAllServiceTracks()
+
+    @Query("DELETE FROM likes")
+    abstract suspend fun deleteAllLikes()
+
+    @Query("DELETE FROM like_events")
+    abstract suspend fun deleteAllLikeEvents()
+
+    /**
+     * Wipes everything. Debug-screen affordance, behind a confirmation.
+     *
+     * The order is load-bearing since schema v2. Deleting `tracks` used to
+     * cascade into `service_tracks`; now every foreign key is RESTRICT, so each
+     * table has to be cleared before the one it points at, children first. Get
+     * the order wrong and SQLite raises a constraint failure rather than
+     * deleting anything — which is the behaviour we asked for, and the reason
+     * this is spelled out instead of relying on a cascade.
+     */
     @Transaction
     open suspend fun deleteEverything() {
+        deleteAllLikeEvents()
+        deleteAllLikes()
         deleteAllSegments()
+        deleteAllServiceTracks()
         deleteAllTracks()
     }
 }
