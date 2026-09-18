@@ -11,27 +11,53 @@ import java.net.URLEncoder
 /**
  * The scopes Evergreen asks for, and nothing else.
  *
- * `user-library-read` ("Read access to a user's library") is all that
- * `GET /me/tracks` requires, and reading likes is all Phase 2 does.
+ * - `user-library-read` ("Read access to a user's library") is all that
+ *   `GET /me/tracks` requires, and reading likes is all Phase 2 does.
+ * - `playlist-modify-private` lets Phase 3 create the private Evergreen
+ *   playlist and add and remove tracks in it.
+ * - `playlist-read-private` lets it read the playlist back before each write,
+ *   so the diff is computed against what is really there. Decision 10.2 chose
+ *   this over trusting the app's own membership table: two requests a day buys
+ *   a sync that heals itself when the playlist is edited elsewhere, instead of
+ *   drifting silently.
  *
  * Deliberately not requested:
+ * - `playlist-modify-public` — Evergreen is created private and stays private.
  * - `user-library-modify` — likes are made with Spotify's own button; this app
  *   only reads them.
  * - `user-read-private` / `user-read-email` — the app never needs to know who
  *   the user is, and February 2026 removed most profile fields anyway.
- * - any `playlist-*` scope — Phase 3 writes the Evergreen playlist and will ask
- *   then. Being sent back to the consent screen at that point is correct
- *   behaviour, not a cost worth pre-empting.
+ *
+ * **Adding the two playlist scopes forces a reconnect**, because a granted
+ * token cannot be widened. The consent screen will also describe more than
+ * these scopes cover; Phase 2 saw the same thing with `user-library-read`, and
+ * the token response is what says what was actually granted.
  *
  * Verified against developer.spotify.com/documentation/web-api/concepts/scopes
- * on 2026-09-17.
+ * on 2026-09-17, and each playlist endpoint's own reference page re-checked on
+ * 2026-09-18.
  */
 object SpotifyScopes {
     const val USER_LIBRARY_READ = "user-library-read"
+    const val PLAYLIST_MODIFY_PRIVATE = "playlist-modify-private"
+    const val PLAYLIST_READ_PRIVATE = "playlist-read-private"
 
-    val requested = listOf(USER_LIBRARY_READ)
+    val requested = listOf(USER_LIBRARY_READ, PLAYLIST_MODIFY_PRIVATE, PLAYLIST_READ_PRIVATE)
 
     val asParameter: String get() = requested.joinToString(" ")
+
+    /**
+     * True when a stored grant covers everything Phase 3 needs.
+     *
+     * A connection made before the playlist scopes existed is still valid for
+     * reading likes, so it is not an error — but it cannot write the playlist,
+     * and the difference has to be visible rather than surfacing as a 403 in a
+     * background worker.
+     */
+    fun coversPlaylistWrites(grantedScopes: String?): Boolean {
+        val granted = grantedScopes?.split(' ')?.filter { it.isNotBlank() }?.toSet().orEmpty()
+        return PLAYLIST_MODIFY_PRIVATE in granted && PLAYLIST_READ_PRIVATE in granted
+    }
 }
 
 /**

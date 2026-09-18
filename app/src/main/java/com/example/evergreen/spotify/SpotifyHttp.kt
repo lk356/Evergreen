@@ -24,12 +24,18 @@ data class HttpResponse(
  * without a device or a network.
  */
 interface HttpTransport {
+    /**
+     * @param form a form-encoded body, as the token endpoint requires.
+     * @param jsonBody a JSON body, as the playlist endpoints require. At most
+     *   one of [form] and [jsonBody] may be given.
+     */
     @Throws(IOException::class)
     fun execute(
         method: String,
         url: String,
         headers: Map<String, String> = emptyMap(),
         form: Map<String, String>? = null,
+        jsonBody: String? = null,
     ): HttpResponse
 }
 
@@ -89,8 +95,10 @@ class UrlConnectionTransport(
         url: String,
         headers: Map<String, String>,
         form: Map<String, String>?,
+        jsonBody: String?,
     ): HttpResponse {
         SpotifyHosts.require(url)
+        require(form == null || jsonBody == null) { "pass a form body or a JSON body, not both" }
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -111,6 +119,17 @@ class UrlConnectionTransport(
                     "${k.urlEncoded()}=${v.urlEncoded()}"
                 }
                 connection.outputStream.use { it.write(encoded.toByteArray(Charsets.UTF_8)) }
+            }
+
+            if (jsonBody != null) {
+                // Note that the playlist remove endpoint is a DELETE *with* a
+                // body, which older Java HttpURLConnection implementations
+                // refuse. Android's is backed by OkHttp and allows it; if this
+                // ever starts throwing on a new platform version, that is the
+                // cause and not the request being malformed.
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
             }
 
             val code = connection.responseCode

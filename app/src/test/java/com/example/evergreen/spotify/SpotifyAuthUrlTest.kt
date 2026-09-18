@@ -81,8 +81,16 @@ class SpotifyAuthUrlTest {
      */
     @Test
     fun onlyTheLibraryReadScopeIsRequested() {
-        assertEquals("user-library-read", params(url())["scope"])
-        assertEquals(listOf("user-library-read"), SpotifyScopes.requested)
+        // Phase 3 added the two playlist scopes, so the authorize URL now
+        // carries three. The exact set, and the long list of scopes this app
+        // deliberately never asks for, are pinned in SpotifyScopesTest; what
+        // matters here is that the URL sends exactly what was requested and
+        // nothing is added on the way.
+        assertEquals(
+            "user-library-read playlist-modify-private playlist-read-private",
+            params(url())["scope"],
+        )
+        assertEquals(SpotifyScopes.asParameter, params(url())["scope"])
     }
 
     @Test

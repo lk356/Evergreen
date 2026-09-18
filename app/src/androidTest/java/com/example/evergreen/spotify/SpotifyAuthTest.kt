@@ -42,6 +42,7 @@ class SpotifyAuthTest {
             url: String,
             headers: Map<String, String>,
             form: Map<String, String>?,
+            jsonBody: String?,
         ): HttpResponse {
             // Even the fake enforces the allowlist, so a test cannot
             // accidentally bless a URL the real transport would refuse.

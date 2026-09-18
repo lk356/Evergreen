@@ -54,6 +54,25 @@ class LikeSyncTest {
             trackRequests++
             return tracks[trackId] ?: ApiResult.NotFound
         }
+
+        // The like sync touches no playlist. These exist only to satisfy the
+        // interface, and they fail loudly rather than returning something
+        // plausible -- if the like sync ever starts calling one, the test
+        // should say so rather than quietly pass.
+        override fun myPlaylists(limit: Int, offset: Int): ApiResult<PlaylistPage> =
+            error("the like sync must not read playlists")
+
+        override fun createPlaylist(name: String, description: String): ApiResult<PlaylistSummary> =
+            error("the like sync must not create a playlist")
+
+        override fun playlistItems(playlistId: String, offset: Int): ApiResult<PlaylistItemsPage> =
+            error("the like sync must not read a playlist")
+
+        override fun addToPlaylist(playlistId: String, uris: List<String>): ApiResult<String> =
+            error("the like sync must not write a playlist")
+
+        override fun removeFromPlaylist(playlistId: String, uris: List<String>): ApiResult<String> =
+            error("the like sync must not write a playlist")
     }
 
     private val api = FakeApi()
