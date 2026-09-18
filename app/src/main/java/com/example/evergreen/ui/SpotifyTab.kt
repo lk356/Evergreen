@@ -204,6 +204,8 @@ fun SpotifyTab(
 
         HistoryImportCard()
 
+        EvergreenCard()
+
         MergeDryRun(
             plan = mergePlan,
             mergesRun = merges,
@@ -551,6 +553,8 @@ internal fun Stat(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
     }
 }
+
+internal fun formatTimeShort(epochMs: Long): String = formatTime(epochMs)
 
 private fun formatTime(epochMs: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(epochMs))

@@ -18,6 +18,7 @@ import com.example.evergreen.capture.CaptureNotificationListenerService
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyAuthActivity
 import com.example.evergreen.spotify.SpotifyConnectionState
+import com.example.evergreen.spotify.EvergreenSyncWorker
 import com.example.evergreen.spotify.SpotifySyncWorker
 import com.example.evergreen.ui.DebugScreen
 import com.example.evergreen.ui.theme.EvergreenTheme
@@ -41,6 +42,11 @@ class MainActivity : ComponentActivity() {
         // never wakes the device for a sync it cannot perform.
         if (SpotifyAuth(this).connectionState() is SpotifyConnectionState.Connected) {
             SpotifySyncWorker.schedule(this)
+            // The Evergreen sync schedules itself alongside the like sync, and
+            // cancels itself on its first run if this device is not the writer.
+            // Scheduling it unconditionally here keeps MainActivity free of a
+            // database read on the main thread.
+            EvergreenSyncWorker.schedule(this)
         }
     }
 
@@ -78,6 +84,7 @@ class MainActivity : ComponentActivity() {
         // so opening the app does not reset the interval.
         if (SpotifyAuth(this).connectionState() is SpotifyConnectionState.Connected) {
             SpotifySyncWorker.schedule(this)
+            EvergreenSyncWorker.schedule(this)
         }
     }
 
