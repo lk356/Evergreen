@@ -10,6 +10,7 @@ import com.example.evergreen.data.ListeningSegmentEntity
 import com.example.evergreen.data.SERVICE_SPOTIFY
 import com.example.evergreen.data.SyncKeys
 import com.example.evergreen.data.trackKeyOf
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -35,6 +36,16 @@ class EvergreenSyncTest {
 
     /** A playlist that lives in memory, and answers however the test scripts. */
     private class FakeApi : ApiSource {
+        /**
+         * Every thread the API was called from.
+         *
+         * Recorded rather than asserted in place: an assertion thrown on a
+         * background thread inside a coroutine can be swallowed or reported
+         * against the wrong test, whereas a list the test inspects afterwards
+         * always says what happened.
+         */
+        val callingThreads = mutableSetOf<String>()
+
         val playlists = mutableListOf<PlaylistSummary>()
         val contents = mutableMapOf<String, MutableList<String>>()
         var created: PlaylistSummary? = null
@@ -48,14 +59,23 @@ class EvergreenSyncTest {
         /** URIs Spotify will refuse, as an unavailable track would be. */
         val unavailable = mutableSetOf<String>()
 
+        private fun note() {
+            callingThreads += Thread.currentThread().name
+        }
+
         override fun savedTracks(limit: Int, offset: Int) = error("not used")
         override fun savedTracksAt(url: String) = error("not used")
         override fun track(trackId: String) = error("not used")
 
-        override fun myPlaylists(limit: Int, offset: Int): ApiResult<PlaylistPage> =
-            ApiResult.Ok(PlaylistPage(items = playlists.toList(), total = playlists.size, next = null))
+        override fun myPlaylists(limit: Int, offset: Int): ApiResult<PlaylistPage> {
+            note()
+            return ApiResult.Ok(
+                PlaylistPage(items = playlists.toList(), total = playlists.size, next = null),
+            )
+        }
 
         override fun createPlaylist(name: String, description: String): ApiResult<PlaylistSummary> {
+            note()
             createCalls++
             val summary = PlaylistSummary("pl_$name", name, ownerId = "me", isPublic = false)
             playlists += summary
@@ -65,6 +85,7 @@ class EvergreenSyncTest {
         }
 
         override fun playlistItems(playlistId: String, offset: Int): ApiResult<PlaylistItemsPage> {
+            note()
             val all = contents[playlistId] ?: return ApiResult.NotFound
             val page = all.drop(offset).take(SpotifyApi.MAX_PAGE)
             return ApiResult.Ok(
@@ -77,6 +98,7 @@ class EvergreenSyncTest {
         }
 
         override fun addToPlaylist(playlistId: String, uris: List<String>): ApiResult<String> {
+            note()
             addCalls++
             addFailures.removeFirstOrNull()?.let { return it }
             if (uris.any { it in unavailable }) {
@@ -89,6 +111,7 @@ class EvergreenSyncTest {
         }
 
         override fun removeFromPlaylist(playlistId: String, uris: List<String>): ApiResult<String> {
+            note()
             removeCalls++
             contents[playlistId]?.removeAll { it in uris }
             return ApiResult.Ok("snapshot")
@@ -494,6 +517,57 @@ class EvergreenSyncTest {
 
         assertEquals(EvergreenSyncResult.Outcome.NEEDS_RECONNECT, result.outcome)
         assertTrue(result.message.orEmpty().contains("Reconnect"))
+    }
+
+    // --- Threading ---------------------------------------------------------------
+
+    /**
+     * The regression test for the crash found during device verification.
+     *
+     * The debug screen drives this from `rememberCoroutineScope()`, which is
+     * Compose's **main-thread** dispatcher. [ApiSource] is a plain blocking
+     * interface, so touching it from there threw `NetworkOnMainThreadException`
+     * and killed the app. Every existing test passed because they all call
+     * through `runBlocking` on the instrumentation thread, and the scheduled
+     * worker was fine because `CoroutineWorker` already runs off the main
+     * thread — the bug lived only on the route nothing tested.
+     *
+     * So this drives the sync exactly as the UI does, on `Dispatchers.Main`,
+     * and asserts the API was never reached from there. It fails without the
+     * `withContext(Dispatchers.IO)` in `EvergreenSync`.
+     */
+    @Test
+    fun theApiIsNeverCalledOnTheMainThread() {
+        runBlocking { likeTracks(3) }
+
+        // Main, like the debug screen. runBlocking holds the instrumentation
+        // thread, so the main looper stays free to run the coroutine.
+        runBlocking(Dispatchers.Main) { sync().dryRun() }
+
+        assertTrue("the dry run should have reached the API", api.callingThreads.isNotEmpty())
+        val mainThreadCalls = api.callingThreads.filter { it == "main" }
+        assertTrue(
+            "the Spotify API was called on the main thread: $mainThreadCalls",
+            mainThreadCalls.isEmpty(),
+        )
+    }
+
+    /** The same promise for a real write, which is the one that does more work. */
+    @Test
+    fun aWriteAlsoStaysOffTheMainThread() {
+        runBlocking {
+            likeTracks(3)
+            beTheWriter()
+            confirmWrites()
+        }
+
+        runBlocking(Dispatchers.Main) { sync().sync() }
+
+        assertTrue(api.addCalls > 0)
+        assertTrue(
+            "the Spotify API was called on the main thread: ${api.callingThreads}",
+            api.callingThreads.none { it == "main" },
+        )
     }
 
     // --- Membership is recorded -------------------------------------------------
