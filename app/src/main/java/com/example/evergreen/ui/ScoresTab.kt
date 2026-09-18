@@ -181,7 +181,7 @@ fun ScoresTab(modifier: Modifier = Modifier) {
             onDismiss = { editingParameters = false },
             onSave = { updated ->
                 scope.launch {
-                    scoringDao.putScoringParameters(updated)
+                    scoringDao.putScoringParameters(updated, System.currentTimeMillis())
                     editingParameters = false
                     busy = true
                     // Changing a parameter invalidates the cache by design, so

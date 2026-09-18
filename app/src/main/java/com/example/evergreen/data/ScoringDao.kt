@@ -48,23 +48,87 @@ abstract class ScoringDao {
         }
 
     /**
-     * Stores new settings.
+     * Stores new settings, and records the change in [parameter_history].
      *
      * Note what this does *not* do: it writes no scores and touches no
      * migration. Changing a parameter invalidates the score cache because every
      * cached row carries the hash of the parameters that produced it, so the
      * next recompute notices the mismatch and rebuilds (decisions 1a and 1d).
+     *
+     * The two writes are one transaction because the log is only worth having
+     * if it cannot disagree with the value in force. A saved parameter with no
+     * log entry would be a silent hole in the record; a log entry for a value
+     * that was never saved would be a lie about it.
+     *
+     * Saving the settings that are already in force writes nothing and returns
+     * false. Opening the settings screen and closing it again is not a change,
+     * and a log full of no-ops is a log nobody reads.
+     *
+     * @return true when something actually changed.
      */
-    open suspend fun putScoringParameters(parameters: ScoringParameters) {
+    @Transaction
+    open suspend fun putScoringParameters(parameters: ScoringParameters, at: Long): Boolean {
         val problems = parameters.problems()
         require(problems.isEmpty()) { problems.joinToString(separator = "; ") }
-        putSyncState(
-            SyncStateEntity(
-                key = SyncKeys.SCORING_PARAMETERS,
-                valueText = parameters.toJson(),
+
+        val json = parameters.toJson()
+        // Null when nothing has ever been stored. The settings in force were
+        // then the shipped defaults, which is a fact that exists nowhere else
+        // and stops being true the instant this write lands -- so it is what
+        // gets recorded as the previous value, rather than null.
+        val stored = syncState(SyncKeys.SCORING_PARAMETERS)?.valueText
+        val previous = stored ?: ScoringParameters().toJson()
+        if (previous == json) return false
+
+        putSyncState(SyncStateEntity(key = SyncKeys.SCORING_PARAMETERS, valueText = json))
+        insertParameterChange(
+            ParameterHistoryEntity(
+                changedAt = at,
+                parametersJson = json,
+                parametersHash = parameters.hash(),
+                previousJson = previous,
             ),
         )
+        return true
     }
+
+    // --- The parameter change log ---------------------------------------------
+
+    @Insert
+    protected abstract suspend fun insertParameterChange(row: ParameterHistoryEntity)
+
+    /** Every recorded change, newest first. */
+    @Query("SELECT * FROM parameter_history ORDER BY changedAt DESC, id DESC")
+    abstract fun parameterHistory(): Flow<List<ParameterHistoryEntity>>
+
+    /** Every recorded change, newest first, as a one-shot read. */
+    @Query("SELECT * FROM parameter_history ORDER BY changedAt DESC, id DESC")
+    abstract suspend fun parameterHistoryOnce(): List<ParameterHistoryEntity>
+
+    @Query("SELECT COUNT(*) FROM parameter_history")
+    abstract suspend fun parameterHistoryCount(): Int
+
+    /**
+     * The settings that were in force at [atMs].
+     *
+     * The most recent change at or before that instant, or null when the log
+     * starts after it — in which case the caller should fall back to the
+     * `previousJson` of the earliest row, which is what was in force before
+     * anything was ever recorded.
+     */
+    @Query(
+        """
+        SELECT * FROM parameter_history
+         WHERE changedAt <= :atMs
+         ORDER BY changedAt DESC, id DESC
+         LIMIT 1
+        """,
+    )
+    abstract suspend fun parametersInForceAt(atMs: Long): ParameterHistoryEntity?
+
+    /** The earliest recorded change, whose `previousJson` predates the log. */
+    @Query("SELECT * FROM parameter_history ORDER BY changedAt, id LIMIT 1")
+    abstract suspend fun earliestParameterChange(): ParameterHistoryEntity?
 
     /** True once settings have been stored, i.e. the user has edited them. */
     open suspend fun hasStoredScoringParameters(): Boolean =

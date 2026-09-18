@@ -175,7 +175,7 @@ class ScoreCacheTest {
         service.ranking(now)
         val underA = db.scoringDao().cachedScores().associate { it.trackId to it.score }
 
-        db.scoringDao().putScoringParameters(parametersB)
+        db.scoringDao().putScoringParameters(parametersB, now)
         val afterChange = service.ranking(now).tracks.associate { it.trackId to it.score }
 
         val fromScratch = freshServiceScores(parametersB)
@@ -281,7 +281,7 @@ class ScoreCacheTest {
 
     @Test
     fun parametersRoundTripThroughTheDatabase() = runBlocking {
-        db.scoringDao().putScoringParameters(parametersB)
+        db.scoringDao().putScoringParameters(parametersB, now)
 
         assertEquals(parametersB, db.scoringDao().scoringParameters())
         assertTrue(db.scoringDao().hasStoredScoringParameters())
@@ -290,7 +290,7 @@ class ScoreCacheTest {
     @Test
     fun unusableParametersAreRefusedBeforeTheyAreStored() = runBlocking {
         try {
-            db.scoringDao().putScoringParameters(ScoringParameters(halfLifeDays = 0.0))
+            db.scoringDao().putScoringParameters(ScoringParameters(halfLifeDays = 0.0), now)
             throw AssertionError("should have refused a zero half-life")
         } catch (expected: IllegalArgumentException) {
             assertTrue(expected.message.orEmpty().contains("halfLifeDays"))

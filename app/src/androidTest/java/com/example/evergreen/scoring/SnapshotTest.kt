@@ -216,7 +216,7 @@ class SnapshotTest {
     @Test
     fun aSnapshotStoresTheParametersInForce() = runBlocking {
         val tuned = ScoringParameters(halfLifeDays = 60.0, likeWeight = 4.0)
-        db.scoringDao().putScoringParameters(tuned)
+        db.scoringDao().putScoringParameters(tuned, clock)
         buildLibrary(count = 5, inPlaylist = 3)
 
         snapshots().takeIfDue()
