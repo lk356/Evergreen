@@ -192,6 +192,31 @@ abstract class ScoringDao {
         trackUriPrefix: String,
     ): String?
 
+    /**
+     * [preferredServiceUri] for many tracks at once.
+     *
+     * Ordered so the first row for each track is the preferred one; the caller
+     * keeps the first and discards the rest. One query rather than four hundred
+     * matters on the NW-A307, and a snapshot needs a URI for every ranked
+     * track, not just the hundred in the playlist.
+     */
+    @Query(
+        """
+        SELECT st.trackId AS trackId, st.serviceTrackId AS serviceTrackId
+          FROM service_tracks st
+          LEFT JOIN likes l ON l.serviceTrackRowId = st.id
+         WHERE st.trackId IN (:trackIds)
+           AND st.service = :service
+           AND st.serviceTrackId LIKE :trackUriPrefix || '%'
+         ORDER BY st.trackId, (l.unlikedAt IS NULL AND l.id IS NOT NULL) DESC, st.id
+        """,
+    )
+    abstract suspend fun preferredServiceUris(
+        trackIds: List<Long>,
+        service: String,
+        trackUriPrefix: String,
+    ): List<TrackServiceUri>
+
     // --- Evergreen membership -------------------------------------------------
 
     @Query("SELECT * FROM evergreen_membership WHERE leftAt IS NULL")
@@ -252,6 +277,75 @@ abstract class ScoringDao {
                 ),
             )
         }
+    }
+
+    // --- Snapshots ------------------------------------------------------------
+
+    @Query("SELECT * FROM snapshots WHERE monthKey = :monthKey LIMIT 1")
+    abstract suspend fun snapshotForMonth(monthKey: String): SnapshotEntity?
+
+    @Query("SELECT * FROM snapshots WHERE id = :id LIMIT 1")
+    abstract suspend fun snapshotById(id: Long): SnapshotEntity?
+
+    /** Titles for the snapshot's entries, so a snapshot reads without a join later. */
+    @Query("SELECT id, title, artist FROM tracks WHERE id IN (:trackIds)")
+    abstract suspend fun trackTitles(trackIds: List<Long>): List<TrackTitle>
+
+    @Query(
+        """
+        SELECT id, monthKey, label, takenAt, playlistSize, trackCount,
+               exportedPlaylistId, exportedAt
+          FROM snapshots ORDER BY monthKey DESC
+        """,
+    )
+    abstract fun snapshots(): Flow<List<SnapshotSummary>>
+
+    @Query("SELECT COUNT(*) FROM snapshots")
+    abstract suspend fun snapshotCount(): Int
+
+    @Query(
+        """
+        SELECT * FROM snapshot_entries
+         WHERE snapshotId = :snapshotId
+         ORDER BY `rank`
+        """,
+    )
+    abstract suspend fun snapshotEntries(snapshotId: Long): List<SnapshotEntryEntity>
+
+    /** The top of a snapshot, in order, for exporting it to a playlist. */
+    @Query(
+        """
+        SELECT * FROM snapshot_entries
+         WHERE snapshotId = :snapshotId AND inPlaylist = 1
+         ORDER BY `rank`
+        """,
+    )
+    abstract suspend fun snapshotPlaylistEntries(snapshotId: Long): List<SnapshotEntryEntity>
+
+    @Insert
+    protected abstract suspend fun insertSnapshot(snapshot: SnapshotEntity): Long
+
+    @Insert
+    protected abstract suspend fun insertSnapshotEntries(entries: List<SnapshotEntryEntity>)
+
+    @Query("UPDATE snapshots SET exportedPlaylistId = :playlistId, exportedAt = :at WHERE id = :id")
+    abstract suspend fun recordSnapshotExport(id: Long, playlistId: String, at: Long)
+
+    /**
+     * Stores a snapshot and its whole ranking in one transaction.
+     *
+     * One or the other alone would be worse than neither: a snapshot with no
+     * entries reads as a month in which nothing was alive, which is a claim
+     * about the user's listening rather than a missing row.
+     */
+    @Transaction
+    open suspend fun saveSnapshot(
+        snapshot: SnapshotEntity,
+        entries: (Long) -> List<SnapshotEntryEntity>,
+    ): Long {
+        val id = insertSnapshot(snapshot)
+        insertSnapshotEntries(entries(id))
+        return id
     }
 
     // --- Scoring inputs -------------------------------------------------------
@@ -329,6 +423,24 @@ abstract class ScoringDao {
 
 /** A canonical track's best known length. */
 data class TrackDuration(val id: Long, val durationMs: Long)
+
+/** A canonical track's display fields. */
+data class TrackTitle(val id: Long, val title: String?, val artist: String?)
+
+/** One service URI for a track, in preference order. */
+data class TrackServiceUri(val trackId: Long, val serviceTrackId: String)
+
+/** A snapshot with the size of its ranking, for the list on the debug tab. */
+data class SnapshotSummary(
+    val id: Long,
+    val monthKey: String,
+    val label: String,
+    val takenAt: Long,
+    val playlistSize: Int,
+    val trackCount: Int,
+    val exportedPlaylistId: String?,
+    val exportedAt: Long?,
+)
 
 /** One row of the Scores tab's ranked list. */
 data class RankedTrackRow(

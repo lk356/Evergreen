@@ -206,6 +206,8 @@ fun SpotifyTab(
 
         EvergreenCard()
 
+        SnapshotsCard()
+
         MergeDryRun(
             plan = mergePlan,
             mergesRun = merges,

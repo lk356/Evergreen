@@ -18,6 +18,7 @@ import com.example.evergreen.capture.CaptureNotificationListenerService
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyAuthActivity
 import com.example.evergreen.spotify.SpotifyConnectionState
+import com.example.evergreen.scoring.SnapshotWorker
 import com.example.evergreen.spotify.EvergreenSyncWorker
 import com.example.evergreen.spotify.SpotifySyncWorker
 import com.example.evergreen.ui.DebugScreen
@@ -86,6 +87,10 @@ class MainActivity : ComponentActivity() {
             SpotifySyncWorker.schedule(this)
             EvergreenSyncWorker.schedule(this)
         }
+        // The snapshot worker needs no connection and no network: it reads the
+        // app's own database. So it is scheduled unconditionally, and keeps
+        // recording months even while Spotify is disconnected.
+        SnapshotWorker.schedule(this)
     }
 
     private fun openNotificationListenerSettings() {
