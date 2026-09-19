@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,6 +21,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,6 +35,10 @@ import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.SnapshotEntity
 import com.example.evergreen.data.SnapshotEntryEntity
 import com.example.evergreen.scoring.ScoringParameters
+import com.example.evergreen.scoring.Snapshots
+import com.example.evergreen.spotify.SpotifyApi
+import com.example.evergreen.spotify.SpotifyAuth
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -68,6 +74,9 @@ fun SnapshotMonthScreen(
         mutableStateOf<List<SnapshotEntryEntity>>(emptyList())
     }
     var playlistOnly by rememberSaveable(snapshotId) { mutableStateOf(true) }
+    var exporting by remember(snapshotId) { mutableStateOf(false) }
+    var exportStatus by remember(snapshotId) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(snapshotId) {
         val loaded = scoringDao.snapshotById(snapshotId)
@@ -124,6 +133,29 @@ fun SnapshotMonthScreen(
                 )
             }
 
+            ExportRow(
+                snapshot = current,
+                busy = exporting,
+                status = exportStatus,
+                onExport = {
+                    scope.launch {
+                        exporting = true
+                        exportStatus = null
+                        val api = SpotifyApi(SpotifyAuth(context))
+                        val playlistId = Snapshots(db).export(current.id, api)
+                        exportStatus = if (playlistId != null) {
+                            "Exported \"${Snapshots.EXPORT_PREFIX}${current.label}\" to Spotify."
+                        } else {
+                            "Export failed. Check the Spotify connection in Settings."
+                        }
+                        // Re-read so the "exported" marker appears without
+                        // leaving the screen.
+                        snapshot = scoringDao.snapshotById(snapshotId)
+                        exporting = false
+                    }
+                },
+            )
+
             MonthDiffSection(diff = diff, previous = previous, onOpenTrack = onOpenTrack)
 
             SectionTitle("The ranking")
@@ -150,6 +182,47 @@ fun SnapshotMonthScreen(
 
         item { Spacer(modifier = Modifier.height(24.dp)) }
     }
+}
+
+/**
+ * Turning a month back into a real playlist.
+ *
+ * A **new** playlist every time, never touched again by the app. That is what
+ * makes exporting safe: it cannot overwrite anything, and the resulting
+ * playlist can be renamed, edited or deleted freely without the app disagreeing.
+ * Exporting twice makes two playlists, which is why the button says so.
+ */
+@Composable
+private fun ExportRow(
+    snapshot: SnapshotEntity,
+    busy: Boolean,
+    status: String?,
+    onExport: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedButton(onClick = onExport, enabled = !busy) {
+            Text(
+                when {
+                    busy -> "Exporting…"
+                    snapshot.exportedAt != null -> "Export again"
+                    else -> "Export to Spotify"
+                },
+            )
+        }
+    }
+    Text(
+        text = status ?: "Creates a new private playlist, \"${Snapshots.EXPORT_PREFIX}" +
+            "${snapshot.label}\", holding the ${snapshot.playlistSize} songs that were in " +
+            "Evergreen that month. The app never changes it again, so you can rename or " +
+            "delete it freely — and exporting twice makes two playlists.",
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = if (status != null) FontWeight.Bold else FontWeight.Normal,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /** What changed between two consecutive snapshots. */
