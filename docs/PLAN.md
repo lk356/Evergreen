@@ -113,11 +113,12 @@ is far cheaper than backfilling them from 12,000 stored tracks later.
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5a built, not yet device-verified.** Branch
-  `phase5a-mirror`, six commits, one per step of `docs/PHASE5A_PROMPT.md`.
-  Merge to `main` is waiting on the Phase 5a checklist being run on both
-  devices. `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is
-  deliberately not started.
+- Current phase: **Phase 5a built and device-verified**, branch
+  `phase5a-mirror`. Steps A to K of its checklist passed on both devices on
+  2026-09-19; step L, the unattended daily write, is still pending and blocks
+  nothing. **Awaiting the user's word to merge to `main`.**
+  `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is deliberately
+  not started.
 - Last update: 2026-09-19.
 
 **Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
@@ -142,8 +143,23 @@ shows Spotify sets `volumeType=REMOTE` on the remote session, so 5b can drop
 phantoms at the source rather than deduplicating after the fact. Both are
 recorded under "Open questions".
 
-**Next:** run the Phase 5a verification checklist on both devices, then say
-so and `phase5a-mirror` gets merged to `main`.
+**Phase 5a is verified on the devices.** A 21.0 MiB backup moved across, the
+import was quick, and the two rankings matched when read off the two screens.
+**A full recompute takes ~300 ms on the Pixel against ~2,400 ms on the
+NW-A307** — about eight times faster, which is the phase's justification in
+one number. The Walkman's own figure is within 4% of the Phase 4 baseline, so
+the mirror work cost it nothing.
+
+**One thing is outstanding and predates this phase:** the Evergreen playlist
+has still been written only once, manually, at 03:25 on the 18th. See "The
+daily write has not fired on its own" under Phase 5a results for the three
+candidate explanations and the one command that tells them apart. One of
+them is a real design flaw — the schedule interval and the write guard are
+both 24 hours and can fall out of phase — and fixing it is a Phase 3 change
+awaiting the user's decision.
+
+**Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
+whether to fix the daily-write schedule.
 
 **Phase 4 is done, device-verified and merged.** It landed on `main` on
 2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
@@ -1202,7 +1218,10 @@ a field through it.
 
 ### Still owed
 
-- **Step J / Phase 3's step G:** the unattended daily write. As of
+- **Step J / Phase 3's step G:** the unattended daily write. **Still not
+  fired as of 15:55 on 2026-09-19 — 36.5 hours after the manual first write
+  at 03:25 on the 18th.** Analysed under Phase 5a results, "The daily write
+  has not fired on its own". As of
   2026-09-19 the last write was still the manual first one, made around
   3–4 am on the 18th. The next one cannot happen before the same time on the
   19th — `EvergreenSync` refuses any write inside 24 hours of the last — and
@@ -1376,6 +1395,73 @@ reproduce. There is now a test.
   and it lands on Home, where the mirror announces itself — so the restart
   doubles as the receipt.
 
+### The daily write has not fired on its own
+
+**Status 2026-09-19, 15:55.** The Evergreen playlist has been written exactly
+once, ever: the manual first write at **03:25 on the 18th**. That is
+**36.5 hours** ago. This is Phase 4's step J and Phase 3's step G, and it has
+now been outstanding long enough to stop being "wait and see".
+
+Nothing in Phase 5a touched it — the mirror import runs on the Pixel and
+cancels the Pixel's schedules; the Walkman was not changed.
+
+**Reasoned from the code, not yet confirmed on the device.** There are three
+candidate explanations and they are cheap to tell apart.
+
+**(A) The schedule and the write guard are the same 24 hours, and they race.**
+This is a real design flaw regardless of whether it is the cause here.
+`EvergreenSyncWorker.schedule` enqueues periodic work with a 24-hour period;
+`EvergreenSync.WRITE_INTERVAL_MS` refuses a write within 24 hours of the last
+one. The periodic interval is anchored to when the work was *enqueued*, and
+the guard is measured from when the last write *happened* — and a manual
+write, like the one at 03:25 on the 18th, sets the second without moving the
+first. So the two can fall out of phase.
+
+When they do, a run that lands even a minute inside the guard returns
+`TOO_SOON`, and — correctly, since nothing is wrong — returns
+`Result.success()`. WorkManager then waits a **full further period** before
+trying again. One unlucky alignment therefore costs a whole day, and in the
+steady state consecutive runs sit almost exactly 24 hours apart, which is
+precisely where the margin is thinnest.
+
+**The fix, if this is it, is to stop the two numbers being equal**: schedule
+the attempt more often than the guard allows a write — every six hours, say —
+and let the guard be the thing that enforces "at most once a day". Attempts
+are nearly free when they refuse: `TOO_SOON` is checked before a single
+request is made. **Not done. It is a Phase 3 behaviour change and outside
+Phase 5a's scope**, and it costs a few extra wakeups a day on a
+battery-powered device, which is the user's call.
+
+**(B) The schedule may not exist at all.** `EvergreenSyncWorker` cancels its
+own unique work when it finds it is not the writer device or not connected.
+If it ever ran in one of those states the schedule is gone, and only
+`MainActivity.onResume` re-arms it — with `KEEP`, which anchors a *fresh*
+24-hour period at that moment. Opening the app on the Walkman during the
+Phase 5a checklist (~15:00 on the 19th) would have done exactly that, in
+which case the first run is due some time before ~15:00 on the 20th.
+
+**(C) It is simply a portable player asleep.** The work requires
+`NetworkType.CONNECTED`, and the NW-A307 spends most of its life asleep and
+often off Wi-Fi. Doze defers deferred work hard. This is what was already
+predicted under Phase 4's "Still owed": *"on a portable player that is often
+asleep, 'some time that day' is the honest expectation rather than a clock
+time"*. 36.5 hours stretches that expectation but does not break it.
+
+**How to tell them apart**, with the Walkman plugged in and the Pixel
+unplugged — this runs no instrumented test, so the build's Walkman guard is
+not involved:
+
+```
+adb shell am broadcast -a "androidx.work.diagnostics.REQUEST_DIAGNOSTICS" \
+    -p com.example.evergreen
+adb logcat -d -s WM-DiagnosticsWrkr
+```
+
+That prints every piece of work WorkManager is holding, with its state and
+its next run time. Read off whether `evergreen-playlist-sync` exists at all
+(distinguishes B), and when it last ran (distinguishes A from C: a run that
+happened and did nothing is A, no run at all is C).
+
 ### Moving the file between the devices
 
 Three ways, in increasing order of faff. Any of them works; the file is an
@@ -1421,39 +1507,39 @@ what it destroys. Nothing here writes to Spotify at all.
 
 **On the NW-A307 (the Walkman):**
 
-- [ ] **A.** Install the new build. Open **Settings** → **Back up database**
+- [x] **A.** Install the new build. Open **Settings** → **Back up database**
       and save the file. **Note the size it reports.**
-- [ ] **B.** Check the home screen is unchanged: it should say "Everything is
+- [x] **B.** Check the home screen is unchanged: it should say "Everything is
       running" and say nothing about mirrors.
-- [ ] **C.** On **Scores**, press **Recompute** and note the milliseconds.
+- [x] **C.** On **Scores**, press **Recompute** and note the milliseconds.
       Compare it with the 2,309 ms baseline from Phase 4.
-- [ ] **D.** Write down the **top ten tracks** in order. You will compare
+- [x] **D.** Write down the **top ten tracks** in order. You will compare
       them with the Pixel.
 
 **Move the file to the Pixel**, by whichever of the three ways above suits.
 
 **On the Pixel 10 Pro:**
 
-- [ ] **E.** Install the new build. Take a backup here too, if anything on
+- [x] **E.** Install the new build. Take a backup here too, if anything on
       this device matters.
-- [ ] **F.** **Settings** → **Mirror of another device** → **Import a
+- [x] **F.** **Settings** → **Mirror of another device** → **Import a
       mirror**. Pick the file. Read the confirmation: it should name
       **NW-A307**, when the backup was taken, and the counts on both sides.
       **Note how long the import takes.**
-- [ ] **G.** The app restarts itself and lands on **Home**. The first line
+- [x] **G.** The app restarts itself and lands on **Home**. The first line
       should read **"Mirror of NW-A307, taken … ago"**. Check it fits on one
       line.
-- [ ] **H.** On **Scores**, press **Recompute** and note the milliseconds.
+- [x] **H.** On **Scores**, press **Recompute** and note the milliseconds.
       **Then compare the top ten with what you wrote down in D — they should
       be the same tracks in the same order.** This is the phase's whole point.
-- [ ] **I.** Check there is nowhere left to write to Spotify, and that each
+- [x] **I.** Check there is nowhere left to write to Spotify, and that each
       place says why rather than failing: the **Evergreen playlist** section
       in Settings, the **Sync now** button under Likes, the **writer switch**,
       and **Export to Spotify** on any month.
-- [ ] **J.** Check capture is off: the debug screen's **Live log** should
+- [x] **J.** Check capture is off: the debug screen's **Live log** should
       stop gaining entries, and playing something in Spotify on the Pixel
       should add no segment.
-- [ ] **K.** Try importing a **file that is not a backup** — any other file
+- [x] **K.** Try importing a **file that is not a backup** — any other file
       will do. It should refuse with a readable reason and change nothing.
 
 **Back on the NW-A307:**
@@ -1463,14 +1549,33 @@ what it destroys. Nothing here writes to Spotify at all.
       Give it a day and check the write happened (this also closes Phase 3's
       step G and Phase 4's step J).
 
-**Numbers to put in this file when you have them:**
+### Phase 5a device verification (2026-09-19) — passed
+
+Run by the user across both devices. A to K passed; **L is still pending**
+and is the same outstanding item as Phase 4's step J and Phase 3's step G —
+see "The daily write has not fired on its own" below.
 
 | | value |
 |---|---|
-| backup file size | |
-| import time on the Pixel | |
-| first recompute on the Pixel | |
-| recompute on the NW-A307 | (2,309 ms in Phase 4) |
+| backup file size | **21.0 MiB** |
+| import time on the Pixel | quick — not worth timing |
+| full recompute on the Pixel 10 Pro | **~300 ms** |
+| full recompute on the NW-A307 | **~2,400 ms** (2,309 ms in Phase 4) |
+
+**The rankings matched.** The top of the Pixel's ranking was the same as the
+Walkman's, read off both screens — which is the cross-device determinism
+proof holding on real data rather than in a fixture, on 21 MiB of it.
+
+**The Pixel recomputes about eight times faster**, and that is the phase's
+whole justification in one number: 2,400 ms is long enough to feel on every
+tap that invalidates the cache, and 300 ms is not. The Walkman's figure is
+within 4% of the Phase 4 baseline, which also says the mirror work cost it
+nothing.
+
+**21.0 MiB is the transport's real cost**, and it is small enough that none
+of the three ways of moving the file is meaningfully better than the others.
+Worth re-reading if it ever grows: `listening_segments` is the only table
+here without a bound, and a backup is taken by hand.
 
 ## Open questions — still open
 
