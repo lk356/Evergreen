@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.evergreen.capture.CaptureWatchWorker
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.ParameterHistoryEntity
 import com.example.evergreen.data.SyncKeys
@@ -77,7 +78,10 @@ fun SettingsScreen(
         onConnect = onConnectSpotify,
         connectionEpoch = connectionEpoch,
         modifier = modifier,
-        header = { ScoringSection() },
+        header = {
+            ScoringSection()
+            NotificationsSection()
+        },
     ) {
         SectionTitle("Diagnostics")
         Text(
@@ -268,6 +272,74 @@ private fun ScoringSection() {
 }
 
 /**
+ * What the app will interrupt for.
+ *
+ * Only the threshold lives here. Whether each channel makes a sound, and
+ * whether it appears at all, is Android's own setting -- duplicating it in the
+ * app would give the user two switches for one thing and no way to tell which
+ * one is winning.
+ */
+@Composable
+private fun NotificationsSection() {
+    val context = LocalContext.current
+    val scoringDao = remember(context) { EvergreenDatabase.get(context).scoringDao() }
+    val scope = rememberCoroutineScope()
+
+    val row by scoringDao.syncValueFlow(SyncKeys.CAPTURE_SILENT_DAYS).collectAsState(initial = null)
+    val days = row?.valueMs ?: CaptureWatchWorker.DEFAULT_SILENT_DAYS
+
+    fun set(value: Long) {
+        scope.launch { scoringDao.putSyncMs(SyncKeys.CAPTURE_SILENT_DAYS, value) }
+    }
+
+    SectionTitle("Telling you things")
+    Text(
+        text = "Two notifications are on: when songs join or leave Evergreen, and when " +
+            "nothing has been recorded for a while. Whether each one makes a sound is " +
+            "Android's setting rather than this app's — hold the notification, or find " +
+            "Evergreen in the system notification settings.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    HorizontalDivider(modifier = Modifier.padding(top = 10.dp))
+    Text(
+        text = "Warn me if nothing is recorded",
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 6.dp),
+    )
+    Text(
+        text = if (days <= 0L) {
+            "Off. Nothing will tell you if capture stops, and listening that is never " +
+                "recorded cannot be recovered afterwards."
+        } else {
+            "After $days day${if (days == 1L) "" else "s"} of silence. Once per quiet " +
+                "stretch, not once a day, and it re-arms itself as soon as listening " +
+                "resumes."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        OutlinedButton(onClick = { set(days - 1) }, enabled = days > 0L) { Text("−") }
+        Text(
+            text = if (days <= 0L) "off" else "$days days",
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f).widthIn(min = 64.dp),
+        )
+        OutlinedButton(onClick = { set(days + 1) }, enabled = days < MAX_SILENT_DAYS) { Text("+") }
+    }
+}
+
+/**
  * One setting: what it is, what the current value means, and two buttons.
  *
  * Steppers rather than sliders. A slider on a 339 dp screen cannot reliably
@@ -443,3 +515,6 @@ private fun JsonEditor(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+/** Beyond about two months, the alert has stopped being an alert. */
+private const val MAX_SILENT_DAYS = 60L
