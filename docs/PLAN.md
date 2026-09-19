@@ -54,10 +54,12 @@ streaming services:
       **device-verified on the NW-A307 2026-09-19 and merged to `main` the
       same day** as pull request #2. The like widget was cut by the user — see
       below. Database backup was already done in Phase 3.)_
-- [ ] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
-      mirror of the Walkman, transported as a file. 5b: full peer sync,
-      both devices capturing, segments merged. See
-      `docs/PHASE5_QUESTIONS.md`.
+- [~] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
+      mirror of the Walkman, transported as a file. **Done 2026-09-19;
+      device-verified on both devices and merged to `main` as pull request
+      #3.** 5b: full peer sync, both devices capturing, segments merged —
+      **not started**, and blocked on the phantom-segment question now
+      answered under "Open questions". See `docs/PHASE5_QUESTIONS.md`.
 - [ ] **Phase 6 — Cross-service.** Second service adapter, primarily the
       Sony Walkman player for local files on the NW-A307; ISRC/MusicBrainz
       matching. Rule to hold to: scoring merges across services, output is
@@ -113,13 +115,14 @@ is far cheaper than backfilling them from 12,000 stored tracks later.
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5a built and device-verified**, branch
-  `phase5a-mirror`. Its whole checklist passed on both devices on 2026-09-19,
-  and the daily write that had been outstanding since Phase 3 was diagnosed,
-  fixed and seen to fire the same afternoon. **Awaiting the user's word to
-  merge to `main`.**
-  `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is deliberately
-  not started.
+- Current phase: **Phase 5a is done, and merged.** Its whole checklist passed
+  on both devices on 2026-09-19 and it landed on `main` the same day as pull
+  request #3. The daily write that had been outstanding since Phase 3 was
+  diagnosed, fixed and seen to fire that afternoon.
+- **Nothing is in progress.** The next move is the user's: live with the
+  mirror for a while, then decide whether 5b is wanted.
+  `docs/PHASE5_QUESTIONS.md` is where that gets decided, and it is
+  deliberately not started.
 - Last update: 2026-09-19.
 
 **Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
@@ -164,8 +167,17 @@ holding the old schedule pick the new one up. **The scheduled worker then ran
 on its own at 16:08 and wrote two tracks**, which closes Phase 4's step J and
 Phase 3's step G. See the two sections under Phase 5a results.
 
-**Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
-whether to fix the daily-write schedule.
+**Next: nothing, on purpose.** Phase 5a is meant to be used before anything
+else is decided. Two things are waiting whenever the user wants them, and
+neither blocks the other:
+
+- **Decide whether 5b is wanted at all**, after living with the mirror.
+  Check 0b — what fraction of listening actually happens on the Pixel — is
+  the thing to keep a rough eye on in the meantime, because if it is small
+  then a read-only mirror may be the whole feature.
+- **Run the instrumented suite on the Pixel**, with the Walkman unplugged. It
+  has not been run against this branch. It destroys the database of the
+  device it runs on, so it will wipe the mirror — which costs one re-import.
 
 **Phase 4 is done, device-verified and merged.** It landed on `main` on
 2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
