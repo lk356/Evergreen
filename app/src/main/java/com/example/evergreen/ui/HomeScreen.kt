@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,6 +105,7 @@ fun HomeScreen(
     // login, which is what stops this showing a stale "Connected".
     var connection by remember { mutableStateOf<SpotifyConnectionState?>(null) }
     var configured by remember { mutableStateOf(true) }
+    var changesExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(connectionEpoch) {
         val auth = SpotifyAuth(context)
         configured = auth.isConfigured
@@ -148,8 +150,30 @@ fun HomeScreen(
 
         item { ChangesHeading(changes = changes, nowMs = nowMs) }
 
-        items(changes, key = { "${it.trackId}-${it.joinedAt}-${it.leftAt}" }) { row ->
+        // Capped, with the rest behind a tap.
+        //
+        // In the steady state this list is a handful of rows a day and the cap
+        // never bites. But the very first write moved forty tracks at once,
+        // and on a 602 dp screen that buried "near the line" under six
+        // screenfuls of songs that had all joined in the same second. The
+        // interesting section must not be reachable only by scrolling past the
+        // boring one.
+        val shownChanges = if (changesExpanded) changes else changes.take(CHANGES_COLLAPSED)
+        items(shownChanges, key = { "${it.trackId}-${it.joinedAt}-${it.leftAt}" }) { row ->
             ChangeRow(row = row, nowMs = nowMs, onClick = { onOpenTrack(row.trackId) })
+        }
+        if (changes.size > CHANGES_COLLAPSED) {
+            item {
+                TextButton(onClick = { changesExpanded = !changesExpanded }) {
+                    Text(
+                        if (changesExpanded) {
+                            "Show fewer"
+                        } else {
+                            "Show all ${changes.size}"
+                        },
+                    )
+                }
+            }
         }
 
         if (nearTheLine.isNotEmpty()) {
@@ -651,6 +675,9 @@ private fun NearTheLineRow(near: NearTheLine, onClick: () -> Unit) {
 /** The window "what changed" covers, and the wording that goes with it. */
 private val CHANGES_WINDOW_MS = TimeUnit.DAYS.toMillis(14)
 private const val CHANGES_LIMIT = 40
+
+/** Rows shown before "Show all". Fits the Walkman without hiding what is below. */
+private const val CHANGES_COLLAPSED = 6
 
 /**
  * How quiet capture has to go before the status line says so.

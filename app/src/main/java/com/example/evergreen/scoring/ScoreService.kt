@@ -163,12 +163,23 @@ class ScoreService(
 
         (0 until points).map { index ->
             val at = firstMs + spanMs * index / (points - 1)
-            // Events after this instant have not happened yet. Without this the
-            // decay weight of a future event is 2^(positive), so tomorrow's
-            // play would count for *more* than one and the line would show a
-            // score the track never had.
+            // Two bounds, and both matter.
+            //
+            // The upper one: events after this instant have not happened yet.
+            // Without it the decay weight of a future event is 2^(positive) --
+            // clamped to 1.0 by Decay, so each one quietly adds a whole play
+            // rather than blowing up -- and the line shows a score the track
+            // never had.
+            //
+            // The lower one: the same ten-half-life load window the ranker
+            // uses, measured from *this* instant. Without it each point is
+            // computed over more history than the app itself would use, and
+            // the line disagrees with the score shown above it -- by 0.01 on a
+            // real track, which is small but visible when both numbers are on
+            // one screen. Like events are not windowed, matching loadInputs.
+            val windowStart = Ranker.loadFromMs(at, parameters)
             val asOf = input.copy(
-                segments = input.segments.filter { it.endedAtMs <= at },
+                segments = input.segments.filter { it.endedAtMs in windowStart..at },
                 likeEvents = input.likeEvents.filter { it.atMs <= at },
             )
             ScorePoint(at, scorer.score(asOf, parameters, at, djWindows).score)

@@ -37,7 +37,12 @@ import androidx.compose.ui.unit.sp
 private enum class Section(val label: String) {
     HOME("Home"),
     SCORES("Scores"),
-    SNAPSHOTS("Snapshots"),
+
+    // "Months", not "Snapshots". Four tabs across the NW-A307's 339 dp leaves
+    // about 85 dp each, and at that width "Snapshots" rendered as "Snapsho" on
+    // the device. Shortening the word beats shrinking the type, and the screen
+    // itself is headed "N months" — a snapshot *is* a month here.
+    SNAPSHOTS("Months"),
     SETTINGS("Settings"),
 }
 

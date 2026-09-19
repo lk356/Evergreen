@@ -76,20 +76,29 @@ _Update at the end of each task: what was done, what's next, any blockers._
   verification checklist below being run on the NW-A307.
 - Last update: 2026-09-18.
 
-**Phase 4 is built.** All eight steps of `docs/PHASE4_PROMPT.md`: the
-access banner, the parameter log, the navigation shell and home screen, the
-real settings screen, score over time, the snapshot screens, the
-notification changes, and the CSV export. 257 unit tests pass. The
-instrumented tests **have not been run since the parameter-log step** —
-the Pixel was unplugged partway through the session and no device has been
-attached since. Running them is the first item of the verification below.
+**Phase 4 is built and has run on both devices.** All eight steps of
+`docs/PHASE4_PROMPT.md`: the access banner, the parameter log, the
+navigation shell and home screen, the real settings screen, score over time,
+the snapshot screens, the notification changes, and the CSV export.
+**260 unit tests and 211 instrumented tests pass** (instrumented on the
+Pixel 10 Pro).
 
-**One schema change**, approved before it was built: v6 adds
-`parameter_history`. Additive only, like v5.
+**The schema v6 migration has run on the real Walkman database** and lost
+nothing — 77,518 segments and every other table intact, integrity check ok.
+A copy was pulled over adb beforehand and is in `~/evergreen-backups/`
+(outside the repo; it is listening history and must never be committed).
 
-**Two things are owed and both need the device:** the full instrumented
-suite on the Pixel, and the recompute timing on the Walkman that the prompt
-asks to be recorded here.
+**A full recompute on the NW-A307 takes 2,309 ms** for 380 tracks.
+
+**Three UI bugs were found on the Walkman and fixed** — a truncated tab
+label, the changes list burying "near the line", and the chart disagreeing
+with the score above it. All three are described under Phase 4 results.
+
+**What is left:** step J below — leaving it a day to watch the scheduled
+write fire unattended, which also closes Phase 3's step G. And one
+instrumented test written after the Walkman was plugged in has never
+executed, because the build refuses instrumented tests while it is
+attached.
 
 **Step G of the Phase 3 verification is still pending** — the user
 confirmed on 2026-09-18 that a day had not yet passed since A–F. It blocks
@@ -1041,17 +1050,58 @@ a good trade on a 602 dp screen.
   was never recorded is gone. It is also what closes the last gap in
   recomputing a past ranking.
 
+### Device verification (NW-A307, 2026-09-19)
+
+**The v5 → v6 migration ran on the real database and lost nothing.** The
+database was pulled over adb first, as a restorable copy, and read back
+before and after:
+
+| | before | after |
+|---|---|---|
+| schema version | 5 | **6** |
+| integrity check | ok | **ok** |
+| listening_segments | 77,518 | 77,518 |
+| tracks / service_tracks | 12,321 / 12,749 | 12,321 / 12,749 |
+| likes / like_events | 380 / 380 | 380 / 380 |
+| scores | 380 | 380 |
+| evergreen_membership | 100 | 100 |
+| snapshots / entries | 1 / 380 | 1 / 380 |
+| parameter_history | — | 0 (created) |
+
+**A full recompute takes 2,309 ms on the NW-A307** — 380 tracks over 77,518
+segments. That is the baseline the prompt asked for. It is fast because of
+the 450-day load window; the segment table is the only thing here that grows
+without bound, so if this number climbs the window is the first thing to
+look at.
+
+Every screen was checked on the device: Home, Scores, Months, Settings, the
+track detail and the month view. **Three things were wrong and are fixed:**
+
+- **The "Snapshots" tab rendered as "Snapsho".** Four tabs across 339 dp
+  leaves about 85 dp each, which that word does not fit in. It is "Months"
+  now — shortening the word beats shrinking the type, and the screen itself
+  is headed "N months".
+- **Forty joins buried "near the line".** The first-ever write moved forty
+  tracks at once, and on a 602 dp screen that put the interesting section six
+  screenfuls below the boring one. The list now shows six with "Show all 40"
+  behind a tap. In the steady state the cap never bites.
+- **The chart and the score above it disagreed**, 11.538 against 11.527. The
+  line needs a longer reach than a single score does — its leftmost point is
+  months back and carries its own ten-half-life window — so it loads more rows
+  than the ranker ever would, and was *scoring* with all of them. Each point
+  now applies the same load window relative to its own instant, so the end of
+  the line is exactly the number shown above it.
+
 ### Still owed
 
-- **The instrumented tests have not been run since the parameter-log step.**
-  The Pixel was attached for the schema v6 work (the migration test and eight
-  parameter-log tests passed) and was unplugged partway through the session.
-  Everything after that compiles and its unit tests pass, but the roughly
-  twenty instrumented tests added since — score history, capture silence, the
-  export, and the updated notification channels — have never executed.
-- **The recompute time on the NW-A307.** The prompt asks for it and it needs
-  the device. The Scores screen prints it after every "Recompute"; the number
-  belongs here.
+- **One instrumented test has never run.** The fix for the chart/score
+  mismatch above came after the Walkman was attached, and the build refuses
+  instrumented tests while it is. The fix is verified on the device by
+  observation — both numbers now read 11.527 over six years of real data —
+  but `theLastPointStillMatchesWhenThereIsHistoryOlderThanTheWindow` needs
+  the Pixel. Everything else passed: 211 instrumented on the Pixel, 260 unit.
+- **Step J / Phase 3's step G:** the unattended daily write. The last write
+  was still the manual first one, 21 hours old at the time of checking.
 
 ### Phase 4 verification checklist
 
@@ -1060,28 +1110,28 @@ which is the ordinary daily sync.
 
 **On the Pixel 10 Pro, with the Walkman unplugged:**
 
-- [ ] **A.** Run the instrumented suite: `./gradlew :app:connectedDebugAndroidTest`.
+- [x] **A.** Run the instrumented suite: `./gradlew :app:connectedDebugAndroidTest`.
       The build refuses if a Walkman is attached; do not override it.
 
 **On the NW-A307:**
 
-- [ ] **B.** Install the new build and open it. It should open on **Home**,
+- [x] **B.** Install the new build and open it. It should open on **Home**,
       not on the debug screen, and the notification-access card should be
       absent — access is granted, so it has nothing to say.
-- [ ] **C.** The status line should read "Everything is running." If it lists
+- [x] **C.** The status line should read "Everything is running." If it lists
       anything, read it: each entry is a real claim about the device.
-- [ ] **D.** Check every screen fits: Home, Scores, Snapshots, Settings, and
+- [x] **D.** Check every screen fits: Home, Scores, Months, Settings, and
       the two detail screens. This is the check that failed twice in Phase 3.
-- [ ] **E.** On Scores, press **Recompute** and note the milliseconds it
+- [x] **E.** On Scores, press **Recompute** and note the milliseconds it
       prints. Put the number in this file.
-- [ ] **F.** Open a track from the Scores list. It should show the score
+- [x] **F.** Open a track from the Scores list. It should show the score
       breakdown, the six-month line, and — once there is more than one
       snapshot — a row of months.
 - [ ] **G.** In Settings, change one scoring parameter, save, and check that
       the change appears under "Changes to the scoring" in the same words the
       control used. Then set it back and check that a second row appears
       (setting it back is a change too) and that the ranking returns exactly.
-- [ ] **H.** Open Snapshots, open a month, and check the diff reads correctly.
+- [x] **H.** Open Months, open a month, and check the diff reads correctly.
       Only one snapshot exists so far, so it should say so rather than showing
       an empty diff.
 - [ ] **I.** In Settings, export **Listening** and **Rankings**. Open both on
@@ -1141,6 +1191,14 @@ calibrated against 77,369 real plays, and none of the three levers has been
 pulled. Lever 1 (lowering `negativeWeight`) is now a two-tap change on the
 settings screen rather than a JSON edit, so trying it and reverting it costs
 nothing and is fully recorded in `parameter_history`.
+
+**First reading off the device (2026-09-19), for whatever it is worth.** On
+the top-ranked track — *Take Me to the Beach*, 50 plays, score 11.53 — the
+steepest fall between two samples over six months was **0.848, or 12% of the
+score at the time**. One track is not a finding, and the interesting cases
+are the ones nearer the cutoff where 12% is the difference between staying
+and going. But it is the first actual number this question has ever had,
+against a year of describing it as "visibly drags the score down".
 
 **Should a snapshot describe the last day of the month, or the month as a
 whole?** Currently the last day. Genuinely open — and, usefully, **not urgent,

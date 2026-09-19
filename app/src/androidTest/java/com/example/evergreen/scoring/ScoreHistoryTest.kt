@@ -68,6 +68,40 @@ class ScoreHistoryTest {
     }
 
     /**
+     * Still today's score when the track has history older than the load
+     * window.
+     *
+     * The line needs a longer reach than a single score does — its leftmost
+     * point is months back and carries its own ten-half-life window — so it
+     * loads more rows than the ranker ever would. If it then *scored* with all
+     * of them, every point would be computed over more history than the app
+     * itself uses, and the number under the chart would disagree with the one
+     * above it. On a real track that showed up as 11.538 against 11.528: small,
+     * and unarguable when both are on the same screen.
+     */
+    @Test
+    fun theLastPointStillMatchesWhenThereIsHistoryOlderThanTheWindow() = runBlocking {
+        val parameters = service.parameters()
+        val windowDays = (parameters.loadWindowMs / day).toInt()
+
+        // One play comfortably outside the window, and some inside it.
+        val trackId = trackPlayedOn(
+            daysAgo = listOf(windowDays + 40, windowDays + 5, 30, 3),
+            likedDaysAgo = windowDays + 40,
+        )
+
+        val history = service.scoreHistory(trackId, nowMs = now, days = 180, points = 30)
+        val today = service.breakdown(trackId, nowMs = now)!!.score
+
+        assertEquals(
+            "the end of the line must be the score the rest of the app shows",
+            today,
+            history.last().score,
+            1e-9,
+        )
+    }
+
+    /**
      * A point on the line counts the past and nothing else.
      *
      * The arithmetic is done here rather than by asking the app a second time,
