@@ -256,6 +256,33 @@ abstract class EvergreenDao {
     @Query("SELECT * FROM listening_segments ORDER BY id")
     abstract suspend fun allSegments(): List<ListeningSegmentEntity>
 
+    /**
+     * One page of listening history with its titles, for the readable export.
+     *
+     * Paged rather than read whole. The segment table is the only thing in this
+     * app that grows without bound and already holds 77,000 rows after the
+     * import; materialising all of them as objects at once is tens of megabytes
+     * on a device with limited RAM, to write a file that is streamed out row by
+     * row anyway.
+     *
+     * Ordered by `id`, which is insertion order and therefore stable while the
+     * export runs -- `startedAtMs` is not, because an import can add rows dated
+     * years ago partway through.
+     */
+    @Query(
+        """
+        SELECT s.*, t.title AS title, t.artist AS artist
+          FROM listening_segments s
+          JOIN tracks t ON t.id = s.trackId
+         ORDER BY s.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    abstract suspend fun segmentPage(limit: Int, offset: Int): List<SegmentWithTrack>
+
+    @Query("SELECT COUNT(*) FROM listening_segments")
+    abstract suspend fun segmentCountOnce(): Int
+
     @Query("DELETE FROM listening_segments")
     abstract suspend fun deleteAllSegments()
 

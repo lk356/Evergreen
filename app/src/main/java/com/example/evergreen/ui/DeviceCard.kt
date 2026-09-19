@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.evergreen.data.DataExport
 import com.example.evergreen.data.DatabaseBackup
 import com.example.evergreen.data.EvergreenDatabase
 import kotlinx.coroutines.launch
@@ -112,6 +113,98 @@ fun DeviceCard() {
             "instrumented tests — those uninstall the app and destroy its database. " +
             "The backup holds no passwords or tokens: those are kept encrypted " +
             "outside the database entirely, so a copy of it cannot contain one.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    ExportSection()
+}
+
+/**
+ * Getting the data out in a form something else can read.
+ *
+ * Separate from the backup above, and the difference is worth stating on screen
+ * because the two buttons look alike: the backup is for putting the data *back*
+ * and is a SQLite file nothing else will open, while these are for using it
+ * somewhere else and are plain CSV.
+ */
+@Composable
+private fun ExportSection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var message by remember { mutableStateOf<String?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    // Which file the picker is about to create. Set before it is launched,
+    // because the callback has only the URI to go on.
+    var pending by remember { mutableStateOf(DataExport.Kind.LISTENING) }
+
+    val saver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val kind = pending
+        exporting = true
+        message = null
+        scope.launch {
+            message = try {
+                val rows = DataExport.writeTo(context, uri, kind)
+                // Counts only, never a row: this is the user's listening
+                // history and it belongs in the file, not on a status line.
+                "Wrote $rows row(s) to the file you chose."
+            } catch (failure: Exception) {
+                "Export failed: ${failure.message ?: failure.javaClass.simpleName}"
+            }
+            exporting = false
+        }
+    }
+
+    fun export(kind: DataExport.Kind) {
+        pending = kind
+        saver.launch(DataExport.suggestedFileName(kind))
+    }
+
+    SectionTitle("Export readable data")
+    Text(
+        "CSV, for a spreadsheet or a script — as opposed to the backup above, which is " +
+            "a database file meant for putting the data back. Two flat tables with fixed " +
+            "columns, so a CSV opens them anywhere with no tooling at all.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        OutlinedButton(
+            onClick = { export(DataExport.Kind.LISTENING) },
+            enabled = !exporting,
+        ) {
+            Text("Listening")
+        }
+        OutlinedButton(
+            onClick = { export(DataExport.Kind.RANKINGS) },
+            enabled = !exporting,
+        ) {
+            Text("Rankings")
+        }
+    }
+    message?.let { text ->
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+    Text(
+        "\"Listening\" is one row per play, including the imported history, with what " +
+            "the export could not say left blank rather than filled with a zero. " +
+            "\"Rankings\" is one row per liked track in score order, as the app last " +
+            "computed it. Every time is written twice, readable and as epoch " +
+            "milliseconds, because neither can be derived from the other without " +
+            "knowing an offset that changes twice a year.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
