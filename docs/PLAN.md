@@ -175,9 +175,10 @@ neither blocks the other:
   Check 0b — what fraction of listening actually happens on the Pixel — is
   the thing to keep a rough eye on in the meantime, because if it is small
   then a read-only mirror may be the whole feature.
-- **Run the instrumented suite on the Pixel**, with the Walkman unplugged. It
-  has not been run against this branch. It destroys the database of the
-  device it runs on, so it will wipe the mirror — which costs one re-import.
+- ~~**Run the instrumented suite on the Pixel.**~~ **Done 2026-09-19 after
+  the merge: 225 tests, 0 failures.** It uninstalled the app and took the
+  mirror with it, so the Pixel needs the app installed and the backup
+  re-imported before it is a mirror again.
 
 **Phase 4 is done, device-verified and merged.** It landed on `main` on
 2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
@@ -1289,11 +1290,13 @@ which is the ordinary daily sync.
 ## Phase 5a results (2026-09-19)
 
 Built on branch `phase5a-mirror`, one commit per step of
-`docs/PHASE5A_PROMPT.md`. **272 unit tests** (up from 259). `capture/` is
-unchanged; one new file sits beside it, `CaptureSwitch`, exactly as
-`CaptureWatchWorker` did in Phase 4.
+`docs/PHASE5A_PROMPT.md`, plus three that came out of using it. **275 unit
+tests** (up from 259) **and 225 instrumented tests** (up from 213), all
+passing. `capture/` is unchanged; one new file sits beside it,
+`CaptureSwitch`, exactly as `CaptureWatchWorker` did in Phase 4.
 
-**Not yet device-verified.** The checklist is at the end of this section.
+**Device-verified on both devices, and merged to `main`** as pull request #3
+on 2026-09-19. The checklist is at the end of this section.
 
 ### What was built
 
@@ -1533,6 +1536,27 @@ re-armed the schedule. The next attempt is due ~22:08 tonight and will
 correctly refuse as `TOO_SOON`; the first write that owes nothing to a human
 is any time after 16:08 on the 20th. That is a matter of waiting rather than
 of doing, and it no longer blocks anything.
+
+### The instrumented suite, run after the merge (2026-09-19)
+
+Run on the Pixel 10 Pro with the Walkman unplugged, as the build insists.
+**225 tests, 0 failures**, up from 213 in Phase 4. The twelve new ones are the
+mirror import (8), the Evergreen write guard on a mirror (3) and the month
+export refusing on a mirror (1).
+
+**It destroyed the mirror, exactly as advertised.** `connectedAndroidTest`
+uninstalls the app when it finishes, so the Pixel is left with no Evergreen
+and no database at all — not an empty one. Restoring the mirror means
+installing the app again and re-importing the backup, which is a couple of
+minutes and no loss, because the Walkman holds the original.
+
+That is worth stating plainly because it is the standing cost of the Pixel
+being both the test device and the mirror: **every instrumented run wipes the
+mirror.** It is question 3 of Part 4 in `docs/PHASE5_QUESTIONS.md`, and the
+answer in practice is "yes, acceptable" — but only while the mirror is
+read-only and reconstructible from the Walkman. It would stop being
+acceptable the moment the Pixel held facts of its own, which is another thing
+5b would have to deal with.
 
 ### Moving the file between the devices
 
