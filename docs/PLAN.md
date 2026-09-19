@@ -80,8 +80,8 @@ _Update at the end of each task: what was done, what's next, any blockers._
 `docs/PHASE4_PROMPT.md`: the access banner, the parameter log, the
 navigation shell and home screen, the real settings screen, score over time,
 the snapshot screens, the notification changes, and the CSV export.
-**260 unit tests and 211 instrumented tests pass** (instrumented on the
-Pixel 10 Pro).
+**259 unit tests and 213 instrumented tests pass** (instrumented on the
+Pixel 10 Pro, with the Walkman unplugged as the build insists).
 
 **The schema v6 migration has run on the real Walkman database** and lost
 nothing — 77,518 segments and every other table intact, integrity check ok.
@@ -94,11 +94,12 @@ A copy was pulled over adb beforehand and is in `~/evergreen-backups/`
 label, the changes list burying "near the line", and the chart disagreeing
 with the score above it. All three are described under Phase 4 results.
 
-**What is left:** step J below — leaving it a day to watch the scheduled
-write fire unattended, which also closes Phase 3's step G. And one
-instrumented test written after the Walkman was plugged in has never
-executed, because the build refuses instrumented tests while it is
-attached.
+**What is left is step J below** — leaving it a day to watch the scheduled
+write fire unattended, which also closes Phase 3's step G. Everything else
+on the checklist has been done, and the user's verdict on the build was
+"pretty happy with everything"; UI polish and speed on the Walkman are
+recorded under "Carried forward from Phase 4" as work for after the next
+phase, at the user's own call.
 
 **Step G of the Phase 3 verification is still pending** — the user
 confirmed on 2026-09-18 that a day had not yet passed since A–F. It blocks
@@ -1092,16 +1093,34 @@ track detail and the month view. **Three things were wrong and are fixed:**
   now applies the same load window relative to its own instant, so the end of
   the line is exactly the number shown above it.
 
+### The export test was never testing what it said
+
+Found when the suite was re-run on the Pixel after the Walkman work.
+`DataExport.writeTo` took a `Context` and resolved `EvergreenDatabase.get`
+itself, so a test could build a pristine in-memory database, export, and be
+reading the *app's real* database instead. "An empty database writes only its
+headers" had been passing purely because the device's database happened to be
+empty, and it started failing the moment an earlier test left one row behind.
+
+The lesson is the general one about seams: a function that reaches out for
+its own dependencies cannot be tested against a different one, and the test
+that appears to do so is asserting about something else entirely — silently,
+and in the passing direction. `writeTo` now takes the database and a
+`ContentResolver`; the public `Context` overload delegates to it. An
+end-to-end test also exports a title containing commas and quotation marks and
+checks the row has the same field count as the header, because the practical
+way to break CSV escaping is not the escaping function but forgetting to route
+a field through it.
+
 ### Still owed
 
-- **One instrumented test has never run.** The fix for the chart/score
-  mismatch above came after the Walkman was attached, and the build refuses
-  instrumented tests while it is. The fix is verified on the device by
-  observation — both numbers now read 11.527 over six years of real data —
-  but `theLastPointStillMatchesWhenThereIsHistoryOlderThanTheWindow` needs
-  the Pixel. Everything else passed: 211 instrumented on the Pixel, 260 unit.
-- **Step J / Phase 3's step G:** the unattended daily write. The last write
-  was still the manual first one, 21 hours old at the time of checking.
+- **Step J / Phase 3's step G:** the unattended daily write. As of
+  2026-09-19 the last write was still the manual first one, made around
+  3–4 am on the 18th. The next one cannot happen before the same time on the
+  19th — `EvergreenSync` refuses any write inside 24 hours of the last — and
+  will land whenever WorkManager's next 24-hour window falls with the Walkman
+  awake and on Wi-Fi. On a portable player that is often asleep, "some time
+  that day" is the honest expectation rather than a clock time.
 
 ### Phase 4 verification checklist
 
@@ -1233,6 +1252,28 @@ retroactively. It does not need to be right now.
 ~~**The notification-access banner takes too much room.**~~ **Fixed
 2026-09-18**, as the first step of Phase 4. It renders nothing at all once
 access is granted; the full card lives on the debug screen's Live log tab.
+
+### Carried forward from Phase 4 — polish, deliberately deferred
+
+The user's own reading after using the Phase 4 build on the Walkman
+(2026-09-19): **"pretty happy with everything... UI probably could still use
+some work, and could maybe be better optimized for faster operation on the
+Walkman."** Both are explicitly *after* the next phase's big features, not
+before them. Recorded here so they are not rediscovered as if new:
+
+- **UI refinement.** No specific complaint attached; the screens work and fit.
+  Worth revisiting once there is more than one month of snapshots and the
+  validation phase has ended, because the steady-state shape of the app is
+  not yet something anyone has lived with.
+- **Speed on the NW-A307.** The measured baseline is 2,309 ms for a full
+  recompute of 380 tracks. Nothing is known to be slow; this is a watching
+  brief. The obvious levers if it ever matters, cheapest first: the Scores
+  screen recomputes on first open when the cache is empty rather than showing
+  the cache and refreshing behind it; the track screen computes a sixty-point
+  line on open, which is sixty scorings of one track; and `allServiceTracks()`
+  loads every service row on every ranking. None of these is worth touching on
+  a guess — measure first, and the score-over-time line is now the tool for
+  seeing whether a change helped.
 
 ### Still unknown — carried into Phase 6
 

@@ -1,5 +1,6 @@
 package com.example.evergreen.data
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
@@ -55,9 +56,31 @@ object DataExport {
         context: Context,
         destination: Uri,
         kind: Kind,
+    ): Int = writeTo(
+        db = EvergreenDatabase.get(context),
+        resolver = context.contentResolver,
+        destination = destination,
+        kind = kind,
+    )
+
+    /**
+     * [writeTo], with the database handed in rather than looked up.
+     *
+     * Taking a `Context` and resolving [EvergreenDatabase.get] internally made
+     * this untestable in the one way that mattered: a test could set up a
+     * pristine in-memory database, export, and be reading the *app's real*
+     * database instead. "An empty database writes only its headers" passed for
+     * a while on that basis, purely because the device happened to have an
+     * empty one, and started failing the moment another test left a row behind
+     * — which is the good outcome, but it had never been testing what it said.
+     */
+    internal suspend fun writeTo(
+        db: EvergreenDatabase,
+        resolver: ContentResolver,
+        destination: Uri,
+        kind: Kind,
     ): Int = withContext(Dispatchers.IO) {
-        val db = EvergreenDatabase.get(context)
-        val out = context.contentResolver.openOutputStream(destination)
+        val out = resolver.openOutputStream(destination)
             ?: throw IOException("Could not write to the file you chose.")
 
         out.bufferedWriter().use { writer ->
