@@ -66,7 +66,9 @@ fun SpotifyTab(
     footer: @Composable () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val dao = remember(context) { EvergreenDatabase.get(context).spotifyDao() }
+    val database = remember(context) { EvergreenDatabase.get(context) }
+    val dao = remember(database) { database.spotifyDao() }
+    val mirror by database.importDao().mirrorStateFlow().collectAsState(initial = null)
     val scope = rememberCoroutineScope()
 
     // Re-read whenever the connect flow returns; the state is not a Flow because
@@ -116,6 +118,15 @@ fun SpotifyTab(
         )
 
         SectionTitle("Likes")
+        mirror?.let { copy ->
+            Text(
+                "These are ${copy.describeSource()}'s likes, as of the copy. Syncing is off " +
+                    "here: anything it fetched would be replaced at the next import.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
         Stat("Liked now", "$likedNow")
         Stat("In the archive (ever liked)", "$archived")
         Stat("Recorded like/unlike events", "$events")
@@ -159,8 +170,15 @@ fun SpotifyTab(
         ) {
             Button(
                 onClick = { SpotifySyncWorker.syncNow(context) },
-                enabled = state is SpotifyConnectionState.Connected ||
-                    state is SpotifyConnectionState.ExpiringSoon,
+                // Not offered on a mirror. The like sync only *reads* from
+                // Spotify, so it is not a write — but what it reads it writes
+                // into this database, and everything here is replaced at the
+                // next import. A button whose whole effect is discarded is a
+                // button that lies.
+                enabled = mirror == null && (
+                    state is SpotifyConnectionState.Connected ||
+                        state is SpotifyConnectionState.ExpiringSoon
+                    ),
             ) {
                 Text("Sync now")
             }

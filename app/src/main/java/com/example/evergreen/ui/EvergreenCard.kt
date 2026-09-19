@@ -58,6 +58,7 @@ fun EvergreenCard() {
         .collectAsState(initial = null)
     val confirmedAt by scoringDao.syncValueFlow(SyncKeys.EVERGREEN_WRITE_CONFIRMED_AT)
         .collectAsState(initial = null)
+    val mirror by db.importDao().mirrorStateFlow().collectAsState(initial = null)
 
     var preview by remember { mutableStateOf<EvergreenSyncResult?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -70,6 +71,23 @@ fun EvergreenCard() {
     Stat("Playlist created", if (playlistIdRow?.valueText != null) "yes" else "not yet")
     Stat("Last written", lastWritten?.valueMs?.let(::formatTimeShort) ?: "never")
     Stat("Writing enabled", if (confirmedAt?.valueMs != null) "yes" else "not confirmed")
+
+    // On a mirror the buttons are not offered at all, and the reason takes
+    // their place. Offering a button that refuses when pressed teaches the user
+    // that the app is broken; saying why up front teaches them how it works.
+    // The figures above stay, because they are true — they describe the other
+    // device's playlist, which is what this whole screen is showing.
+    mirror?.let { state ->
+        Text(
+            text = "Not available here. This is a mirror of ${state.describeSource()}, and a " +
+                "mirror never writes to Spotify — the figures above are that device's, and " +
+                "it keeps the playlist up to date itself.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        return
+    }
 
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

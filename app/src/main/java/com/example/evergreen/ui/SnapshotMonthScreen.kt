@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.data.EvergreenDatabase
+import com.example.evergreen.data.MirrorState
 import com.example.evergreen.data.SnapshotEntity
 import com.example.evergreen.data.SnapshotEntryEntity
 import com.example.evergreen.scoring.ScoringParameters
@@ -67,6 +69,7 @@ fun SnapshotMonthScreen(
     val context = LocalContext.current
     val db = remember(context) { EvergreenDatabase.get(context) }
     val scoringDao = remember(db) { db.scoringDao() }
+    val mirror by db.importDao().mirrorStateFlow().collectAsState(initial = null)
 
     var snapshot by remember(snapshotId) { mutableStateOf<SnapshotEntity?>(null) }
     var entries by remember(snapshotId) { mutableStateOf<List<SnapshotEntryEntity>>(emptyList()) }
@@ -136,6 +139,7 @@ fun SnapshotMonthScreen(
 
             ExportRow(
                 snapshot = current,
+                mirror = mirror,
                 busy = exporting,
                 status = exportStatus,
                 onExport = {
@@ -200,10 +204,25 @@ fun SnapshotMonthScreen(
 @Composable
 private fun ExportRow(
     snapshot: SnapshotEntity,
+    mirror: MirrorState?,
     busy: Boolean,
     status: String?,
     onExport: () -> Unit,
 ) {
+    // No button at all on a mirror, and the reason in its place. Exporting
+    // creates a playlist on the account, which is a write — and one the device
+    // this copy came from can make itself from the same stored snapshot.
+    if (mirror != null) {
+        Text(
+            text = "Not available here. This is a mirror of ${mirror.describeSource()}; " +
+                "export the month on that device, which holds the same snapshot.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        return
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
