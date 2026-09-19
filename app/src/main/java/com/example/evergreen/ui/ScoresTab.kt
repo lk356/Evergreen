@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.lazy.LazyColumn
@@ -44,7 +43,6 @@ import com.example.evergreen.scoring.ScoreService
 import com.example.evergreen.scoring.ScoringParameters
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 /**
@@ -60,7 +58,11 @@ import java.util.Locale
  * therefore cannot drift apart and start telling different stories.
  */
 @Composable
-fun ScoresTab(modifier: Modifier = Modifier) {
+fun ScoresTab(
+    onOpenTrack: (Long) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val db = remember(context) { EvergreenDatabase.get(context) }
     val scoringDao = remember(db) { db.scoringDao() }
@@ -73,8 +75,6 @@ fun ScoresTab(modifier: Modifier = Modifier) {
 
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var selected by remember { mutableStateOf<RankedTrackRow?>(null) }
-    var editingParameters by remember { mutableStateOf(false) }
     var parametersExpanded by rememberSaveable { mutableStateOf(false) }
 
     // Fill the cache on first open so the tab is never inexplicably empty.
@@ -121,8 +121,8 @@ fun ScoresTab(modifier: Modifier = Modifier) {
                 ) {
                     Text(if (busy) "Scoring…" else "Recompute")
                 }
-                OutlinedButton(onClick = { editingParameters = true }, enabled = !busy) {
-                    Text("Parameters")
+                OutlinedButton(onClick = onOpenSettings, enabled = !busy) {
+                    Text("Change the scoring")
                 }
             }
             status?.let { message ->
@@ -164,36 +164,16 @@ fun ScoresTab(modifier: Modifier = Modifier) {
             if (row.rank == parameters.playlistLeaveRank + 1) {
                 CutoffLine("drop-out cutoff — rank ${parameters.playlistLeaveRank}")
             }
-            RankedRow(row, parameters) { selected = row }
+            // A full screen rather than a dialog. The breakdown of a track with
+            // six years of history is hundreds of rows, and a dialog on a
+            // 339 x 602 dp screen gives it a box inside a box.
+            RankedRow(row, parameters) { onOpenTrack(row.trackId) }
         }
 
         // The last row would otherwise sit under the navigation bar.
         item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
     }
 
-    selected?.let { row ->
-        BreakdownDialog(row = row, service = service, onDismiss = { selected = null })
-    }
-
-    if (editingParameters) {
-        ParameterEditor(
-            current = parameters,
-            onDismiss = { editingParameters = false },
-            onSave = { updated ->
-                scope.launch {
-                    scoringDao.putScoringParameters(updated)
-                    editingParameters = false
-                    busy = true
-                    // Changing a parameter invalidates the cache by design, so
-                    // the recompute happens here rather than waiting for
-                    // something else to notice.
-                    val ranking = service.ranking(force = true)
-                    status = "Parameters saved; rescored ${ranking.tracks.size} tracks."
-                    busy = false
-                }
-            },
-        )
-    }
 }
 
 @Composable
@@ -253,115 +233,8 @@ private fun RankedRow(row: RankedTrackRow, parameters: ScoringParameters, onClic
     HorizontalDivider()
 }
 
-/**
- * Every event behind one track's score, in date order.
- *
- * This is the whole point of the tab: not "this song scores 4.2" but "this
- * song scores 4.2 because of a like eleven months ago worth 0.3 today, and
- * nine plays, two of which were skips".
- */
 @Composable
-private fun BreakdownDialog(
-    row: RankedTrackRow,
-    service: ScoreService,
-    onDismiss: () -> Unit,
-) {
-    var breakdown by remember(row.trackId) { mutableStateOf<ScoreBreakdown?>(null) }
-    var uri by remember(row.trackId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(row.trackId) {
-        breakdown = service.breakdown(row.trackId)
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = {
-            Column {
-                Text(row.title ?: "(unknown title)", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    row.artist ?: "(unknown artist)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        text = {
-            val current = breakdown
-            if (current == null) {
-                Text("Working it out…")
-            } else {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Stat("Score", format(current.score))
-                    Stat("Rank", "${row.rank}")
-                    Stat("Plays that counted", "${current.scoredListenCount}")
-                    Stat("Total heard", formatDuration(current.totalListenedMs))
-                    Stat("Likes", "${current.likes.count { it.note == ContributionNote.LIKE }}")
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    Text(
-                        "Every event, oldest first. 'Raw' is what the event was " +
-                            "worth when it happened; 'now' is what it is worth today " +
-                            "after decay.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    // Bounded, so the list of events cannot push the totals
-                    // above it off a 602 dp screen. A track with six years of
-                    // history can have hundreds of contributions.
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 260.dp)
-                            .padding(top = 6.dp),
-                    ) {
-                        items(current.contributions) { contribution ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = DATE_FORMAT.format(Date(contribution.atMs)),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp,
-                                    )
-                                    Text(
-                                        text = describe(contribution.kind, contribution.note) +
-                                            (contribution.fractionHeard
-                                                ?.let { "  ${(it * 100).toInt()}% heard" }
-                                                ?: ""),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontSize = 11.sp,
-                                        color = noteColour(contribution.note),
-                                    )
-                                }
-                                Text(
-                                    text = "raw ${format(contribution.rawPlayEquivalents)}\n" +
-                                        "×${format(contribution.decayWeight)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = format(contribution.decayedValue),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-    )
-}
-
-@Composable
-private fun noteColour(note: ContributionNote) = when (note) {
+internal fun noteColour(note: ContributionNote) = when (note) {
     ContributionNote.SCORED, ContributionNote.LIKE -> MaterialTheme.colorScheme.onSurface
     ContributionNote.DAILY_CAP -> MaterialTheme.colorScheme.tertiary
     ContributionNote.DJ_SUPPRESSED -> MaterialTheme.colorScheme.primary
@@ -371,7 +244,7 @@ private fun noteColour(note: ContributionNote) = when (note) {
     -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
-private fun describe(kind: ContributionKind, note: ContributionNote): String = when (note) {
+internal fun describe(kind: ContributionKind, note: ContributionNote): String = when (note) {
     ContributionNote.LIKE -> "liked"
     ContributionNote.UNLIKE_IGNORED -> "unliked (does not affect the score)"
     ContributionNote.COMMENTARY -> "DJ commentary — not a song"
@@ -434,81 +307,13 @@ private fun ParameterSummary(
     }
 }
 
-/**
- * The danger zone: the parameters as raw JSON.
- *
- * Phase 4 owns the real settings screen with a slider per value. Until then
- * this is deliberately awkward, because it is the one control here that
- * changes what the app will write to Spotify.
- */
-@Composable
-private fun ParameterEditor(
-    current: ScoringParameters,
-    onDismiss: () -> Unit,
-    onSave: (ScoringParameters) -> Unit,
-) {
-    var text by remember { mutableStateOf(current.toJson()) }
-    var error by remember { mutableStateOf<String?>(null) }
+internal fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Scoring parameters") },
-        text = {
-            Column {
-                Text(
-                    "Editing these rescores everything. It changes no stored " +
-                        "listening and runs no migration — scores are computed from " +
-                        "the segments every time, so any value can be changed back.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = {
-                        text = it
-                        error = null
-                    },
-                    isError = error != null,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                )
-                error?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                TextButton(onClick = { text = ScoringParameters().toJson(); error = null }) {
-                    Text("Reset to the calibrated defaults")
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                // Validated here rather than on save, so a typo is reported
-                // where it can be corrected instead of silently falling back to
-                // the defaults.
-                runCatching { ScoringParameters.fromJson(text) }
-                    .onSuccess(onSave)
-                    .onFailure { error = it.message ?: "That is not valid JSON." }
-            }) {
-                Text("Save and rescore")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-private fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')
-
-private fun formatDuration(ms: Long): String {
+internal fun formatDuration(ms: Long): String {
     val totalMinutes = ms / 60_000
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
     return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
 }
 
-private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+internal val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())

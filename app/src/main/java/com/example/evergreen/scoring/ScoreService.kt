@@ -6,6 +6,9 @@ import com.example.evergreen.data.ScoreEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** One track's score at one instant, for the score-over-time line. */
+data class ScorePoint(val atMs: Long, val score: Double)
+
 /** A ranking, and whether it came from the cache or was just computed. */
 data class Ranking(
     val tracks: List<RankedTrack>,
@@ -111,6 +114,78 @@ class ScoreService(
         input?.let { scorer.score(it, parameters, nowMs, loadDjWindows(parameters, nowMs)) }
     }
 
+    /**
+     * One track's score as it stood at a series of past instants.
+     *
+     * **Recomputed, never stored.** A score is a pure function of (segments,
+     * like events, parameters, now), so "what did this score on the 3rd of
+     * June" is just that function with a different `now` and the events after
+     * that date left out. Storing a score history would be a derived table that
+     * quietly became truth -- the exact thing invariant 1a exists to prevent --
+     * and it would be wrong the moment a parameter changed, which is precisely
+     * when this view is most wanted.
+     *
+     * It is cheap because it is one track: a few hundred segments scored sixty
+     * times, rather than four hundred tracks scored once. The whole-ranking
+     * version of this would be sixty full recomputes, which is minutes on the
+     * NW-A307 and is why there is no line for the playlist cutoff.
+     *
+     * @param days how far back to go.
+     * @param points how many samples across that span, including both ends.
+     */
+    suspend fun scoreHistory(
+        trackId: Long,
+        nowMs: Long = System.currentTimeMillis(),
+        days: Int = HISTORY_DAYS,
+        points: Int = HISTORY_POINTS,
+    ): List<ScorePoint> = withContext(Dispatchers.Default) {
+        require(points >= 2) { "a line needs at least two points" }
+        val parameters = parameters()
+        val spanMs = days * ScoringParameters.MS_PER_DAY.toLong()
+        val firstMs = nowMs - spanMs
+
+        // Loaded from the window of the *earliest* point, not of now. A segment
+        // ten half-lives before June is irrelevant to June's score but the
+        // default window is measured from today, so using it would silently
+        // truncate the left-hand end of the line -- and the line would slope
+        // upwards for a reason that was an artefact of the query.
+        val loadFrom = Ranker.loadFromMs(firstMs, parameters)
+        val input = loadInputs(
+            parameters = parameters,
+            nowMs = nowMs,
+            onlyTrackIds = listOf(trackId),
+            fromMs = loadFrom,
+        ).firstOrNull() ?: return@withContext emptyList()
+
+        val djWindows = DjSessions.infer(
+            scoringDao.commentaryTimestamps(TrackScorer.SPOTIFY_TRACK_PREFIX, loadFrom),
+        )
+
+        (0 until points).map { index ->
+            val at = firstMs + spanMs * index / (points - 1)
+            // Two bounds, and both matter.
+            //
+            // The upper one: events after this instant have not happened yet.
+            // Without it the decay weight of a future event is 2^(positive) --
+            // clamped to 1.0 by Decay, so each one quietly adds a whole play
+            // rather than blowing up -- and the line shows a score the track
+            // never had.
+            //
+            // The lower one: the same ten-half-life load window the ranker
+            // uses, measured from *this* instant. Without it each point is
+            // computed over more history than the app itself would use, and
+            // the line disagrees with the score shown above it -- by 0.01 on a
+            // real track, which is small but visible when both numbers are on
+            // one screen. Like events are not windowed, matching loadInputs.
+            val windowStart = Ranker.loadFromMs(at, parameters)
+            val asOf = input.copy(
+                segments = input.segments.filter { it.endedAtMs in windowStart..at },
+                likeEvents = input.likeEvents.filter { it.atMs <= at },
+            )
+            ScorePoint(at, scorer.score(asOf, parameters, at, djWindows).score)
+        }
+    }
+
     /** Every liked track still above the record floor — "what is alive". */
     suspend fun record(nowMs: Long = System.currentTimeMillis()): List<RankedTrack> =
         Membership.record(ranking(nowMs).tracks, parameters())
@@ -134,11 +209,12 @@ class ScoreService(
         parameters: ScoringParameters,
         nowMs: Long,
         onlyTrackIds: List<Long>? = null,
+        /** Overrides the load window, for reading a score at a past instant. */
+        fromMs: Long = Ranker.loadFromMs(nowMs, parameters),
     ): List<TrackScoringInput> {
         val trackIds = onlyTrackIds ?: scoringDao.likedTrackIds()
         if (trackIds.isEmpty()) return emptyList()
 
-        val fromMs = Ranker.loadFromMs(nowMs, parameters)
         val durations = chunked(trackIds) { chunk -> scoringDao.trackDurations(chunk) }
             .associate { it.id to it.durationMs }
 
@@ -185,5 +261,17 @@ class ScoreService(
 
     private companion object {
         const val SQLITE_VARIABLE_LIMIT = 900
+
+        /**
+         * Six months and sixty points, so each sample is about three days.
+         *
+         * Finer than the 45-day half-life by an order of magnitude, which is
+         * what makes a single skip visible as a step rather than being averaged
+         * away -- and the whole reason this exists is to see whether one skip
+         * really does drag a score down further than a day of listening wins
+         * back.
+         */
+        const val HISTORY_DAYS = 180
+        const val HISTORY_POINTS = 60
     }
 }

@@ -701,6 +701,117 @@ class EvergreenMigrationTest {
         migrated.close()
     }
 
+    /**
+     * v6 adds `parameter_history` and must disturb nothing.
+     *
+     * The populated database here carries the two rows that matter to the new
+     * table's reason for existing: the single `sync_state` row holding the
+     * current scoring parameters, which is the value the log exists because it
+     * gets overwritten, and a snapshot with its own copy of the parameters,
+     * which is the only place past values survived before now.
+     */
+    @Test
+    fun migrate5To6_addsTheParameterLogAndDisturbsNothing() {
+        helper.createDatabase(TEST_DB, 5).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO tracks
+                    (id, trackKey, title, artist, album, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 'metadata|willix|metadata', 'Metadata', 'Willix', 'Metadata',
+                        109000, 1000, 2000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO sync_state (`key`, valueMs, valueText)
+                VALUES ('scoring_parameters', NULL, '{"halfLifeDays":45.0,"likeWeight":3.0}')
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO scores (trackId, score, rank, computedAt, parametersHash)
+                VALUES (1, 4.25, 7, 1700000000000, 'abc123')
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO snapshots
+                    (id, monthKey, label, takenAt, parametersJson, playlistSize, trackCount,
+                     exportedPlaylistId, exportedAt)
+                VALUES (1, '2026-08', '2026 August', 1700000000000,
+                        '{"halfLifeDays":45.0,"likeWeight":3.0}', 100, 380, NULL, NULL)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO snapshot_entries
+                    (snapshotId, trackId, rank, score, serviceTrackId, title, artist, inPlaylist)
+                VALUES (1, 1, 7, 4.25, 'spotify:track:aaa', 'Metadata', 'Willix', 1)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO evergreen_membership
+                    (trackId, joinedAt, leftAt, joinReason, leaveReason, rankAtJoin, rankAtLeave)
+                VALUES (1, 1700000000000, NULL, 'JOINED_BY_RANK', NULL, 7, NULL)
+                """.trimIndent(),
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 6, true)
+
+        migrated.query("SELECT COUNT(*) FROM parameter_history").use { c ->
+            c.moveToFirst()
+            assertEquals("parameter_history should exist and be empty", 0, c.getInt(0))
+        }
+
+        // Nothing else moved. The parameters in force and the snapshot's own
+        // copy of them are the two rows this table is about, so both are read
+        // back rather than merely counted.
+        migrated.query(
+            "SELECT valueText FROM sync_state WHERE `key` = 'scoring_parameters'",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("""{"halfLifeDays":45.0,"likeWeight":3.0}""", c.getString(0))
+        }
+        migrated.query("SELECT parametersJson FROM snapshots WHERE id = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("""{"halfLifeDays":45.0,"likeWeight":3.0}""", c.getString(0))
+        }
+        migrated.query("SELECT score, parametersHash FROM scores WHERE trackId = 1").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(4.25, c.getDouble(0), 1e-9)
+            assertEquals("abc123", c.getString(1))
+        }
+        migrated.query("SELECT COUNT(*) FROM snapshot_entries").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+        migrated.query("SELECT COUNT(*) FROM evergreen_membership WHERE leftAt IS NULL").use { c ->
+            c.moveToFirst()
+            assertEquals(1, c.getInt(0))
+        }
+
+        // The new table takes rows, including the null previousJson the first
+        // entry is allowed to carry.
+        migrated.execSQL(
+            """
+            INSERT INTO parameter_history (changedAt, parametersJson, parametersHash, previousJson)
+            VALUES (1700000000001, '{"halfLifeDays":30.0}', 'def456', NULL)
+            """.trimIndent(),
+        )
+        migrated.query(
+            "SELECT changedAt, parametersJson, parametersHash, previousJson FROM parameter_history",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(1_700_000_000_001L, c.getLong(0))
+            assertEquals("""{"halfLifeDays":30.0}""", c.getString(1))
+            assertEquals("def456", c.getString(2))
+            assertTrue("the first entry may have no predecessor", c.isNull(3))
+        }
+        migrated.close()
+    }
+
     private fun freshV2Database(): EvergreenDatabase {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return Room.inMemoryDatabaseBuilder(context, EvergreenDatabase::class.java)

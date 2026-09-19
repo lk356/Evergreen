@@ -11,10 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -42,7 +39,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.capture.CaptureEvent
 import com.example.evergreen.capture.CaptureLog
-import com.example.evergreen.capture.CaptureNotificationListenerService
 import com.example.evergreen.capture.EventSource
 import com.example.evergreen.data.EndReason
 import com.example.evergreen.data.EvergreenDatabase
@@ -77,21 +73,17 @@ fun DebugScreen(
     accessGranted: Boolean,
     onOpenNotificationSettings: () -> Unit,
     onOpenAppInfo: () -> Unit,
-    onConnectSpotify: () -> Unit,
-    /** Bumped when the login flow returns, so the Spotify tab re-reads its state. */
-    connectionEpoch: Int,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
-    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        AccessCard(
-            accessGranted = accessGranted,
-            onOpenNotificationSettings = onOpenNotificationSettings,
-            onOpenAppInfo = onOpenAppInfo,
-        )
-
-        PrimaryTabRow(selectedTabIndex = selectedTab, modifier = Modifier.padding(top = 12.dp)) {
+    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        // Two tabs, not four. The Spotify and Scores tabs have become screens
+        // of their own in the navigation shell; what is left here is the raw
+        // capture data -- the stored segments and the live media-session log --
+        // which is what the debug screen is actually for. It survives intact,
+        // behind Settings, and is not what the app opens on.
+        PrimaryTabRow(selectedTabIndex = selectedTab) {
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
@@ -102,26 +94,15 @@ fun DebugScreen(
                 onClick = { selectedTab = 1 },
                 text = { Text("Live log") },
             )
-            Tab(
-                selected = selectedTab == 2,
-                onClick = { selectedTab = 2 },
-                text = { Text("Spotify") },
-            )
-            Tab(
-                selected = selectedTab == 3,
-                onClick = { selectedTab = 3 },
-                text = { Text("Scores") },
-            )
         }
 
         when (selectedTab) {
             0 -> SegmentsTab(accessGranted)
-            1 -> LiveLogTab(accessGranted)
-            2 -> SpotifyTab(
-                onConnect = onConnectSpotify,
-                connectionEpoch = connectionEpoch,
+            else -> LiveLogTab(
+                accessGranted = accessGranted,
+                onOpenNotificationSettings = onOpenNotificationSettings,
+                onOpenAppInfo = onOpenAppInfo,
             )
-            else -> ScoresTab()
         }
     }
 }
@@ -379,10 +360,26 @@ private fun SegmentRow(listen: MergedSegment, titles: Map<Long, SegmentWithTrack
 // --- Live log ----------------------------------------------------------------
 
 @Composable
-private fun LiveLogTab(accessGranted: Boolean) {
+private fun LiveLogTab(
+    accessGranted: Boolean,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenAppInfo: () -> Unit,
+) {
     val events by CaptureLog.events.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // The full access card, in both states, lives here rather than above
+        // every tab. This is the capture diagnostic tab: if nothing is being
+        // recorded, whether the listener still has access is the first thing
+        // to check, and it is the only place the "GRANTED" state is worth the
+        // space it costs.
+        AccessCard(
+            accessGranted = accessGranted,
+            onOpenNotificationSettings = onOpenNotificationSettings,
+            onOpenAppInfo = onOpenAppInfo,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -454,68 +451,6 @@ private fun EventRow(event: CaptureEvent) {
 }
 
 // --- Shared ------------------------------------------------------------------
-
-@Composable
-private fun AccessCard(
-    accessGranted: Boolean,
-    onOpenNotificationSettings: () -> Unit,
-    onOpenAppInfo: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        // Theme container colours rather than fixed ones, so the card stays
-        // readable in dark mode.
-        colors = CardDefaults.cardColors(
-            containerColor = if (accessGranted) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            },
-            contentColor = if (accessGranted) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onErrorContainer
-            },
-        ),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = if (accessGranted) {
-                    "Notification access: GRANTED"
-                } else {
-                    "Notification access: NOT GRANTED"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = if (accessGranted) {
-                    "Capturing media sessions from ${
-                        CaptureNotificationListenerService.ALLOWED_PACKAGES.joinToString()
-                    }."
-                } else {
-                    "Needed to read media sessions. Notification contents are never read."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Row(
-                modifier = Modifier.padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = onOpenNotificationSettings) {
-                    Text(if (accessGranted) "Settings" else "Grant access")
-                }
-                // Android blocks sideloaded apps from taking notification access
-                // until "Allow restricted settings" is used, which lives on the
-                // app info screen.
-                OutlinedButton(onClick = onOpenAppInfo) {
-                    Text("App info")
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun endReasonColor(reason: EndReason): Color = when (reason) {

@@ -427,6 +427,7 @@ class EvergreenSyncTest {
                 playlistJoinRank = 150,
                 playlistLeaveRank = 200,
             ),
+            clock,
         )
         beTheWriter()
         confirmWrites()

@@ -60,6 +60,10 @@ fun SpotifyTab(
     onConnect: () -> Unit,
     connectionEpoch: Int,
     modifier: Modifier = Modifier,
+    /** Placed above the connection card, for settings that come first. */
+    header: @Composable () -> Unit = {},
+    /** Appended at the bottom, so the settings screen can add its own entries. */
+    footer: @Composable () -> Unit = {},
 ) {
     val context = LocalContext.current
     val dao = remember(context) { EvergreenDatabase.get(context).spotifyDao() }
@@ -98,6 +102,8 @@ fun SpotifyTab(
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()),
     ) {
+        header()
+
         ConnectionCard(
             state = state,
             configured = configured,
@@ -206,7 +212,8 @@ fun SpotifyTab(
 
         EvergreenCard()
 
-        SnapshotsCard()
+        // Snapshots have a section of their own now, so they are not repeated
+        // here. Taking one by hand still lives on that screen.
 
         MergeDryRun(
             plan = mergePlan,
@@ -214,6 +221,8 @@ fun SpotifyTab(
             summary = mergeSummary,
             onMerge = { confirmingMerge = true },
         )
+
+        footer()
 
         // Merging is the only operation in this app that deletes a row, so it
         // asks first -- every time, and after showing exactly what it will do.

@@ -48,9 +48,11 @@ streaming services:
       _(done 2026-09-18; device-verified on the NW-A307 — 77k plays imported,
       380 tracks scored, Evergreen written, snapshot exported. 219 unit and
       183 instrumented tests.)_
-- [~] **Phase 4 — Usability.** Real UI, snapshot search, like widget,
-      scoring settings, data export. _(database backup already done in Phase 3;
-      prompt in `docs/PHASE4_PROMPT.md`.)_
+- [~] **Phase 4 — Usability.** Real UI, a home screen, snapshot browsing,
+      scoring settings, score over time, notifications, data export. _(built
+      2026-09-18 on `phase4-usability`; all eight steps of the prompt done,
+      **awaiting device verification on the NW-A307**. The like widget was cut
+      by the user — see below. Database backup was already done in Phase 3.)_
 - [ ] **Phase 5 — Cross-service.** Second service adapter (likely Tidal),
       ISRC/MusicBrainz matching.
 - [ ] **Phase 6 — Cross-device.** Self-hosted sync backend, Windows agent (WinRT media
@@ -69,9 +71,39 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 3 done and merged.** Next is Phase 4 — see
-  `docs/PHASE4_PROMPT.md`.
+- Current phase: **Phase 4 built, not yet device-verified.** Branch
+  `phase4-usability`, eight commits. Merge to `main` is waiting on the
+  verification checklist below being run on the NW-A307.
 - Last update: 2026-09-18.
+
+**Phase 4 is built and has run on both devices.** All eight steps of
+`docs/PHASE4_PROMPT.md`: the access banner, the parameter log, the
+navigation shell and home screen, the real settings screen, score over time,
+the snapshot screens, the notification changes, and the CSV export.
+**259 unit tests and 213 instrumented tests pass** (instrumented on the
+Pixel 10 Pro, with the Walkman unplugged as the build insists).
+
+**The schema v6 migration has run on the real Walkman database** and lost
+nothing — 77,518 segments and every other table intact, integrity check ok.
+A copy was pulled over adb beforehand and is in `~/evergreen-backups/`
+(outside the repo; it is listening history and must never be committed).
+
+**A full recompute on the NW-A307 takes 2,309 ms** for 380 tracks.
+
+**Three UI bugs were found on the Walkman and fixed** — a truncated tab
+label, the changes list burying "near the line", and the chart disagreeing
+with the score above it. All three are described under Phase 4 results.
+
+**What is left is step J below** — leaving it a day to watch the scheduled
+write fire unattended, which also closes Phase 3's step G. Everything else
+on the checklist has been done, and the user's verdict on the build was
+"pretty happy with everything"; UI polish and speed on the Walkman are
+recorded under "Carried forward from Phase 4" as work for after the next
+phase, at the user's own call.
+
+**Step G of the Phase 3 verification is still pending** — the user
+confirmed on 2026-09-18 that a day had not yet passed since A–F. It blocks
+nothing.
 
 **Phase 3 is complete and device-verified on the NW-A307.** The whole
 pipeline works end to end against a real Spotify account: six years of
@@ -86,8 +118,8 @@ whether a monthly snapshot should describe the last day of the month or the
 month as a whole. Neither blocks anything, and the second one turns out not
 to be urgent at all — see the note on why.
 
-**Next:** paste `docs/PHASE4_PROMPT.md` into Claude Code to start Phase 4
-(real UI, snapshot search, like widget, settings screen).
+**Next:** run the Phase 4 verification checklist on the NW-A307, then say so
+and `phase4-usability` gets merged to `main`.
 
 **Phase 2 is done.** Merged to `main`, device-verified on the Pixel 10 Pro
 (login, 380/380 likes, 100% ISRC coverage, reconnect, DJ session), and the
@@ -901,9 +933,237 @@ fresh install or new device._
 
 
 
+## Phase 4 results (2026-09-18)
+
+Built on branch `phase4-usability`, eight commits, one per step of the
+prompt. 257 unit tests (up from 219). The `capture/` package is unchanged
+except for one new file beside it — `CaptureWatchWorker` — which reads the
+database and touches nothing about how capture works.
+
+**Not yet device-verified.** See the checklist at the end of this section.
+
+### What was built
+
+- **The access banner disappears once access is granted.** It cost about
+  100 dp of the Walkman's 602 on every tab and said nothing that was news.
+  The full card, in both states, moved to the debug screen's Live log tab,
+  which is where someone looks when capture has stopped.
+- **`parameter_history` (schema v6).** Append-only, one row per change,
+  carrying what came before as well as after.
+- **A navigation shell**: Home, Scores, Snapshots, Settings, with the debug
+  screen behind Settings. Hand-rolled — four destinations and two detail
+  screens do not need a navigation graph, and `androidx.navigation` would be
+  a dependency bought for nothing on a RAM-limited device.
+- **A home screen**: a status line that is silent when everything works, and
+  "what changed" underneath it.
+- **A real settings screen**: one control per scoring parameter with its
+  meaning in plain words. The JSON editor survives under Advanced.
+- **Score over time**, recomputed on demand, on the track detail screen.
+- **Snapshot screens**: months grouped by year, and a month view that leads
+  with its diff against the month before.
+- **Notification changes**: playlist changes on by default, one summarising
+  notification per sync, suppression after a parameter change, and a new
+  alert for capture having gone quiet.
+- **CSV export** of the listening history and the rankings.
+
+### What was learned, and what the plan got slightly wrong
+
+**"Near the line" is not symmetric around rank 100, and the prompt's
+wording would have made it so.** Decision 1 asks for tracks "within a few
+ranks of 100 in either direction". But hysteresis means the two sides are
+different questions: a track outside the playlist is waiting to reach rank
+100, while a track inside it is safe until it falls past rank 130, thirty
+places further down. Measuring both against one number would have filled
+the list with members in no danger at all and left out precisely the ones
+about to drop — the opposite of "where the next change is coming from". The
+screen shows non-members approaching the join rank and members approaching
+the leave rank, and a unit test pins the asymmetry.
+
+**Score over time needed no new table, and could not have had one.** The
+first instinct for a chart is to record scores as they are computed. That
+would have been a derived table quietly becoming truth — what invariant 1a
+exists to prevent — and worse, it would have been *wrong* the moment a
+parameter changed, which is exactly when the chart is most wanted. Since a
+score is a pure function of (segments, like events, parameters, now), a past
+score is that function with a different `now`. Sixty samples of one track is
+cheap; sixty samples of the whole ranking would be sixty full recomputes, and
+that is why there is no line for the playlist cutoff.
+
+**Two ways that recomputation can lie, both found while writing its tests.**
+Decay weight is `2^(-(now - at)/halfLife)`, so an event dated *after* the
+instant being asked about gets a positive exponent and counts for more than a
+whole play — future events have to be filtered out, not merely decayed. And
+the load window is ten half-lives measured from `now`; using today's window
+for a point six months ago silently truncates the left-hand end, and the line
+then slopes upward for a reason that is an artefact of the query rather than
+anything about the listening.
+
+**A notification channel's importance cannot be raised in place.** Decision
+5 asks for joined/left notifications to flip to default on. Android fixes a
+channel's importance at creation and deliberately ignores later changes, so
+an app cannot make itself noisier than the user agreed to. The only way is a
+new channel id, and the old one has to be deleted or the system settings show
+two "Playlist changes" entries, one of which does nothing. The channel is now
+`playlist_v2`.
+
+**A stepper can drift where a text box cannot.** Repeatedly adding 0.05 to a
+Double gives 0.25000000000000006, and the parameters' JSON is canonical — so
+the drift changes the hash, rebuilds the whole score cache, and writes a
+`parameter_history` row for a change the user believes they undid. Every step
+rounds to three decimals, and a test steps each control up and back down and
+asserts the hash is identical.
+
+**The capture watchdog must ignore imported rows.** A Spotify export carries
+real listening times, some of them recent. Counting them would let one import
+silence the alert for as long as the export reaches — which is precisely the
+window in which capture breaking would go unnoticed. `MAX(endedAtMs)` is
+filtered to `source = 'CAPTURE'`, and that one clause has a test of its own.
+
+**The material-icons artifact is not on the classpath**, so a bottom
+navigation bar was not available without a new dependency. A text tab row was
+used instead, which also costs about 48 dp against a navigation bar's 80 —
+a good trade on a 602 dp screen.
+
+### Design notes worth keeping
+
+- **The status line says nothing when nothing is wrong.** A warning that is
+  always on screen stops being a warning. The rules live in a pure function
+  (`buildStatus`) so what counts as broken is testable without a device.
+- **A stale playlist write is only news on the writer device.** On the other
+  one it is the correct state, and reporting it there would teach the user to
+  ignore the status line.
+- **The score breakdown became a screen rather than a dialog.** A track with
+  six years of history has hundreds of contributions, and a dialog on a
+  339 × 602 dp screen gave that list a box inside a box with 260 dp to show it.
+- **A month's diff is a set difference over rows already stored.** Consecutive
+  snapshots subtract; "new this month" and "gone since last month" needed no
+  schema change at all.
+- **Every CSV field is quoted, unconditionally.** Album titles contain commas
+  and track titles contain quotation marks; a rule that quotes conditionally
+  has an exception waiting in somebody's library, and the failure shifts every
+  column to its right with no error.
+- **Blanks stay blank in the export.** An imported row's missing position, and
+  a fraction-heard with no known track duration, are written empty rather than
+  as a zero — "not observed" and "observed at zero" are different claims, and
+  the file keeps them apart exactly as the database does.
+- **The parameter log is the one derived-looking table that is not a cache.**
+  `scores` can be dropped and rebuilt at any moment; a parameter change that
+  was never recorded is gone. It is also what closes the last gap in
+  recomputing a past ranking.
+
+### Device verification (NW-A307, 2026-09-19)
+
+**The v5 → v6 migration ran on the real database and lost nothing.** The
+database was pulled over adb first, as a restorable copy, and read back
+before and after:
+
+| | before | after |
+|---|---|---|
+| schema version | 5 | **6** |
+| integrity check | ok | **ok** |
+| listening_segments | 77,518 | 77,518 |
+| tracks / service_tracks | 12,321 / 12,749 | 12,321 / 12,749 |
+| likes / like_events | 380 / 380 | 380 / 380 |
+| scores | 380 | 380 |
+| evergreen_membership | 100 | 100 |
+| snapshots / entries | 1 / 380 | 1 / 380 |
+| parameter_history | — | 0 (created) |
+
+**A full recompute takes 2,309 ms on the NW-A307** — 380 tracks over 77,518
+segments. That is the baseline the prompt asked for. It is fast because of
+the 450-day load window; the segment table is the only thing here that grows
+without bound, so if this number climbs the window is the first thing to
+look at.
+
+Every screen was checked on the device: Home, Scores, Months, Settings, the
+track detail and the month view. **Three things were wrong and are fixed:**
+
+- **The "Snapshots" tab rendered as "Snapsho".** Four tabs across 339 dp
+  leaves about 85 dp each, which that word does not fit in. It is "Months"
+  now — shortening the word beats shrinking the type, and the screen itself
+  is headed "N months".
+- **Forty joins buried "near the line".** The first-ever write moved forty
+  tracks at once, and on a 602 dp screen that put the interesting section six
+  screenfuls below the boring one. The list now shows six with "Show all 40"
+  behind a tap. In the steady state the cap never bites.
+- **The chart and the score above it disagreed**, 11.538 against 11.527. The
+  line needs a longer reach than a single score does — its leftmost point is
+  months back and carries its own ten-half-life window — so it loads more rows
+  than the ranker ever would, and was *scoring* with all of them. Each point
+  now applies the same load window relative to its own instant, so the end of
+  the line is exactly the number shown above it.
+
+### The export test was never testing what it said
+
+Found when the suite was re-run on the Pixel after the Walkman work.
+`DataExport.writeTo` took a `Context` and resolved `EvergreenDatabase.get`
+itself, so a test could build a pristine in-memory database, export, and be
+reading the *app's real* database instead. "An empty database writes only its
+headers" had been passing purely because the device's database happened to be
+empty, and it started failing the moment an earlier test left one row behind.
+
+The lesson is the general one about seams: a function that reaches out for
+its own dependencies cannot be tested against a different one, and the test
+that appears to do so is asserting about something else entirely — silently,
+and in the passing direction. `writeTo` now takes the database and a
+`ContentResolver`; the public `Context` overload delegates to it. An
+end-to-end test also exports a title containing commas and quotation marks and
+checks the row has the same field count as the header, because the practical
+way to break CSV escaping is not the escaping function but forgetting to route
+a field through it.
+
+### Still owed
+
+- **Step J / Phase 3's step G:** the unattended daily write. As of
+  2026-09-19 the last write was still the manual first one, made around
+  3–4 am on the 18th. The next one cannot happen before the same time on the
+  19th — `EvergreenSync` refuses any write inside 24 hours of the last — and
+  will land whenever WorkManager's next 24-hour window falls with the Walkman
+  awake and on Wi-Fi. On a portable player that is often asleep, "some time
+  that day" is the honest expectation rather than a clock time.
+
+### Phase 4 verification checklist
+
+Do these on the devices named. Nothing here writes to Spotify except step J,
+which is the ordinary daily sync.
+
+**On the Pixel 10 Pro, with the Walkman unplugged:**
+
+- [x] **A.** Run the instrumented suite: `./gradlew :app:connectedDebugAndroidTest`.
+      The build refuses if a Walkman is attached; do not override it.
+
+**On the NW-A307:**
+
+- [x] **B.** Install the new build and open it. It should open on **Home**,
+      not on the debug screen, and the notification-access card should be
+      absent — access is granted, so it has nothing to say.
+- [x] **C.** The status line should read "Everything is running." If it lists
+      anything, read it: each entry is a real claim about the device.
+- [x] **D.** Check every screen fits: Home, Scores, Months, Settings, and
+      the two detail screens. This is the check that failed twice in Phase 3.
+- [x] **E.** On Scores, press **Recompute** and note the milliseconds it
+      prints. Put the number in this file.
+- [x] **F.** Open a track from the Scores list. It should show the score
+      breakdown, the six-month line, and — once there is more than one
+      snapshot — a row of months.
+- [ ] **G.** In Settings, change one scoring parameter, save, and check that
+      the change appears under "Changes to the scoring" in the same words the
+      control used. Then set it back and check that a second row appears
+      (setting it back is a change too) and that the ranking returns exactly.
+- [x] **H.** Open Months, open a month, and check the diff reads correctly.
+      Only one snapshot exists so far, so it should say so rather than showing
+      an empty diff.
+- [ ] **I.** In Settings, export **Listening** and **Rankings**. Open both on
+      a computer and check the columns line up — particularly for any track
+      whose title contains a comma or an apostrophe.
+- [ ] **J.** Leave it a day. The Evergreen write should fire on its own (this
+      also closes Phase 3's step G), and the playlist-changes notification
+      should arrive if anything moved.
+
+
 ## Open questions — still open
 
-### Raised by using it (2026-09-18) — for Phase 4
+### Raised by using it (2026-09-18) — carried through Phase 4
 
 **How volatile should a score be?** Observed in use: a single skip — "not in
 the mood for this right now" rather than "I have gone off this song" — visibly
@@ -934,6 +1194,31 @@ Three levers, in increasing order of change:
 What would actually settle it is being able to *see* volatility rather than
 feel it: a score-over-time line on the Scores tab, which is a Phase 4 UI job.
 
+**Update 2026-09-18 — the tool is built; the question is still open, and is
+now the user's to answer.** The line is on the track detail screen, one tap
+from the Scores list (a per-track line cannot live on a list of 380 rows, and
+a whole-ranking version would be sixty full recomputes). Six months at about
+three days a sample, so a single skip shows as one step down rather than
+being averaged away. Under it, the screen states the steepest fall between
+two samples **as a fraction of the score it fell from**, which is the actual
+question — 0.4 off a score of 1 and 0.4 off a score of 40 are different
+judgements, and the eye is bad at that comparison on a chart whose height
+changes per track.
+
+**Do not retune until the user has looked at it.** The parameters were
+calibrated against 77,369 real plays, and none of the three levers has been
+pulled. Lever 1 (lowering `negativeWeight`) is now a two-tap change on the
+settings screen rather than a JSON edit, so trying it and reverting it costs
+nothing and is fully recorded in `parameter_history`.
+
+**First reading off the device (2026-09-19), for whatever it is worth.** On
+the top-ranked track — *Take Me to the Beach*, 50 plays, score 11.53 — the
+steepest fall between two samples over six months was **0.848, or 12% of the
+score at the time**. One track is not a finding, and the interesting cases
+are the ones nearer the cutoff where 12% is the difference between staying
+and going. But it is the first actual number this question has ever had,
+against a year of describing it as "visibly drags the score down".
+
 **Should a snapshot describe the last day of the month, or the month as a
 whole?** Currently the last day. Genuinely open — and, usefully, **not urgent,
 because a past ranking is recomputable.** A score is a pure function of
@@ -947,19 +1232,75 @@ and leave with timestamps. So:
   change: the liked set is currently read as current state
   (`likes.unlikedAt IS NULL`) and would have to be derived from `like_events`
   instead.
-- The one real gap: **parameter changes are not recorded with timestamps.**
-  Only the current value is in `sync_state`, and past values survive only
-  inside snapshots. A small `parameter_history` table, or an append-only log,
-  would close it and make any past date fully reconstructible. Cheap, and
-  worth doing before the parameters get tuned much.
+- ~~The one real gap: **parameter changes are not recorded with timestamps.**~~
+  **Closed 2026-09-18.** Schema v6 adds `parameter_history`: one append-only
+  row per change, with the settings before and after, the hash the score cache
+  stamps its rows with, and when. `parametersInForceAt(atMs)` answers "what
+  were the settings on this date", and the earliest row's `previousJson`
+  records what was in force before the log began — the shipped defaults, a
+  fact that existed nowhere else and stopped being true the instant the first
+  change landed.
+
+So every input to a past ranking is now recoverable. The remaining code change
+for "the ranking as it stood on any past date" is still the one named above:
+the liked set is read as current state (`likes.unlikedAt IS NULL`) and would
+have to be derived from `like_events` instead.
 
 So the snapshot definition can be changed later, and even applied
 retroactively. It does not need to be right now.
 
-**The notification-access banner takes too much room**, especially on the
-NW-A307's 602 dp screen, and is pure noise once access has been granted.
-Deferred to Phase 4 by the user's own call; it should be the first small UI
-fix, since it costs height on every tab of the device the app actually runs on.
+~~**The notification-access banner takes too much room.**~~ **Fixed
+2026-09-18**, as the first step of Phase 4. It renders nothing at all once
+access is granted; the full card lives on the debug screen's Live log tab.
+
+### Carried forward from Phase 4 — polish, deliberately deferred
+
+The user's own reading after using the Phase 4 build on the Walkman
+(2026-09-19): **"pretty happy with everything... UI probably could still use
+some work, and could maybe be better optimized for faster operation on the
+Walkman."** Both are explicitly *after* the next phase's big features, not
+before them. Recorded here so they are not rediscovered as if new:
+
+- **UI refinement.** No specific complaint attached; the screens work and fit.
+  Worth revisiting once there is more than one month of snapshots and the
+  validation phase has ended, because the steady-state shape of the app is
+  not yet something anyone has lived with.
+- **Speed on the NW-A307.** The measured baseline is 2,309 ms for a full
+  recompute of 380 tracks. Nothing is known to be slow; this is a watching
+  brief. The obvious levers if it ever matters, cheapest first: the Scores
+  screen recomputes on first open when the cache is empty rather than showing
+  the cache and refreshing behind it; the track screen computes a sixty-point
+  line on open, which is sixty scorings of one track; and `allServiceTracks()`
+  loads every service row on every ranking. None of these is worth touching on
+  a guess — measure first, and the score-over-time line is now the tool for
+  seeing whether a change helped.
+
+### Still unknown — carried into Phase 6
+
+**Does a Spotify Connect remote device capture phantom segments?** If music
+plays on the Walkman while Spotify is open on the Pixel, does the Pixel's
+capture record segments for a track it is not actually playing?
+
+Harmless today — each device has its own database and only the Walkman's is
+used — but it decides how hard the cross-device merge in Phase 6 is. Worth
+ten minutes on the devices if it comes up naturally; nothing should be built
+around it yet.
+
+Two things are already true and worth writing down with it:
+
+- **`MediaController.PlaybackInfo` may distinguish remote from local
+  playback**, which would let capture drop phantom segments at the source
+  rather than deduplicating them afterwards.
+- **Segments overlapping in wall-clock time are by definition at most one real
+  listen**, since one person cannot listen to two things at once.
+
+Segments have no device column, but every existing row came from one device
+and can be stamped in bulk when that column is eventually added — so waiting
+loses no provenance.
+
+Phase 0 did record that Spotify Connect playback is captured (see the table
+in "Step 0 findings"), but that was the *playing* device observing itself.
+Whether the *remote* device also records it is the open part.
 
 
 - ~~Initial scoring parameters (decay half-life, skip penalty, grace period).~~

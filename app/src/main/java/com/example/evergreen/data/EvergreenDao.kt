@@ -205,6 +205,37 @@ abstract class EvergreenDao {
     @Query("SELECT COUNT(*) FROM tracks")
     abstract fun trackCount(): Flow<Int>
 
+    /**
+     * When this app last watched something being played, or null if it never
+     * has.
+     *
+     * Captured rows only. An imported row's `endedAtMs` is a real listening
+     * time from the Spotify export, so counting those would let a six-year
+     * import masquerade as capture still working — which is precisely the
+     * failure this figure exists to notice. Capture rests on an undocumented
+     * broadcast setting and on media-session behaviour reverse-engineered on a
+     * device, so it can stop without anything else in the app changing.
+     */
+    @Query(
+        "SELECT MAX(endedAtMs) FROM listening_segments WHERE source = 'CAPTURE'",
+    )
+    abstract fun lastCapturedAtMs(): Flow<Long?>
+
+    /** [lastCapturedAtMs] as a one-shot read, for the workers. */
+    @Query(
+        "SELECT MAX(endedAtMs) FROM listening_segments WHERE source = 'CAPTURE'",
+    )
+    abstract suspend fun lastCapturedAtMsOnce(): Long?
+
+    /** How many segments capture has written since [sinceMs]. */
+    @Query(
+        """
+        SELECT COUNT(*) FROM listening_segments
+         WHERE source = 'CAPTURE' AND endedAtMs >= :sinceMs
+        """,
+    )
+    abstract fun capturedSinceCount(sinceMs: Long): Flow<Int>
+
     /** One-shot form of [mismatchedTrackIdCount], for tests and diagnostics. */
     @Query(
         """
@@ -224,6 +255,33 @@ abstract class EvergreenDao {
 
     @Query("SELECT * FROM listening_segments ORDER BY id")
     abstract suspend fun allSegments(): List<ListeningSegmentEntity>
+
+    /**
+     * One page of listening history with its titles, for the readable export.
+     *
+     * Paged rather than read whole. The segment table is the only thing in this
+     * app that grows without bound and already holds 77,000 rows after the
+     * import; materialising all of them as objects at once is tens of megabytes
+     * on a device with limited RAM, to write a file that is streamed out row by
+     * row anyway.
+     *
+     * Ordered by `id`, which is insertion order and therefore stable while the
+     * export runs -- `startedAtMs` is not, because an import can add rows dated
+     * years ago partway through.
+     */
+    @Query(
+        """
+        SELECT s.*, t.title AS title, t.artist AS artist
+          FROM listening_segments s
+          JOIN tracks t ON t.id = s.trackId
+         ORDER BY s.id
+         LIMIT :limit OFFSET :offset
+        """,
+    )
+    abstract suspend fun segmentPage(limit: Int, offset: Int): List<SegmentWithTrack>
+
+    @Query("SELECT COUNT(*) FROM listening_segments")
+    abstract suspend fun segmentCountOnce(): Int
 
     @Query("DELETE FROM listening_segments")
     abstract suspend fun deleteAllSegments()

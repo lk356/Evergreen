@@ -16,13 +16,14 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import com.example.evergreen.capture.CaptureNotificationListenerService
+import com.example.evergreen.capture.CaptureWatchWorker
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyAuthActivity
 import com.example.evergreen.spotify.SpotifyConnectionState
 import com.example.evergreen.scoring.SnapshotWorker
 import com.example.evergreen.spotify.EvergreenSyncWorker
 import com.example.evergreen.spotify.SpotifySyncWorker
-import com.example.evergreen.ui.DebugScreen
+import com.example.evergreen.ui.EvergreenApp
 import com.example.evergreen.ui.theme.EvergreenTheme
 
 class MainActivity : ComponentActivity() {
@@ -77,7 +78,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             EvergreenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    DebugScreen(
+                    EvergreenApp(
                         accessGranted = accessGranted.value,
                         onOpenNotificationSettings = ::openNotificationListenerSettings,
                         onOpenAppInfo = ::openAppInfo,
@@ -111,6 +112,11 @@ class MainActivity : ComponentActivity() {
         // app's own database. So it is scheduled unconditionally, and keeps
         // recording months even while Spotify is disconnected.
         SnapshotWorker.schedule(this)
+
+        // Likewise the capture watchdog, and for a stronger reason: capture is
+        // the one thing here that keeps working while Spotify is disconnected,
+        // and the one whose failure loses data rather than delaying it.
+        CaptureWatchWorker.schedule(this)
     }
 
     private fun openNotificationListenerSettings() {
