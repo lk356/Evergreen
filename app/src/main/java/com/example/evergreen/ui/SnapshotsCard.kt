@@ -1,5 +1,6 @@
 package com.example.evergreen.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,7 +37,7 @@ import kotlinx.coroutines.launch
  * in a shape that makes it a query.
  */
 @Composable
-fun SnapshotsCard() {
+fun SnapshotsCard(onOpenSnapshot: (Long) -> Unit = {}) {
     val context = LocalContext.current
     val db = remember(context) { EvergreenDatabase.get(context) }
     val scope = rememberCoroutineScope()
@@ -72,7 +73,11 @@ fun SnapshotsCard() {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onOpenSnapshot(snapshot.id) },
+            ) {
                 Text(snapshot.label, style = MaterialTheme.typography.bodyMedium)
                 Text(
                     text = "${snapshot.playlistSize} in the playlist, " +

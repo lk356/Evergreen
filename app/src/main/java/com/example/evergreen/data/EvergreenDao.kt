@@ -205,6 +205,37 @@ abstract class EvergreenDao {
     @Query("SELECT COUNT(*) FROM tracks")
     abstract fun trackCount(): Flow<Int>
 
+    /**
+     * When this app last watched something being played, or null if it never
+     * has.
+     *
+     * Captured rows only. An imported row's `endedAtMs` is a real listening
+     * time from the Spotify export, so counting those would let a six-year
+     * import masquerade as capture still working — which is precisely the
+     * failure this figure exists to notice. Capture rests on an undocumented
+     * broadcast setting and on media-session behaviour reverse-engineered on a
+     * device, so it can stop without anything else in the app changing.
+     */
+    @Query(
+        "SELECT MAX(endedAtMs) FROM listening_segments WHERE source = 'CAPTURE'",
+    )
+    abstract fun lastCapturedAtMs(): Flow<Long?>
+
+    /** [lastCapturedAtMs] as a one-shot read, for the workers. */
+    @Query(
+        "SELECT MAX(endedAtMs) FROM listening_segments WHERE source = 'CAPTURE'",
+    )
+    abstract suspend fun lastCapturedAtMsOnce(): Long?
+
+    /** How many segments capture has written since [sinceMs]. */
+    @Query(
+        """
+        SELECT COUNT(*) FROM listening_segments
+         WHERE source = 'CAPTURE' AND endedAtMs >= :sinceMs
+        """,
+    )
+    abstract fun capturedSinceCount(sinceMs: Long): Flow<Int>
+
     /** One-shot form of [mismatchedTrackIdCount], for tests and diagnostics. */
     @Query(
         """

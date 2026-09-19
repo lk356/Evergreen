@@ -22,7 +22,7 @@ import com.example.evergreen.spotify.SpotifyConnectionState
 import com.example.evergreen.scoring.SnapshotWorker
 import com.example.evergreen.spotify.EvergreenSyncWorker
 import com.example.evergreen.spotify.SpotifySyncWorker
-import com.example.evergreen.ui.DebugScreen
+import com.example.evergreen.ui.EvergreenApp
 import com.example.evergreen.ui.theme.EvergreenTheme
 
 class MainActivity : ComponentActivity() {
@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             EvergreenTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    DebugScreen(
+                    EvergreenApp(
                         accessGranted = accessGranted.value,
                         onOpenNotificationSettings = ::openNotificationListenerSettings,
                         onOpenAppInfo = ::openAppInfo,

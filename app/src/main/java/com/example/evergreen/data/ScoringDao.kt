@@ -301,6 +301,64 @@ abstract class ScoringDao {
     )
     abstract fun recentMembershipChanges(limit: Int): Flow<List<EvergreenMembershipEntity>>
 
+    /**
+     * Joins and leaves since [sinceMs], readable — with the titles attached.
+     *
+     * The home screen's "what changed" reads this. Joined here rather than
+     * looked up per row for the same reason the ranked list is: a query per row
+     * makes a list stutter on the NW-A307.
+     *
+     * A row appears once, dated by whichever of its two timestamps is later, so
+     * a track that joined in July and left last night shows up as last night's
+     * departure rather than twice.
+     */
+    @Query(
+        """
+        SELECT m.trackId AS trackId,
+               m.joinedAt AS joinedAt,
+               m.leftAt AS leftAt,
+               m.joinReason AS joinReason,
+               m.leaveReason AS leaveReason,
+               m.rankAtJoin AS rankAtJoin,
+               m.rankAtLeave AS rankAtLeave,
+               t.title AS title,
+               t.artist AS artist
+          FROM evergreen_membership m
+          JOIN tracks t ON t.id = m.trackId
+         WHERE COALESCE(m.leftAt, m.joinedAt) >= :sinceMs
+         ORDER BY COALESCE(m.leftAt, m.joinedAt) DESC, m.id DESC
+         LIMIT :limit
+        """,
+    )
+    abstract fun membershipChangesSince(sinceMs: Long, limit: Int): Flow<List<MembershipChangeRow>>
+
+    /** When the playlist last actually changed, for "nothing has moved since". */
+    @Query("SELECT MAX(COALESCE(leftAt, joinedAt)) FROM evergreen_membership")
+    abstract fun lastMembershipChangeAtMs(): Flow<Long?>
+
+    /**
+     * Every month this track has appeared in a snapshot, oldest first.
+     *
+     * "Following one song through time" on the track detail screen. Read from
+     * `snapshot_entries` rather than recomputed, because a snapshot is the
+     * record of what was actually true that month under the settings then in
+     * force — recomputing would answer a different question.
+     */
+    @Query(
+        """
+        SELECT s.monthKey AS monthKey,
+               s.label AS label,
+               e.`rank` AS `rank`,
+               e.score AS score,
+               e.inPlaylist AS inPlaylist
+          FROM snapshot_entries e
+          JOIN snapshots s ON s.id = e.snapshotId
+         WHERE e.trackId = :trackId
+         ORDER BY s.monthKey
+        """,
+    )
+    abstract suspend fun trackMonthHistory(trackId: Long): List<TrackMonthRow>
+
     @Insert
     protected abstract suspend fun insertMembership(row: EvergreenMembershipEntity)
 
@@ -350,6 +408,26 @@ abstract class ScoringDao {
 
     @Query("SELECT * FROM snapshots WHERE id = :id LIMIT 1")
     abstract suspend fun snapshotById(id: Long): SnapshotEntity?
+
+    /**
+     * The snapshot immediately before this month's, or null when it is the
+     * first.
+     *
+     * Consecutive snapshots subtract: "new this month" and "gone since last
+     * month" are a set difference over data that is already stored, which is
+     * why a month view needs no new table to lead with its diff. Ordered by
+     * `monthKey` rather than `takenAt` because the key is what defines the
+     * sequence -- a snapshot taken late still belongs to its own month.
+     */
+    @Query(
+        """
+        SELECT * FROM snapshots
+         WHERE monthKey < :monthKey
+         ORDER BY monthKey DESC
+         LIMIT 1
+        """,
+    )
+    abstract suspend fun snapshotBefore(monthKey: String): SnapshotEntity?
 
     /** Titles for the snapshot's entries, so a snapshot reads without a join later. */
     @Query("SELECT id, title, artist FROM tracks WHERE id IN (:trackIds)")
@@ -514,6 +592,38 @@ data class RankedTrackRow(
     val title: String?,
     val artist: String?,
     val durationMs: Long,
+    val inPlaylist: Boolean,
+)
+
+/**
+ * One join or leave, with enough of the track to read it.
+ *
+ * [leftAt] null means the track is still in the playlist, so the row describes
+ * a join; otherwise it describes the departure.
+ */
+data class MembershipChangeRow(
+    val trackId: Long,
+    val joinedAt: Long,
+    val leftAt: Long?,
+    val joinReason: MembershipReason,
+    val leaveReason: MembershipReason?,
+    val rankAtJoin: Int,
+    val rankAtLeave: Int?,
+    val title: String?,
+    val artist: String?,
+) {
+    /** Whichever of the two timestamps this row is really about. */
+    val atMs: Long get() = leftAt ?: joinedAt
+
+    val isJoin: Boolean get() = leftAt == null
+}
+
+/** One track's place in one month's snapshot. */
+data class TrackMonthRow(
+    val monthKey: String,
+    val label: String,
+    val rank: Int,
+    val score: Double,
     val inPlaylist: Boolean,
 )
 

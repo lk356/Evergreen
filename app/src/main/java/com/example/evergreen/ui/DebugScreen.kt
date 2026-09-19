@@ -73,25 +73,17 @@ fun DebugScreen(
     accessGranted: Boolean,
     onOpenNotificationSettings: () -> Unit,
     onOpenAppInfo: () -> Unit,
-    onConnectSpotify: () -> Unit,
-    /** Bumped when the login flow returns, so the Spotify tab re-reads its state. */
-    connectionEpoch: Int,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
-    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        // Nothing at all once access is granted. See AccessBanner: the full
-        // card costs a sixth of the Walkman's screen on every tab, and says
-        // nothing that is news. It lives on the Live log tab instead, which is
-        // where someone looks when capture has stopped working.
-        AccessBanner(
-            accessGranted = accessGranted,
-            onOpenNotificationSettings = onOpenNotificationSettings,
-            onOpenAppInfo = onOpenAppInfo,
-        )
-
-        PrimaryTabRow(selectedTabIndex = selectedTab, modifier = Modifier.padding(top = 12.dp)) {
+    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        // Two tabs, not four. The Spotify and Scores tabs have become screens
+        // of their own in the navigation shell; what is left here is the raw
+        // capture data -- the stored segments and the live media-session log --
+        // which is what the debug screen is actually for. It survives intact,
+        // behind Settings, and is not what the app opens on.
+        PrimaryTabRow(selectedTabIndex = selectedTab) {
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
@@ -102,30 +94,15 @@ fun DebugScreen(
                 onClick = { selectedTab = 1 },
                 text = { Text("Live log") },
             )
-            Tab(
-                selected = selectedTab == 2,
-                onClick = { selectedTab = 2 },
-                text = { Text("Spotify") },
-            )
-            Tab(
-                selected = selectedTab == 3,
-                onClick = { selectedTab = 3 },
-                text = { Text("Scores") },
-            )
         }
 
         when (selectedTab) {
             0 -> SegmentsTab(accessGranted)
-            1 -> LiveLogTab(
+            else -> LiveLogTab(
                 accessGranted = accessGranted,
                 onOpenNotificationSettings = onOpenNotificationSettings,
                 onOpenAppInfo = onOpenAppInfo,
             )
-            2 -> SpotifyTab(
-                onConnect = onConnectSpotify,
-                connectionEpoch = connectionEpoch,
-            )
-            else -> ScoresTab()
         }
     }
 }
