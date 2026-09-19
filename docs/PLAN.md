@@ -113,11 +113,28 @@ is far cheaper than backfilling them from 12,000 stored tracks later.
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5a — the Pixel as a read-only mirror of the
-  Walkman.** Branch `phase5a-mirror`, branched from `main` after
-  `phase4-usability` merged. See `docs/PHASE5A_PROMPT.md` for the steps and
-  `docs/PHASE5_QUESTIONS.md` for what 5b still has to decide.
+- Current phase: **Phase 5a built, not yet device-verified.** Branch
+  `phase5a-mirror`, six commits, one per step of `docs/PHASE5A_PROMPT.md`.
+  Merge to `main` is waiting on the Phase 5a checklist being run on both
+  devices. `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is
+  deliberately not started.
 - Last update: 2026-09-19.
+
+**Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
+Mirror mode lives in two `sync_state` rows and needed no schema change — the
+database is still v6. A mirrored database refuses every Spotify write, says
+on the home screen what it is and how old it is, and turns capture off.
+272 unit tests pass; the instrumented suite has not been run, because it
+needs the Pixel attached with the Walkman unplugged.
+
+**The proof the phase was really for holds**: the same facts and parameters
+give the same ranking whatever the device, whatever the order rows arrive in,
+and whenever it is recomputed. The one exception is the device's timezone,
+which is recorded under Phase 5a results as a Phase 5b decision rather than
+fixed.
+
+**Next:** run the Phase 5a verification checklist on both devices, then say
+so and `phase5a-mirror` gets merged to `main`.
 
 **Phase 4 is done, device-verified and merged.** It landed on `main` on
 2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
@@ -1222,6 +1239,229 @@ which is the ordinary daily sync.
       also closes Phase 3's step G), and the playlist-changes notification
       should arrive if anything moved.
 
+
+## Phase 5a results (2026-09-19)
+
+Built on branch `phase5a-mirror`, one commit per step of
+`docs/PHASE5A_PROMPT.md`. **272 unit tests** (up from 259). `capture/` is
+unchanged; one new file sits beside it, `CaptureSwitch`, exactly as
+`CaptureWatchWorker` did in Phase 4.
+
+**Not yet device-verified.** The checklist is at the end of this section.
+
+### What was built
+
+- **Mirror mode**, two rows in `sync_state`. It is a key/value table, so this
+  needed no schema change — the database is still v6.
+- **The guard**: a mirrored database never writes to Spotify. Four places
+  check it, and the check comes *first* in each.
+- **"Import a mirror"**, next to the existing backup button, using the system
+  open-document picker. It validates before replacing and neutralises before
+  replacing.
+- **The home screen says so**, in one line, whenever mirror mode is on.
+- **A cross-device determinism proof**, `CrossDeviceRankingTest`.
+
+### What was learned
+
+**The writer flag was never going to be enough, and the reason is worth
+stating plainly.** A mirror is the Walkman's database copied whole, so it
+arrives with the Walkman's `sync_state`: writer flag set, playlist id
+present, first write already confirmed. Every guard built in Phase 3 passes
+on it. The new check therefore cannot be *one more* guard in the list — it
+has to come before the others, including before the dry run, because every
+path that writes begins by computing a diff. The test that pins this
+deliberately leaves the writer flag on.
+
+**Neutralise before replacing, not after.** The obvious shape is: copy the
+file in, then fix up the device-specific rows. That leaves a window in which
+the live database is one that believes it is the Walkman — short, but
+precisely the state the whole feature exists to prevent, and a flat battery
+inside it would make the window permanent. So the copy is staged beside the
+live database, checked and edited there, and the swap is a rename. A process
+death mid-swap leaves *no* database, which Room replaces with an empty one:
+no writer flag, no confirmed write, nothing that can write to Spotify. That
+is the right way to fail.
+
+**A version check has to refuse in both directions, and for different
+reasons.** A newer backup this build cannot read is obvious. An *older* one
+is the dangerous case, because Room's instinct on opening an old file is to
+migrate it forwards — so without an explicit refusal, "can I read last
+year's backup" would have been answered "yes, and it is now a different
+database". The check is `PRAGMA user_version`, read with plain SQLite before
+Room is allowed near the file.
+
+**"Capture off" should mean off, not "read and discard".** The cheap
+implementation is a flag `SegmentWriter` consults, which is three lines — and
+which changes `capture/` for a decision that is not capture's to make, and
+leaves the listener bound, reading media sessions in order to throw the
+results away. Disabling the listener component instead means nothing is read
+at all. The notification-access grant survives a component disable (it is
+cleaned up when the *package* goes, not the component), so turning capture
+back on costs no trip through the system settings.
+
+**The ranking survives every way two devices differ except one.** Pinned in
+`CrossDeviceRankingTest`:
+
+| What differs | Ranking |
+|---|---|
+| Nothing | identical, to the last decimal |
+| The order rows arrive in | identical |
+| `now` — recomputed 9 hours later | identical order, every score smaller |
+| `now` — recomputed a fortnight later | identical order |
+| The default locale | identical, and the parameters hash too |
+| **The device's timezone** | **can differ** |
+
+The `now` result is the one that matters and the reason is not obvious. A
+decay weight is `2^(-(now - at)/halfLife)`, so shifting `now` multiplies
+*every* contribution by the same constant: the scores all shrink and the
+order is untouched. That holds only because the daily cap is applied *before*
+decay, which was a Phase 3 ordering decision made for other reasons and turns
+out to be what makes cross-device recomputation sound.
+
+**The timezone is a real hazard, recorded rather than fixed.** The daily cap
+buckets listening by *local* calendar day — a deliberate Phase 3 choice,
+because "forty loops in one night" is a local idea. Two devices in different
+timezones can therefore cap the same listening differently. It does not bite
+today: both devices are in the same place, and a mirror carries no timezone
+with it. It would bite the moment one travelled, and silently. Fixing it
+means recording the zone a segment was captured in, which is a schema change
+and a **Phase 5b decision**; scoring in UTC instead would change the ranking
+on the device that already works.
+
+**`String.format` localises `%d` and not `%x`.** Under `ar-SA-u-nu-arab`,
+`String.format("%d", 255)` really is `٢٥٥`. The parameters fingerprint is
+built with `%02x` and so is safe — but it is safe for a reason nobody chose,
+and a hash that differed by device locale would have meant a score cache that
+never matched and snapshots claiming settings the other device could not
+reproduce. There is now a test.
+
+### Design notes worth keeping
+
+- **The status line gains one entry that appears when nothing is wrong**,
+  which inverts the rule the rest of that file follows. A mirror silently
+  going stale while looking exactly like live data is the one way this
+  feature can mislead, and nothing else on the screen would give it away. It
+  is text rather than a card, because a permanent card is the mistake the
+  notification-access banner made and Phase 4's first step undid.
+- **Every suppression on a mirror is explicit**, including the ones the
+  import already makes impossible. The Evergreen-stale warning is gated on
+  mirror *and* on the writer flag, although the import clears that flag —
+  relying on it would be trusting one guard to keep another honest.
+- **A refusal is not a failure.** The month export's return type became a
+  small sealed result so that "this is a mirror" could be said in its own
+  words rather than arriving as "export failed, check the connection", which
+  would send the user to fix something that is not broken.
+- **The device's name is stamped at backup time**, not at startup. That is
+  the one moment the row is unambiguously true: it names the device the file
+  came from, and the file is about to be written. `Build.MODEL` is a model
+  name shared by every unit of that model, not an identifier.
+- **The playlist id is not neutralised.** It names the playlist the
+  *account* uses, so if the Pixel were ever promoted to writer it should keep
+  that playlist up to date rather than create a second one. The scoring
+  parameters and the parameter log stay for the same kind of reason: they
+  belong to the data, and a mirror scored under different settings would not
+  be a mirror of anything.
+- **The UI restarts itself after an import.** Everything on screen is reading
+  through a database handle that has just been closed and replaced;
+  recreating the activity is how they all get back onto the new file at once,
+  and it lands on Home, where the mirror announces itself — so the restart
+  doubles as the receipt.
+
+### Moving the file between the devices
+
+Three ways, in increasing order of faff. Any of them works; the file is an
+ordinary `.db` of a few tens of megabytes.
+
+**Option 1 — a file-sharing app you already have.** On the Walkman, back up
+to somewhere you can reach from the other device (a cloud folder, or whatever
+you already use to move files), then pick it on the Pixel. Easiest, and the
+file leaves your devices, which is worth a thought: it is your listening
+history, and it contains no passwords or tokens.
+
+**Option 2 — USB, device to computer to device.**
+
+1. Plug the **Walkman** into the computer with its USB cable.
+2. On the Walkman, pull down the notification shade, tap the USB notification,
+   and choose **File transfer** (it may be called **MTP** or **Transferring
+   files**).
+3. On the computer, open the Walkman's storage and find the backup file where
+   you saved it — most likely under **Download**.
+4. Copy it to the computer.
+5. Unplug the Walkman, plug in the **Pixel**, and set it to **File transfer**
+   the same way.
+6. Copy the file into the Pixel's **Download** folder.
+7. Unplug, and pick it in the app.
+
+**Option 3 — adb, if the computer already has it.** No shade-pulling:
+
+```
+adb devices                                    # check which is which
+adb -s <walkman-serial> pull /sdcard/Download/evergreen-backup-....db .
+adb -s <pixel-serial>   push evergreen-backup-....db /sdcard/Download/
+```
+
+Both devices need USB debugging on, which they already have. `adb devices`
+lists serials; run it with one plugged in at a time if it is not obvious
+which is which.
+
+### Phase 5a verification checklist
+
+**Take a backup on *both* devices before you start.** This is the one
+operation in the app that destroys a database, and the Pixel's own record is
+what it destroys. Nothing here writes to Spotify at all.
+
+**On the NW-A307 (the Walkman):**
+
+- [ ] **A.** Install the new build. Open **Settings** → **Back up database**
+      and save the file. **Note the size it reports.**
+- [ ] **B.** Check the home screen is unchanged: it should say "Everything is
+      running" and say nothing about mirrors.
+- [ ] **C.** On **Scores**, press **Recompute** and note the milliseconds.
+      Compare it with the 2,309 ms baseline from Phase 4.
+- [ ] **D.** Write down the **top ten tracks** in order. You will compare
+      them with the Pixel.
+
+**Move the file to the Pixel**, by whichever of the three ways above suits.
+
+**On the Pixel 10 Pro:**
+
+- [ ] **E.** Install the new build. Take a backup here too, if anything on
+      this device matters.
+- [ ] **F.** **Settings** → **Mirror of another device** → **Import a
+      mirror**. Pick the file. Read the confirmation: it should name
+      **NW-A307**, when the backup was taken, and the counts on both sides.
+      **Note how long the import takes.**
+- [ ] **G.** The app restarts itself and lands on **Home**. The first line
+      should read **"Mirror of NW-A307, taken … ago"**. Check it fits on one
+      line.
+- [ ] **H.** On **Scores**, press **Recompute** and note the milliseconds.
+      **Then compare the top ten with what you wrote down in D — they should
+      be the same tracks in the same order.** This is the phase's whole point.
+- [ ] **I.** Check there is nowhere left to write to Spotify, and that each
+      place says why rather than failing: the **Evergreen playlist** section
+      in Settings, the **Sync now** button under Likes, the **writer switch**,
+      and **Export to Spotify** on any month.
+- [ ] **J.** Check capture is off: the debug screen's **Live log** should
+      stop gaining entries, and playing something in Spotify on the Pixel
+      should add no segment.
+- [ ] **K.** Try importing a **file that is not a backup** — any other file
+      will do. It should refuse with a readable reason and change nothing.
+
+**Back on the NW-A307:**
+
+- [ ] **L.** Nothing about it has changed: it still says "Everything is
+      running", is still the writer, and still writes Evergreen on schedule.
+      Give it a day and check the write happened (this also closes Phase 3's
+      step G and Phase 4's step J).
+
+**Numbers to put in this file when you have them:**
+
+| | value |
+|---|---|
+| backup file size | |
+| import time on the Pixel | |
+| first recompute on the Pixel | |
+| recompute on the NW-A307 | (2,309 ms in Phase 4) |
 
 ## Open questions — still open
 
