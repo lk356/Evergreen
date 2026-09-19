@@ -48,17 +48,59 @@ streaming services:
       _(done 2026-09-18; device-verified on the NW-A307 — 77k plays imported,
       380 tracks scored, Evergreen written, snapshot exported. 219 unit and
       183 instrumented tests.)_
-- [~] **Phase 4 — Usability.** Real UI, a home screen, snapshot browsing,
+- [x] **Phase 4 — Usability.** Real UI, a home screen, snapshot browsing,
       scoring settings, score over time, notifications, data export. _(built
       2026-09-18 on `phase4-usability`; all eight steps of the prompt done,
-      **awaiting device verification on the NW-A307**. The like widget was cut
-      by the user — see below. Database backup was already done in Phase 3.)_
-- [ ] **Phase 5 — Cross-service.** Second service adapter (likely Tidal),
-      ISRC/MusicBrainz matching.
-- [ ] **Phase 6 — Cross-device.** Self-hosted sync backend, Windows agent (WinRT media
-      session API), Linux agent (MPRIS).
-- [ ] **Phase 7 — Public release evaluation.** Terms, quotas, privacy policy,
-      delete-my-data.
+      **device-verified on the NW-A307 2026-09-19 and merged to `main` the
+      same day** as pull request #2. The like widget was cut by the user — see
+      below. Database backup was already done in Phase 3.)_
+- [ ] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
+      mirror of the Walkman, transported as a file. 5b: full peer sync,
+      both devices capturing, segments merged. See
+      `docs/PHASE5_QUESTIONS.md`.
+- [ ] **Phase 6 — Cross-service.** Second service adapter, primarily the
+      Sony Walkman player for local files on the NW-A307; ISRC/MusicBrainz
+      matching. Rule to hold to: scoring merges across services, output is
+      per-service.
+- [ ] **Phase 7 — Desktop capture and sync backend.** Linux agent (MPRIS)
+      first, self-hosted sync backend, Windows agent (WinRT media session
+      API) after.
+- [ ] **Phase 8 — Nice-to-haves.** Richer stats, per-artist figures in the
+      style of the Spicetify stats app or ListenBrainz.
+- [ ] **Phase 9 — Public release evaluation.** Terms, quotas, privacy
+      policy, delete-my-data, and a security review by someone qualified to
+      do one.
+
+### Why the order changed (2026-09-19)
+
+Phase 5 was "cross-service" and cross-device was Phase 6; they are now the
+other way round. Listening happens on both the Walkman and the Pixel, but the
+stats are only readable on the Walkman's small, slow screen — so a mirror on
+the Pixel is the thing the user actually misses, and it is a fraction of the
+work of a second service adapter. Desktop capture moved behind it for a
+structural reason as well as a preference one: a Linux agent has nowhere to
+send its facts except the same fact-shipping protocol that cross-device sync
+needs underneath it, so building that protocol first is not a detour.
+
+### A note beside Phase 8 — artists are not yet entities
+
+Richer per-artist stats need artists as rows with ids, not the single artist
+string `tracks` carries today: "A feat. B" fragments the moment anything is
+counted per artist, and the same artist then appears under several spellings.
+**Not to be built now** — recorded so it is not rediscovered as new. The one
+thing worth knowing is that **the like sync already receives full artist
+objects with Spotify ids** and throws them away; keeping them as they arrive
+is far cheaper than backfilling them from 12,000 stored tracks later.
+
+### A note beside Phase 9 — there is no hosted multi-user path
+
+> Spotify Development Mode is capped at five users per app and requires the
+> app owner to hold an active Premium subscription. Extended quota access has
+> since May 2025 required a registered business entity, an active launched
+> service, and 250,000+ monthly active users. There is no path from a hobby
+> project to a hosted multi-user Spotify integration. **A public version must
+> therefore be self-hostable, with each user supplying their own client ID.**
+> Checked 2026-09-19; re-verify before acting on it.
 
 ## Preparation checklist
 - [x] Android Studio, Git, Claude Code (+ JetBrains plugin) installed
@@ -71,10 +113,27 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 4 built, not yet device-verified.** Branch
-  `phase4-usability`, eight commits. Merge to `main` is waiting on the
-  verification checklist below being run on the NW-A307.
-- Last update: 2026-09-18.
+- Current phase: **Phase 5a — the Pixel as a read-only mirror of the
+  Walkman.** Branch `phase5a-mirror`, branched from `main` after
+  `phase4-usability` merged. See `docs/PHASE5A_PROMPT.md` for the steps and
+  `docs/PHASE5_QUESTIONS.md` for what 5b still has to decide.
+- Last update: 2026-09-19.
+
+**Phase 4 is done, device-verified and merged.** It landed on `main` on
+2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
+outstanding when it merged and are listed under "Still owed"; none of them
+blocks anything.
+
+**The roadmap changed on 2026-09-19.** Cross-device moved ahead of
+cross-service, and desktop capture and the sync backend moved behind both.
+The reasoning is under the roadmap. Phase 5 is now two halves: **5a**, a
+read-only mirror moved as a file, which is what this branch builds, and
+**5b**, full peer sync, which is not started and whose design questions are
+open in `docs/PHASE5_QUESTIONS.md`.
+
+**One Phase 5b question is now blocking**: whether a Spotify Connect remote
+device captures phantom segments. It is recorded under "Open questions" with
+the reason it was promoted.
 
 **Phase 4 is built and has run on both devices.** All eight steps of
 `docs/PHASE4_PROMPT.md`: the access banner, the parameter log, the
@@ -118,8 +177,8 @@ whether a monthly snapshot should describe the last day of the month or the
 month as a whole. Neither blocks anything, and the second one turns out not
 to be urgent at all — see the note on why.
 
-**Next:** run the Phase 4 verification checklist on the NW-A307, then say so
-and `phase4-usability` gets merged to `main`.
+~~**Next:** run the Phase 4 verification checklist on the NW-A307, then say so
+and `phase4-usability` gets merged to `main`.~~ Done 2026-09-19.
 
 **Phase 2 is done.** Merged to `main`, device-verified on the Pixel 10 Pro
 (login, 380/380 likes, 100% ISRC coverage, reconnect, DJ session), and the
@@ -940,7 +999,10 @@ prompt. 257 unit tests (up from 219). The `capture/` package is unchanged
 except for one new file beside it — `CaptureWatchWorker` — which reads the
 database and touches nothing about how capture works.
 
-**Not yet device-verified.** See the checklist at the end of this section.
+**Device-verified on the NW-A307 on 2026-09-19 and merged to `main` the same
+day** (pull request #2). See the checklist at the end of this section: A to F
+and H passed, G and I were not run, and J is the unattended daily write, which
+is a matter of waiting rather than of doing.
 
 ### What was built
 
@@ -1165,7 +1227,17 @@ which is the ordinary daily sync.
 
 ### Raised by using it (2026-09-18) — carried through Phase 4
 
-**How volatile should a score be?** Observed in use: a single skip — "not in
+~~**How volatile should a score be?**~~ **Settled 2026-09-19, at the current
+parameters.** Score over time was built to answer this question; the user has
+looked at the charts over their own listening and the reading was that the
+scores behave well. None of the three levers below was pulled, and the
+calibrated defaults stand. **Reopen only if a specific track the user still
+loves visibly falls out of Evergreen** — that is the observation that would
+mean the volatility is real rather than felt. The working is kept below
+because the three levers, and the asymmetry they are about, are still the
+right starting point if it ever is reopened.
+
+Observed in use: a single skip — "not in
 the mood for this right now" rather than "I have gone off this song" — visibly
 drags a score down, though it recovers after one play. That matches the
 design: a skip is −0.5 and a full play +1.0, so one play more than undoes one
@@ -1275,16 +1347,20 @@ before them. Recorded here so they are not rediscovered as if new:
   a guess — measure first, and the score-over-time line is now the tool for
   seeing whether a change helped.
 
-### Still unknown — carried into Phase 6
+### Phase 5b — blocking for the merge
 
 **Does a Spotify Connect remote device capture phantom segments?** If music
 plays on the Walkman while Spotify is open on the Pixel, does the Pixel's
 capture record segments for a track it is not actually playing?
 
-Harmless today — each device has its own database and only the Walkman's is
-used — but it decides how hard the cross-device merge in Phase 6 is. Worth
-ten minutes on the devices if it comes up naturally; nothing should be built
-around it yet.
+**Promoted 2026-09-19 from a curiosity to a blocker.** It was harmless while
+each device had its own database and only the Walkman's was used. It stops
+being harmless the moment the two captures are merged: if the Pixel records
+segments for music playing on the Walkman, merging inflates play counts, and
+it does so **invisibly** — the segments look exactly like real listening, and
+nothing downstream can tell that one evening was counted twice. **Phase 5b
+must not be built until this is answered.** Phase 5a (the read-only mirror)
+does not depend on it, because a mirror replaces rather than merges.
 
 Two things are already true and worth writing down with it:
 
@@ -1301,6 +1377,8 @@ loses no provenance.
 Phase 0 did record that Spotify Connect playback is captured (see the table
 in "Step 0 findings"), but that was the *playing* device observing itself.
 Whether the *remote* device also records it is the open part.
+
+### Still unknown — carried into Phase 6
 
 
 - ~~Initial scoring parameters (decay half-life, skip penalty, grace period).~~
