@@ -34,6 +34,7 @@ import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.TrackMonthRow
 import com.example.evergreen.scoring.ContributionNote
 import com.example.evergreen.scoring.ScoreBreakdown
+import com.example.evergreen.scoring.ScorePoint
 import com.example.evergreen.scoring.ScoreService
 import java.util.Date
 
@@ -62,12 +63,17 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
 
     var breakdown by remember(trackId) { mutableStateOf<ScoreBreakdown?>(null) }
     var months by remember(trackId) { mutableStateOf<List<TrackMonthRow>>(emptyList()) }
+    var history by remember(trackId) { mutableStateOf<List<ScorePoint>>(emptyList()) }
 
     LaunchedEffect(trackId) {
-        // Both off the main thread: ScoreService.breakdown moves itself to
+        // All three off the main thread: ScoreService moves its own work to
         // Dispatchers.Default, and the month read is a small indexed query.
+        // The breakdown comes first because it is what the top of the screen
+        // needs; the line is sixty scorings of the same track and can arrive a
+        // moment later.
         breakdown = service.breakdown(trackId)
         months = scoringDao.trackMonthHistory(trackId)
+        history = service.scoreHistory(trackId)
     }
 
     LazyColumn(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -101,6 +107,20 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
                 Stat("Plays that counted", "${current.scoredListenCount}")
                 Stat("Total heard", formatDuration(current.totalListenedMs))
                 Stat("Likes", "${current.likes.count { it.note == ContributionNote.LIKE }}")
+            }
+        }
+
+        if (history.size >= 2) {
+            item {
+                SectionTitle("Score over the last six months")
+                Text(
+                    text = "Recomputed from the stored listening, not recorded as it went. " +
+                        "The score is a pure function of what was played, what was liked " +
+                        "and the settings, so any past date can be asked for.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ScoreChart(history)
             }
         }
 
