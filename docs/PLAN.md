@@ -1378,6 +1378,81 @@ Phase 0 did record that Spotify Connect playback is captured (see the table
 in "Step 0 findings"), but that was the *playing* device observing itself.
 Whether the *remote* device also records it is the open part.
 
+#### What the API offers, read in code 2026-09-19
+
+Checked against `android.jar` for API 37 rather than from memory, because
+this is the kind of thing tutorials get wrong.
+
+`MediaController.PlaybackInfo` **does** carry the distinction:
+`getPlaybackType()` returns `PLAYBACK_TYPE_LOCAL` (1) or `PLAYBACK_TYPE_REMOTE`
+(2). It is reachable from a controller the app already holds —
+`MediaController.getPlaybackInfo()` — and changes arrive through
+`MediaController.Callback.onAudioInfoChanged(PlaybackInfo)`, a callback
+`SessionWatcher` already extends the class for and does not override. So if
+Spotify sets it, capture could drop a phantom at the source for the cost of
+one field and one `if`, with no deduplication rule to design.
+
+Two honest caveats, both of which decide whether that is worth anything:
+
+- **`PLAYBACK_TYPE_REMOTE` is a statement about volume, not about location.**
+  It is what a session sets through `MediaSession.setPlaybackToRemote()` to
+  say "my volume is not this device's stream volume". An app routing audio to
+  another device usually sets it, but nothing compels it to, and an app can
+  leave a session local while showing "Playing on NW-A307" on screen.
+- **Whether Spotify actually sets it cannot be read out of the SDK.** It is an
+  observation about one app's behaviour on the devices in question, and the
+  only way to get it is to log the value beside a real Connect session — which
+  is a change inside `capture/`, and therefore 5b's to make, not 5a's.
+
+Also present and worth knowing: `getVolumeControlId()` (API 34+), which names
+the volume control a remote session is using, and `getAudioAttributes()`.
+Neither is a location either, but a non-null control id alongside
+`PLAYBACK_TYPE_REMOTE` is a stronger reading than the type alone.
+
+#### The measurement — procedure, to run on the devices
+
+Counts and aggregates only; no row of the database goes in this file.
+
+**Before you start.** Have the Pixel and the Walkman both to hand, Spotify
+signed in on both, and Evergreen installed on both with notification access
+granted. Nothing here writes to Spotify and nothing here changes the Walkman.
+
+1. On the **Pixel**, open Evergreen → **Settings** → **Open the debug
+   screens** → the **Segments** tab.
+2. Read the line just under the chips — it says something like
+   `1234 seg · 200 track · 180 listen`. **Write down the first number.** That
+   is the segment count before the test.
+3. Switch to the **Live log** tab and press **Clear**, so anything below is
+   from this test only.
+4. Open **Spotify on the Pixel** and leave it in the foreground, on any screen
+   — do not press play on it.
+5. On the **Walkman**, play **five tracks**: let two play all the way to the
+   end, and skip three of them after a few seconds each.
+6. Back on the **Pixel**, with Spotify still open, wait about **one minute**
+   after the last track — a segment is only written when a listen ends, and
+   a watcher waits a moment before flushing.
+7. In Evergreen on the Pixel, go back to the debug screen → **Segments** and
+   read the first number again. **Write down the difference.**
+8. On the **Live log** tab, note whether any line says `watching media
+   session` or `segment written` in that window. Read the lines; do not copy
+   them here.
+9. For completeness, do the same count on the **Walkman** — its segment count
+   should have gone up by about five. That is the control: it says the test
+   itself worked.
+
+**How to read the answer.**
+
+- Pixel difference **0**, and no `segment written` in the live log → no
+  phantoms. The 5b merge does not need a deduplication rule, and the question
+  closes.
+- Pixel difference **greater than 0** → phantoms are real. Record how many,
+  against five real plays, and 5b needs either the `PlaybackInfo` check above
+  or the wall-clock overlap rule, and probably both.
+
+#### Result
+
+_Not yet run. Fill in the two counts here when it has been._
+
 ### Still unknown — carried into Phase 6
 
 
