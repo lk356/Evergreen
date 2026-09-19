@@ -114,9 +114,10 @@ is far cheaper than backfilling them from 12,000 stored tracks later.
 _Update at the end of each task: what was done, what's next, any blockers._
 
 - Current phase: **Phase 5a built and device-verified**, branch
-  `phase5a-mirror`. Steps A to K of its checklist passed on both devices on
-  2026-09-19; step L, the unattended daily write, is still pending and blocks
-  nothing. **Awaiting the user's word to merge to `main`.**
+  `phase5a-mirror`. Its whole checklist passed on both devices on 2026-09-19,
+  and the daily write that had been outstanding since Phase 3 was diagnosed,
+  fixed and seen to fire the same afternoon. **Awaiting the user's word to
+  merge to `main`.**
   `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is deliberately
   not started.
 - Last update: 2026-09-19.
@@ -150,7 +151,8 @@ NW-A307** — about eight times faster, which is the phase's justification in
 one number. The Walkman's own figure is within 4% of the Phase 4 baseline, so
 the mirror work cost it nothing.
 
-**One thing predates this phase and is now diagnosed and fixed.** The Evergreen playlist has been written only once, manually, at
+**The daily write is fixed, and Phase 3's step G is finally closed.** Before
+today the Evergreen playlist had been written only once, manually, at
 03:25 on the 18th. The cause is confirmed on the device: **the schedule
 interval and the write guard are both 24 hours and have fallen out of phase**
 — the scheduled run at ~01:08 on the 19th landed 21 h 43 min after the manual
@@ -158,8 +160,9 @@ write, inside the guard, and did nothing. The next attempt is ~01:25 on the
 20th and would have written. The device being asleep was not the cause.
 **Fixed the same day**: a write is now attempted every six hours against the
 unchanged 24-hour guard, and the unique work was renamed so that devices
-holding the old schedule pick the new one up. See "The daily write has not
-fired on its own" under Phase 5a results.
+holding the old schedule pick the new one up. **The scheduled worker then ran
+on its own at 16:08 and wrote two tracks**, which closes Phase 4's step J and
+Phase 3's step G. See the two sections under Phase 5a results.
 
 **Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
 whether to fix the daily-write schedule.
@@ -1221,12 +1224,12 @@ a field through it.
 
 ### Still owed
 
-- **Step J / Phase 3's step G:** the unattended daily write. **Still not
-  fired as of 15:55 on 2026-09-19 — 36.5 hours after the manual first write
-  at 03:25 on the 18th.** Analysed under Phase 5a results, "The daily write
-  has not fired on its own". As of
-  2026-09-19 the last write was still the manual first one, made around
-  3–4 am on the 18th. The next one cannot happen before the same time on the
+- ~~**Step J / Phase 3's step G:** the unattended daily write.~~ **Closed
+  2026-09-19.** It had not fired 36.5 hours after the manual first write,
+  which turned out to be a real bug rather than a sleepy device: the schedule
+  interval and the write guard were both 24 hours and had fallen out of
+  phase. Diagnosed, fixed, and the scheduled worker seen to write at 16:08 on
+  the 19th. Both sections are under Phase 5a results. The original note read: The next one cannot happen before the same time on the
   19th — `EvergreenSync` refuses any write inside 24 hours of the last — and
   will land whenever WorkManager's next 24-hour window falls with the Walkman
   awake and on Wi-Fi. On a portable player that is often asleep, "some time
@@ -1478,6 +1481,47 @@ the old pair, and the only place this could have been caught is where someone
 changes one of the two numbers.
 
 
+### The scheduled write fired — 2026-09-19 16:08
+
+**Phase 4's step J and Phase 3's step G are closed.** The new build was
+installed on the NW-A307 and the app opened, which cancelled the old
+24-hour schedule and enqueued the six-hour one. Being already overdue — 38.7
+hours since the write of 03:25 on the 18th — WorkManager ran it immediately,
+and it wrote:
+
+```
+EvergreenSync:       evergreen sync: +2 -0, 0 refused
+EvergreenSyncWorker: evergreen sync: OK Added 2, removed 0.
+EvergreenSyncWorker: suppressing the change notification: parameters changed
+```
+
+| | |
+|---|---|
+| `evergreen_last_written_at` | **2026-09-19 16:08:39** |
+| tracks added / removed | 2 / 0 |
+| members now | 102 |
+| old `evergreen-playlist-sync` | **CANCELLED** |
+| new `evergreen-playlist-sync-v2` | period 6 h, enqueued 16:08:37 |
+| writer flag / mirror | `true` / not a mirror — the Walkman is unchanged |
+| segments | 77,607 |
+
+**This is the scheduled path, not the "Sync now" button.** The worker ran on
+its own, computed its own diff, wrote two tracks, and recorded the write. The
+whole pipeline has now been exercised unattended.
+
+**The notification was suppressed, and that is correct.** `parameters_changed`
+was still set from the settings change made during the Phase 4 checklist, so
+the worker took and cleared the flag rather than reporting two joins as if
+they were news about listening. It also means that flag has now been consumed
+and the next write will notify normally.
+
+**What is still not proven** is a full unattended cycle with nobody touching
+the device: this run was triggered by the app being opened, which is what
+re-armed the schedule. The next attempt is due ~22:08 tonight and will
+correctly refuse as `TOO_SOON`; the first write that owes nothing to a human
+is any time after 16:08 on the 20th. That is a matter of waiting rather than
+of doing, and it no longer blocks anything.
+
 ### Moving the file between the devices
 
 Three ways, in increasing order of faff. Any of them works; the file is an
@@ -1560,16 +1604,17 @@ what it destroys. Nothing here writes to Spotify at all.
 
 **Back on the NW-A307:**
 
-- [ ] **L.** Nothing about it has changed: it still says "Everything is
+- [x] **L.** Nothing about it has changed: it still says "Everything is
       running", is still the writer, and still writes Evergreen on schedule.
       Give it a day and check the write happened (this also closes Phase 3's
       step G and Phase 4's step J).
 
 ### Phase 5a device verification (2026-09-19) — passed
 
-Run by the user across both devices. A to K passed; **L is still pending**
-and is the same outstanding item as Phase 4's step J and Phase 3's step G —
-see "The daily write has not fired on its own" below.
+Run by the user across both devices. **All of A to L passed.** The daily
+write, which was the outstanding item from Phase 4's step J and Phase 3's
+step G, was diagnosed, fixed and seen to fire the same afternoon — see the
+two sections below.
 
 | | value |
 |---|---|
