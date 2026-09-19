@@ -15,8 +15,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import com.example.evergreen.capture.CaptureNotificationListenerService
 import com.example.evergreen.capture.CaptureWatchWorker
+import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.spotify.SpotifyAuth
 import com.example.evergreen.spotify.SpotifyAuthActivity
 import com.example.evergreen.spotify.SpotifyConnectionState
@@ -25,6 +27,7 @@ import com.example.evergreen.spotify.EvergreenSyncWorker
 import com.example.evergreen.spotify.SpotifySyncWorker
 import com.example.evergreen.ui.EvergreenApp
 import com.example.evergreen.ui.theme.EvergreenTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -43,13 +46,30 @@ class MainActivity : ComponentActivity() {
         connectionEpoch.intValue++
         // Scheduling only after a successful connection means a fresh install
         // never wakes the device for a sync it cannot perform.
-        if (SpotifyAuth(this).connectionState() is SpotifyConnectionState.Connected) {
-            SpotifySyncWorker.schedule(this)
+        scheduleSpotifyWorkIfAppropriate()
+    }
+
+    /**
+     * Arms the two Spotify schedules, unless this database is a mirror.
+     *
+     * The mirror check is the reason this is a coroutine rather than the two
+     * straight-line calls it used to be. Importing a mirror cancels both
+     * schedules; without this, the next time the app was opened would quietly
+     * put them back, and the whole guard would last exactly until the user
+     * looked at the app. Reading `sync_state` is one indexed lookup, but it is
+     * a database read and so does not belong on the main thread.
+     *
+     * The workers refuse on a mirror as well — this is about not waking the
+     * device, not about correctness, which is theirs.
+     */
+    private fun scheduleSpotifyWorkIfAppropriate() {
+        if (SpotifyAuth(this).connectionState() !is SpotifyConnectionState.Connected) return
+        lifecycleScope.launch {
+            if (EvergreenDatabase.get(this@MainActivity).importDao().isMirror()) return@launch
+            SpotifySyncWorker.schedule(this@MainActivity)
             // The Evergreen sync schedules itself alongside the like sync, and
             // cancels itself on its first run if this device is not the writer.
-            // Scheduling it unconditionally here keeps MainActivity free of a
-            // database read on the main thread.
-            EvergreenSyncWorker.schedule(this)
+            EvergreenSyncWorker.schedule(this@MainActivity)
         }
     }
 
@@ -104,10 +124,7 @@ class MainActivity : ComponentActivity() {
         // Keeps the schedule alive across reinstalls and reboots, and re-arms it
         // after a reconnect. KEEP means an existing schedule is not restarted,
         // so opening the app does not reset the interval.
-        if (SpotifyAuth(this).connectionState() is SpotifyConnectionState.Connected) {
-            SpotifySyncWorker.schedule(this)
-            EvergreenSyncWorker.schedule(this)
-        }
+        scheduleSpotifyWorkIfAppropriate()
         // The snapshot worker needs no connection and no network: it reads the
         // app's own database. So it is scheduled unconditionally, and keeps
         // recording months even while Spotify is disconnected.

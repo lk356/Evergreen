@@ -34,6 +34,19 @@ class SpotifySyncWorker(
 
         if (!auth.isConfigured) return Result.success()
 
+        // A mirror does not sync likes either, and the reason is different from
+        // the one that stops it writing. Nothing here touches the playlist --
+        // the like sync only *reads* from Spotify -- but what it reads it
+        // writes into this database, and everything in this database is
+        // replaced at the next import. Rows that are certain to be discarded
+        // are not worth a network request, and leaving the sync running would
+        // put a "last synced" time on the home screen that means nothing.
+        if (EvergreenDatabase.get(applicationContext).importDao().isMirror()) {
+            Log.i(TAG, "this database is a mirror; cancelling the schedule")
+            cancel(applicationContext)
+            return Result.success()
+        }
+
         when (auth.connectionState()) {
             is SpotifyConnectionState.Expired -> {
                 // Nothing to do and nothing to retry. Scheduled work is

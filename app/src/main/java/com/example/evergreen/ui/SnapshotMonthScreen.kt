@@ -35,6 +35,7 @@ import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.SnapshotEntity
 import com.example.evergreen.data.SnapshotEntryEntity
 import com.example.evergreen.scoring.ScoringParameters
+import com.example.evergreen.scoring.SnapshotExport
 import com.example.evergreen.scoring.Snapshots
 import com.example.evergreen.spotify.SpotifyApi
 import com.example.evergreen.spotify.SpotifyAuth
@@ -142,11 +143,15 @@ fun SnapshotMonthScreen(
                         exporting = true
                         exportStatus = null
                         val api = SpotifyApi(SpotifyAuth(context))
-                        val playlistId = Snapshots(db).export(current.id, api)
-                        exportStatus = if (playlistId != null) {
-                            "Exported \"${Snapshots.EXPORT_PREFIX}${current.label}\" to Spotify."
-                        } else {
-                            "Export failed. Check the Spotify connection in Settings."
+                        exportStatus = when (val result = Snapshots(db).export(current.id, api)) {
+                            is SnapshotExport.Created ->
+                                "Exported \"${Snapshots.EXPORT_PREFIX}${current.label}\" to Spotify."
+                            // A refusal is not a failure, and saying "check the
+                            // connection" about a mirror would send the user to
+                            // fix something that is not broken.
+                            is SnapshotExport.Refused -> result.reason
+                            SnapshotExport.Failed ->
+                                "Export failed. Check the Spotify connection in Settings."
                         }
                         // Re-read so the "exported" marker appears without
                         // leaving the screen.

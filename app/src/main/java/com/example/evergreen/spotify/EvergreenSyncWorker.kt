@@ -40,6 +40,18 @@ class EvergreenSyncWorker(
 
         val db = EvergreenDatabase.get(applicationContext)
 
+        // Checked before the writer flag, because a mirror arrives with that
+        // flag already set — it is the Walkman's, copied in with everything
+        // else — and would otherwise sail straight past the next check and
+        // rewrite the Walkman's playlist from a ranking as stale as the last
+        // import. EvergreenSync refuses as well; this stops the device waking
+        // up for it at all.
+        if (db.importDao().isMirror()) {
+            Log.i(TAG, "this database is a mirror; cancelling the schedule")
+            cancel(applicationContext)
+            return Result.success()
+        }
+
         // Checked before the connection, because a device that is not the
         // writer should not even wake up for this. Cancelling the schedule
         // means the Pixel stops running it entirely once the Walkman is set as

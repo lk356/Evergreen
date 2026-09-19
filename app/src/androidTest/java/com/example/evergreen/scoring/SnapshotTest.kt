@@ -294,14 +294,14 @@ class SnapshotTest {
         snapshots().takeIfDue()
         val snapshot = db.scoringDao().snapshotForMonth("2026-08")!!
 
-        val playlistId = snapshots().export(snapshot.id, api)
+        val result = snapshots().export(snapshot.id, api)
 
-        assertNotNull(playlistId)
+        assertTrue(result is SnapshotExport.Created)
         assertEquals(1, api.createCalls)
         assertEquals("Evergreen — 2026 August", api.created!!.name)
         assertEquals("an export must never be public", false, api.created!!.isPublic)
 
-        val exported = api.contents.getValue(playlistId!!)
+        val exported = api.contents.getValue((result as SnapshotExport.Created).playlistId)
         assertEquals("only the playlist entries, not the whole ranking", 6, exported.size)
 
         val expected = db.scoringDao().snapshotPlaylistEntries(snapshot.id)
@@ -333,8 +333,8 @@ class SnapshotTest {
         snapshots().takeIfDue()
         val snapshot = db.scoringDao().snapshotForMonth("2026-08")!!
 
-        val first = snapshots().export(snapshot.id, api)!!
-        val second = snapshots().export(snapshot.id, api)!!
+        val first = (snapshots().export(snapshot.id, api) as SnapshotExport.Created).playlistId
+        val second = (snapshots().export(snapshot.id, api) as SnapshotExport.Created).playlistId
 
         assertEquals(2, api.createCalls)
         assertFalse(first == second)
@@ -344,7 +344,7 @@ class SnapshotTest {
 
     @Test
     fun exportingAnUnknownSnapshotDoesNothing() = runBlocking {
-        assertNull(snapshots().export(9999, api))
+        assertEquals(SnapshotExport.Failed, snapshots().export(9999, api))
         assertEquals(0, api.createCalls)
     }
 
@@ -354,8 +354,34 @@ class SnapshotTest {
         snapshots().takeIfDue()
         val snapshot = db.scoringDao().snapshotForMonth("2026-08")!!
 
-        assertNull(snapshots().export(snapshot.id, api))
+        assertEquals(SnapshotExport.Failed, snapshots().export(snapshot.id, api))
         assertEquals(0, api.createCalls)
+    }
+
+    /**
+     * A mirror never writes to Spotify, and an export is a write: it creates a
+     * playlist on the account. The Walkman holds the same snapshot and can
+     * export it itself.
+     */
+    @Test
+    fun aMirrorRefusesToExportAndSaysWhy() = runBlocking {
+        buildLibrary(count = 5, inPlaylist = 3)
+        snapshots().takeIfDue()
+        val snapshot = db.scoringDao().snapshotForMonth("2026-08")!!
+        db.importDao().markAsMirror("NW-A307", takenAtMs = clock, importedAtMs = clock)
+
+        val result = snapshots().export(snapshot.id, api)
+
+        assertTrue(result is SnapshotExport.Refused)
+        assertTrue(
+            "the reason names the device it is a mirror of",
+            (result as SnapshotExport.Refused).reason.contains("NW-A307"),
+        )
+        assertEquals("not one request", 0, api.createCalls)
+        assertNull(
+            "and nothing is recorded as exported",
+            db.scoringDao().snapshotForMonth("2026-08")!!.exportedPlaylistId,
+        )
     }
 
     // --- Dates -----------------------------------------------------------------

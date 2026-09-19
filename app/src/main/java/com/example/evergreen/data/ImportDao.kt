@@ -4,7 +4,9 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 
 /**
  * The reads the streaming-history import needs, and its bookkeeping.
@@ -173,5 +175,100 @@ abstract class ImportDao {
                 valueText = enabled.toString(),
             ),
         )
+    }
+
+    // --- Mirror mode ----------------------------------------------------------
+    //
+    // `sync_state` is a key/value table, so this needed no schema change: two
+    // rows, written and deleted like any other. That is worth saying out loud,
+    // because the alternative — a column on a table of one row, or a table of
+    // its own — would have been a migration for a fact that is neither a
+    // listening fact nor derived from one.
+
+    /**
+     * What this database is a mirror of, or null when it is this device's own
+     * record.
+     *
+     * Reads [SyncKeys.MIRROR_SOURCE] first and returns null on its absence, so
+     * "not a mirror" costs one indexed lookup. Every Spotify write path calls
+     * this, including on the writer device where the answer is always null.
+     */
+    suspend fun mirrorState(): MirrorState? {
+        val source = syncState(SyncKeys.MIRROR_SOURCE) ?: return null
+        return MirrorState(
+            sourceDevice = source.valueText,
+            takenAtMs = source.valueMs,
+            importedAtMs = syncState(SyncKeys.MIRROR_IMPORTED_AT)?.valueMs ?: 0L,
+        )
+    }
+
+    /** [mirrorState] as a flow, for the screens that have to say so. */
+    fun mirrorStateFlow(): Flow<MirrorState?> = combine(
+        syncStateFlow(SyncKeys.MIRROR_SOURCE),
+        syncStateFlow(SyncKeys.MIRROR_IMPORTED_AT),
+    ) { source, imported ->
+        source?.let {
+            MirrorState(
+                sourceDevice = it.valueText,
+                takenAtMs = it.valueMs,
+                importedAtMs = imported?.valueMs ?: 0L,
+            )
+        }
+    }
+
+    suspend fun isMirror(): Boolean = syncState(SyncKeys.MIRROR_SOURCE) != null
+
+    /**
+     * Marks this database as a mirror.
+     *
+     * Called on the *staged* copy, before it is moved into place, so that the
+     * database which lands is already neutralised. Marking it afterwards would
+     * leave a window — however short — in which a database carrying the
+     * Walkman's writer flag was the live one, and that window is exactly what
+     * this whole mechanism exists to close.
+     */
+    suspend fun markAsMirror(sourceDevice: String?, takenAtMs: Long?, importedAtMs: Long) {
+        putSyncState(
+            SyncStateEntity(
+                key = SyncKeys.MIRROR_SOURCE,
+                valueMs = takenAtMs,
+                valueText = sourceDevice,
+            ),
+        )
+        putSyncState(SyncStateEntity(key = SyncKeys.MIRROR_IMPORTED_AT, valueMs = importedAtMs))
+    }
+
+    /**
+     * Stops this database being a mirror.
+     *
+     * Deliberately does **not** restore the writer flag or re-arm any schedule.
+     * Leaving mirror mode says "this device's own record starts here"; deciding
+     * it is also the writer is a separate, deliberate act on the settings
+     * screen, and one the user has to be the one to make.
+     */
+    @Transaction
+    open suspend fun clearMirror() {
+        deleteSyncState(SyncKeys.MIRROR_SOURCE)
+        deleteSyncState(SyncKeys.MIRROR_IMPORTED_AT)
+    }
+
+    @Query("DELETE FROM sync_state WHERE `key` = :key")
+    protected abstract suspend fun deleteSyncState(key: String)
+
+    // --- This device's name ---------------------------------------------------
+
+    /**
+     * The name of the device this database belongs to, or null if never stamped.
+     *
+     * Read out of an *incoming* backup to say whose mirror it is. A backup
+     * taken by a build from before Phase 5a has no such row, which the import
+     * handles rather than refusing — the file is still a perfectly good mirror,
+     * it just cannot say what took it.
+     */
+    suspend fun deviceName(): String? = syncState(SyncKeys.DEVICE_NAME)?.valueText
+
+    /** Stamped by the backup button, immediately before it takes its copy. */
+    suspend fun setDeviceName(name: String, at: Long) {
+        putSyncState(SyncStateEntity(key = SyncKeys.DEVICE_NAME, valueMs = at, valueText = name))
     }
 }

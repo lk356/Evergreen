@@ -2,6 +2,7 @@ package com.example.evergreen.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -49,6 +50,18 @@ object DatabaseBackup {
      */
     suspend fun writeTo(context: Context, destination: Uri): Long = withContext(Dispatchers.IO) {
         val database = EvergreenDatabase.get(context)
+
+        // Stamp the device's name into the copy, immediately before taking it.
+        //
+        // This is what lets the Pixel say "a mirror of NW-A307" rather than
+        // "a mirror of somewhere". It is written here rather than at startup
+        // because here is the one moment where the row is unambiguously true:
+        // it names the device the file came from, and the file is about to be
+        // written. Build.MODEL is a model name shared by every unit of that
+        // model, not an identifier, and it goes no further than a file the
+        // user moves by hand.
+        database.importDao().setDeviceName(Build.MODEL, System.currentTimeMillis())
+
         val snapshot = File(context.cacheDir, "evergreen-backup-snapshot.db")
         // VACUUM INTO refuses to overwrite, so a snapshot left behind by an
         // interrupted run would block every later backup.
