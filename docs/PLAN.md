@@ -54,6 +54,11 @@ streaming services:
       **device-verified on the NW-A307 2026-09-19 and merged to `main` the
       same day** as pull request #2. The like widget was cut by the user — see
       below. Database backup was already done in Phase 3.)_
+**`docs/SYNC_FOUNDATION.md`** sits across phases 5b, 7 and 9: what has to be
+true of the *data* for the sync transport to stay a free choice, what is
+already built, and the one hard prerequisite. Read it before designing
+anything that moves facts between devices.
+
 - [~] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
       mirror of the Walkman, transported as a file. **Done 2026-09-19;
       device-verified on both devices and merged to `main` as pull request
@@ -94,15 +99,42 @@ thing worth knowing is that **the like sync already receives full artist
 objects with Spotify ids** and throws them away; keeping them as they arrive
 is far cheaper than backfilling them from 12,000 stored tracks later.
 
-### A note beside Phase 9 — there is no hosted multi-user path
+### A note beside Phase 9 — there is no hosted multi-user path *on Spotify*
 
 > Spotify Development Mode is capped at five users per app and requires the
 > app owner to hold an active Premium subscription. Extended quota access has
 > since May 2025 required a registered business entity, an active launched
 > service, and 250,000+ monthly active users. There is no path from a hobby
 > project to a hosted multi-user Spotify integration. **A public version must
-> therefore be self-hostable, with each user supplying their own client ID.**
-> Checked 2026-09-19; re-verify before acting on it.
+> therefore be self-hostable *for Spotify*, with each user supplying their own
+> client ID.** Checked 2026-09-19; re-verify before acting on it.
+
+**Corrected 2026-09-19, the same day it was written.** The first version of
+this note drew a conclusion one size too large — that the whole app must be
+single-tenant forever. That does not follow, and the reason is the phase
+sitting right above it.
+
+This is a limit on **one service's developer terms**, not on the app. Phase 6
+makes Evergreen multi-service, and other services are believed to be less
+restrictive — Deezer and Apple Music were named as likely examples, though
+**neither has been checked and both should be before anything is built on
+the assumption.** A hosted version offering every service except Spotify,
+with Spotify available to anyone self-hosting or bringing their own client
+id, is a perfectly coherent product and the terms of one service do not
+forbid it.
+
+So the architectural instruction is narrower than it first read:
+
+- **Do not build multi-tenancy now.** It is far future, and building an
+  account dimension into every table before there is a second user is the
+  classic way to pay for something twice.
+- **Do not build anything that makes multi-tenancy impossible either.** The
+  practical form of that is in `docs/SYNC_FOUNDATION.md`: facts that can be
+  named globally and ordered are what a future server would need, and they
+  are the same thing cross-device sync needs, so the cost is already being
+  paid for another reason.
+- **Bring-your-own-client-id remains the right answer for Spotify
+  specifically**, whatever else happens.
 
 ## Preparation checklist
 - [x] Android Studio, Git, Claude Code (+ JetBrains plugin) installed
@@ -122,7 +154,10 @@ _Update at the end of each task: what was done, what's next, any blockers._
 - **Nothing is in progress.** The next move is the user's: live with the
   mirror for a while, then decide whether 5b is wanted.
   `docs/PHASE5_QUESTIONS.md` is where that gets decided, and it is
-  deliberately not started.
+  deliberately not started. **`docs/SYNC_FOUNDATION.md` (new, 2026-09-19)**
+  records what keeps the transport a free choice, so that research into
+  Syncthing, a self-hosted server or anything else has something to be
+  measured against.
 - Last update: 2026-09-19.
 
 **Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
@@ -166,6 +201,17 @@ unchanged 24-hour guard, and the unique work was renamed so that devices
 holding the old schedule pick the new one up. **The scheduled worker then ran
 on its own at 16:08 and wrote two tracks**, which closes Phase 4's step J and
 Phase 3's step G. See the two sections under Phase 5a results.
+
+**The architecture notes are written down.** `docs/SYNC_FOUNDATION.md`
+answers "what keeps every future sync option open", which is the user's
+stated priority. Three findings worth knowing without reading it: the
+expensive part is **already built** (`listening_segments.deviceId` has
+existed since Phase 1, so a segment's global name is already
+`(deviceId, id)`); the missing part is that **"what is new since X" is not a
+question the schema can answer**, which is why a mirror ships 21 MiB for a
+few hundred rows; and the **only hard ordering constraint** in the whole
+design is that the phantom-segment fix must land in `capture/` before any
+merge is built.
 
 **Next: nothing, on purpose.** Phase 5a is meant to be used before anything
 else is decided. Two things are waiting whenever the user wants them, and

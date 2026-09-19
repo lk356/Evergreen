@@ -57,12 +57,34 @@ move to Phase 7. Everything from (5) onward is explicitly unplanned.
 
 These are measurements, not builds. Both are cheap.
 
-### Check 0a. Does a Spotify Connect remote device capture phantom segments?
+### ~~Check 0a.~~ **ANSWERED 2026-09-19 — yes, it does.**
 
 Carried from Phase 3 as a curiosity. It is now on the critical path: if the
 Pixel records segments for music actually playing on the Walkman, then
 merging the two devices' captures inflates play counts, and the scoring is
 wrong in a way that is invisible.
+
+**It does.** Measured with Spotify open on the Pixel and audio playing on the
+NW-A307, untouched: **three segments for music it was not playing**, three
+distinct tracks, 3.6 minutes of claimed listening, end reason `TRACK_CHANGE`
+on all three — indistinguishable from real listening. Fraction heard ran 0.06
+to 0.92, so one would have scored a **full play** and one a **rejection**. A
+phantom carries the whole range of judgements, negatives included.
+
+**And `PlaybackInfo` does distinguish them.** `dumpsys media_session` shows
+Spotify sets `volumeType=REMOTE` on the Connect session while every other
+session on the device reads `LOCAL`, with a `volumeControlId` naming its own
+media-route provider as a second signal. So phantoms can be dropped at the
+source, and no wall-clock deduplication rule is needed for this case.
+
+**Consequence, recorded in `docs/SYNC_FOUNDATION.md` 5.1: the capture fix is
+a hard prerequisite for any merge.** Full counts and the correction to an
+earlier wrong claim are in `docs/PLAN.md`.
+
+Still open, and worth settling before designing the merge: whether the
+Pixel's view of a listen *agrees* with the Walkman's or truncates it. If it
+truncates, a phantom is not merely a duplicate but a wrong negative judgement
+about a song being enjoyed.
 
 **Procedure.** Open Spotify on the Pixel with capture running. Play several
 tracks on the Walkman, some to the end, some skipped. On the Pixel, check the
@@ -150,6 +172,15 @@ be swapped.** What crosses the wire should be defined independently of how it
 crosses. Then the server in a later phase is a transport swap rather than a
 rewrite.
 
+**Expanded 2026-09-19 into `docs/SYNC_FOUNDATION.md`**, after the user asked
+what keeps these options open. The short version: what makes a transport
+swappable is three properties of the *data* — a fact can be named globally,
+facts can be ordered, and a batch can be applied twice harmlessly — not an
+interface with four implementations, which is speculative generality. Two of
+the three are already true. The missing one is that "what is new since X" is
+not yet a question with an answer, which is why a mirror ships 21 MiB for a
+few hundred new rows.
+
 ### 3e. What crosses the wire?
 
 **Recommendation: facts only**, with each device recomputing its own
@@ -178,9 +209,18 @@ stamped in bulk, so nothing is lost by adding this later — but it is the one
 change that is genuinely awkward once two databases have diverged, which
 argues for doing it early even under option A.
 
-**Open:** where the device id comes from. A random id generated once per
-install and stored in `sync_state` is enough, and reveals nothing about the
-device.
+**~~Open:~~ Already built, found 2026-09-19.** `listening_segments.deviceId`
+has existed and been indexed since Phase 1, and `capture/DeviceId.kt`
+generates a random UUID once per install — not a hardware id, excluded from
+cloud backup and device transfer. So segment identity is already the pair
+`(deviceId, id)`, and the awkward change this section warns about was made
+three phases early for a different reason.
+
+**`like_events` deliberately has no device column, and should not get one.**
+It is an observation of the *service's* state rather than of this device, so
+two devices seeing one like are seeing one fact twice. Its identity has to be
+content-based or it can never be deduplicated. See
+`docs/SYNC_FOUNDATION.md` Part 4 for the rules table by table.
 
 ### 3g. Merge rules (5b)
 
