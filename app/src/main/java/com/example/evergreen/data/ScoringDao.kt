@@ -148,6 +148,23 @@ abstract class ScoringDao {
 
     open fun syncValueFlow(key: String): Flow<SyncStateEntity?> = syncStateFlow(key)
 
+    @Query("DELETE FROM sync_state WHERE `key` = :key")
+    abstract suspend fun clearSyncState(key: String)
+
+    /**
+     * Reads a one-shot flag and clears it, in one transaction.
+     *
+     * "Did the parameters change since the last write" is asked once, by the
+     * sync worker, and must not be answered twice -- two workers racing would
+     * otherwise both suppress their notification, or both post one.
+     */
+    @Transaction
+    open suspend fun takeSyncStateMs(key: String): Long? {
+        val value = syncState(key)?.valueMs
+        if (value != null) clearSyncState(key)
+        return value
+    }
+
     // --- The score cache ------------------------------------------------------
 
     @Query("SELECT * FROM scores ORDER BY rank")

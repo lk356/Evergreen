@@ -58,7 +58,11 @@ import java.util.Locale
  * therefore cannot drift apart and start telling different stories.
  */
 @Composable
-fun ScoresTab(onOpenTrack: (Long) -> Unit = {}, modifier: Modifier = Modifier) {
+fun ScoresTab(
+    onOpenTrack: (Long) -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val db = remember(context) { EvergreenDatabase.get(context) }
     val scoringDao = remember(db) { db.scoringDao() }
@@ -71,7 +75,6 @@ fun ScoresTab(onOpenTrack: (Long) -> Unit = {}, modifier: Modifier = Modifier) {
 
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var editingParameters by remember { mutableStateOf(false) }
     var parametersExpanded by rememberSaveable { mutableStateOf(false) }
 
     // Fill the cache on first open so the tab is never inexplicably empty.
@@ -118,8 +121,8 @@ fun ScoresTab(onOpenTrack: (Long) -> Unit = {}, modifier: Modifier = Modifier) {
                 ) {
                     Text(if (busy) "Scoring…" else "Recompute")
                 }
-                OutlinedButton(onClick = { editingParameters = true }, enabled = !busy) {
-                    Text("Parameters")
+                OutlinedButton(onClick = onOpenSettings, enabled = !busy) {
+                    Text("Change the scoring")
                 }
             }
             status?.let { message ->
@@ -171,25 +174,6 @@ fun ScoresTab(onOpenTrack: (Long) -> Unit = {}, modifier: Modifier = Modifier) {
         item { Spacer(modifier = Modifier.padding(bottom = 24.dp)) }
     }
 
-    if (editingParameters) {
-        ParameterEditor(
-            current = parameters,
-            onDismiss = { editingParameters = false },
-            onSave = { updated ->
-                scope.launch {
-                    scoringDao.putScoringParameters(updated, System.currentTimeMillis())
-                    editingParameters = false
-                    busy = true
-                    // Changing a parameter invalidates the cache by design, so
-                    // the recompute happens here rather than waiting for
-                    // something else to notice.
-                    val ranking = service.ranking(force = true)
-                    status = "Parameters saved; rescored ${ranking.tracks.size} tracks."
-                    busy = false
-                }
-            },
-        )
-    }
 }
 
 @Composable
@@ -321,74 +305,6 @@ private fun ParameterSummary(
             "join ${parameters.playlistJoinRank}, leave ${parameters.playlistLeaveRank}",
         )
     }
-}
-
-/**
- * The danger zone: the parameters as raw JSON.
- *
- * Phase 4 owns the real settings screen with a slider per value. Until then
- * this is deliberately awkward, because it is the one control here that
- * changes what the app will write to Spotify.
- */
-@Composable
-private fun ParameterEditor(
-    current: ScoringParameters,
-    onDismiss: () -> Unit,
-    onSave: (ScoringParameters) -> Unit,
-) {
-    var text by remember { mutableStateOf(current.toJson()) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Scoring parameters") },
-        text = {
-            Column {
-                Text(
-                    "Editing these rescores everything. It changes no stored " +
-                        "listening and runs no migration — scores are computed from " +
-                        "the segments every time, so any value can be changed back.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = {
-                        text = it
-                        error = null
-                    },
-                    isError = error != null,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                )
-                error?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                TextButton(onClick = { text = ScoringParameters().toJson(); error = null }) {
-                    Text("Reset to the calibrated defaults")
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                // Validated here rather than on save, so a typo is reported
-                // where it can be corrected instead of silently falling back to
-                // the defaults.
-                runCatching { ScoringParameters.fromJson(text) }
-                    .onSuccess(onSave)
-                    .onFailure { error = it.message ?: "That is not valid JSON." }
-            }) {
-                Text("Save and rescore")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
 }
 
 internal fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')

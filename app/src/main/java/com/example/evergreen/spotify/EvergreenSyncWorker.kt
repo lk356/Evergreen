@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.evergreen.Notifications
 import com.example.evergreen.data.EvergreenDatabase
+import com.example.evergreen.data.SyncKeys
 import java.util.concurrent.TimeUnit
 
 /**
@@ -84,11 +85,30 @@ class EvergreenSyncWorker(
             else -> {
                 Log.i(TAG, "evergreen sync: ${result.outcome} ${result.message.orEmpty()}")
                 if (result.added > 0 || result.removed > 0) {
-                    Notifications.postPlaylistChanged(
-                        applicationContext,
-                        added = result.added,
-                        removed = result.removed,
-                    )
+                    // One notification per sync, summarising -- never one per
+                    // track, because a sync can produce one change or forty.
+                    // Notifications.postPlaylistChanged has always counted
+                    // rather than listed; what is new is that it can be
+                    // suppressed.
+                    //
+                    // Suppressed when the movement was caused by a parameter
+                    // change rather than by a day passing. Forty joins and
+                    // leaves after nudging the skip weight is the arithmetic
+                    // doing as it was told, not news about listening -- and the
+                    // settings screen makes that a thing to do on a whim. The
+                    // flag is taken and cleared in one transaction, so the
+                    // suppression applies to exactly one write.
+                    val causedByParameterChange =
+                        db.scoringDao().takeSyncStateMs(SyncKeys.PARAMETERS_CHANGED_AT) != null
+                    if (causedByParameterChange) {
+                        Log.i(TAG, "suppressing the change notification: parameters changed")
+                    } else {
+                        Notifications.postPlaylistChanged(
+                            applicationContext,
+                            added = result.added,
+                            removed = result.removed,
+                        )
+                    }
                 }
                 Result.success()
             }

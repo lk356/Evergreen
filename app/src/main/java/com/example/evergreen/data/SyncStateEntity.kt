@@ -85,6 +85,33 @@ object SyncKeys {
     const val EVERGREEN_LAST_WRITTEN_AT = "evergreen_last_written_at"
 
     /**
+     * When the scoring parameters were last changed, cleared by the next write.
+     *
+     * Set by the settings screen, read and cleared by the Evergreen sync
+     * worker, which skips its "joined / left" notification once when it finds
+     * it. Forty joins and leaves after nudging the skip weight is not news
+     * about the user's listening -- it is the arithmetic doing what it was just
+     * told to -- and the settings screen makes that easy to trigger.
+     *
+     * Deliberately *not* cleared when the parameters are saved back to their
+     * old value: the recompute still happened, and the next write still
+     * reflects two changes rather than a day of listening.
+     */
+    const val PARAMETERS_CHANGED_AT = "parameters_changed_at"
+
+    /**
+     * How many days of silence before the "capture has gone quiet" alert.
+     *
+     * Stored as a number of days in `valueMs` -- a count, not a timestamp,
+     * which is a small abuse of the column name and cheaper than a table. Zero
+     * turns the alert off.
+     */
+    const val CAPTURE_SILENT_DAYS = "capture_silent_days"
+
+    /** When the capture-silence alert was last posted, so it does not repeat daily. */
+    const val CAPTURE_SILENT_NOTIFIED_AT = "capture_silent_notified_at"
+
+    /**
      * When the user confirmed the first write.
      *
      * Until this is set, every sync computes its diff and writes nothing. The

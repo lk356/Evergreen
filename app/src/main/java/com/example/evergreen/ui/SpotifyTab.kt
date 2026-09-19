@@ -60,6 +60,8 @@ fun SpotifyTab(
     onConnect: () -> Unit,
     connectionEpoch: Int,
     modifier: Modifier = Modifier,
+    /** Placed above the connection card, for settings that come first. */
+    header: @Composable () -> Unit = {},
     /** Appended at the bottom, so the settings screen can add its own entries. */
     footer: @Composable () -> Unit = {},
 ) {
@@ -100,6 +102,8 @@ fun SpotifyTab(
     Column(
         modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()),
     ) {
+        header()
+
         ConnectionCard(
             state = state,
             configured = configured,

@@ -134,6 +134,7 @@ fun EvergreenApp(
 
                     Section.SCORES -> ScoresTab(
                         onOpenTrack = { openTrackId = it },
+                        onOpenSettings = { section = Section.SETTINGS.ordinal },
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
 
@@ -176,40 +177,6 @@ private fun DetailBar(title: String, onBack: () -> Unit) {
         )
     }
     HorizontalDivider()
-}
-
-/**
- * Everything operational, plus the way into the debug screens.
- *
- * Phase 4 step 4 replaces the scoring parameters' JSON editor with real
- * controls and gives them a home here. Until then this is the Spotify tab's
- * contents -- connection, this device, import, the Evergreen playlist and the
- * merge -- with the debug entry appended.
- */
-@Composable
-private fun SettingsScreen(
-    onConnectSpotify: () -> Unit,
-    connectionEpoch: Int,
-    onOpenDebug: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    SpotifyTab(
-        onConnect = onConnectSpotify,
-        connectionEpoch = connectionEpoch,
-        modifier = modifier,
-    ) {
-        SectionTitle("Diagnostics")
-        Text(
-            text = "The raw capture views: every stored segment, and the live log of what " +
-                "the media session is reporting right now. Nothing here is needed in " +
-                "ordinary use — it is how anything gets diagnosed when it is not.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        TextButton(onClick = onOpenDebug, modifier = Modifier.padding(top = 4.dp)) {
-            Text("Open the debug screens")
-        }
-    }
 }
 
 /**
