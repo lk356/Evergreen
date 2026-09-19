@@ -133,6 +133,15 @@ and whenever it is recomputed. The one exception is the device's timezone,
 which is recorded under Phase 5a results as a Phase 5b decision rather than
 fixed.
 
+**Check 0a is answered, and the answer is the awkward one.** The Pixel
+*does* capture phantom segments for music playing on the Walkman — three of
+them in one short test, one of which would have scored as a full play. It
+changes nothing about 5a, which replaces rather than merges, and it is
+blocking for 5b. The good news arrived with it: `dumpsys media_session`
+shows Spotify sets `volumeType=REMOTE` on the remote session, so 5b can drop
+phantoms at the source rather than deduplicating after the fact. Both are
+recorded under "Open questions".
+
 **Next:** run the Phase 5a verification checklist on both devices, then say
 so and `phase5a-mirror` gets merged to `main`.
 
@@ -1593,7 +1602,10 @@ before them. Recorded here so they are not rediscovered as if new:
 plays on the Walkman while Spotify is open on the Pixel, does the Pixel's
 capture record segments for a track it is not actually playing?
 
-**Promoted 2026-09-19 from a curiosity to a blocker.** It was harmless while
+**Answered 2026-09-19, and the answer is yes** — see the measurement below.
+The Pixel recorded three plays of music that was coming out of the NW-A307,
+while nobody touched it. **Promoted the same day from a curiosity to a
+blocker.** It was harmless while
 each device had its own database and only the Walkman's was used. It stops
 being harmless the moment the two captures are merged: if the Pixel records
 segments for music playing on the Walkman, merging inflates play counts, and
@@ -1632,17 +1644,32 @@ this is the kind of thing tutorials get wrong.
 Spotify sets it, capture could drop a phantom at the source for the cost of
 one field and one `if`, with no deduplication rule to design.
 
-Two honest caveats, both of which decide whether that is worth anything:
+One caveat stands, and one was wrong:
 
 - **`PLAYBACK_TYPE_REMOTE` is a statement about volume, not about location.**
   It is what a session sets through `MediaSession.setPlaybackToRemote()` to
   say "my volume is not this device's stream volume". An app routing audio to
-  another device usually sets it, but nothing compels it to, and an app can
+  another device usually sets it, but nothing compels it to, and an app could
   leave a session local while showing "Playing on NW-A307" on screen.
-- **Whether Spotify actually sets it cannot be read out of the SDK.** It is an
-  observation about one app's behaviour on the devices in question, and the
-  only way to get it is to log the value beside a real Connect session — which
-  is a change inside `capture/`, and therefore 5b's to make, not 5a's.
+- ~~**Whether Spotify actually sets it cannot be read out of the SDK.** The
+  only way to get it is to log the value beside a real Connect session, which
+  is a change inside `capture/`.~~ **Wrong, corrected 2026-09-19.** No code
+  change is needed to find out: `adb shell dumpsys media_session` prints the
+  value for every live session. Observed on the Pixel during a real Connect
+  session with audio on the NW-A307:
+
+  ```
+  package=com.spotify.music
+  active=true   state=PLAYING(3)   position=1161
+  volumeType=REMOTE  controlType=FIXED  max=24  current=24
+  volumeControlId=com.spotify.music/...SpotifyMediaRouteProviderService:510c…
+  ```
+
+  **Spotify does set it.** Every other session on the device read `LOCAL` at
+  the same moment, and the `volumeControlId` names Spotify's own Connect
+  media-route provider — a second, independent signal. So the phantom can be
+  dropped at the source for the cost of one field and one `if`, and 5b needs
+  no wall-clock deduplication rule for this case.
 
 Also present and worth knowing: `getVolumeControlId()` (API 34+), which names
 the volume control a remote session is using, and `getAudioAttributes()`.
@@ -1689,9 +1716,45 @@ granted. Nothing here writes to Spotify and nothing here changes the Walkman.
   against five real plays, and 5b needs either the `PlaybackInfo` check above
   or the wall-clock overlap rule, and probably both.
 
-#### Result
+#### Result — measured 2026-09-19. **Phantoms are real.**
 
-_Not yet run. Fill in the two counts here when it has been._
+Run on the Pixel 10 Pro with Spotify open on it and audio playing on the
+NW-A307 over Spotify Connect. The Pixel was not touched during the test.
+Counts read from its database over adb; no row is reproduced here.
+
+| | |
+|---|---|
+| Capture segments before | 35 |
+| Capture segments after | **38** |
+| Written while only the Walkman was playing | **3** |
+| Distinct tracks among them | 3 |
+| "Listened" time they claim | 3.6 minutes |
+| End reason | `TRACK_CHANGE` ×3 — indistinguishable from real listening |
+| Fraction heard, lowest | 0.06 |
+| Fraction heard, highest | 0.92 |
+
+**They are not harmless fragments.** One of the three sits above the 0.85
+upper breakpoint and would score as a **full play**; one sits below the 0.20
+lower breakpoint and would score as a **rejection**. A phantom carries the
+whole range of judgements, negative ones included, and nothing on the row
+marks it as second-hand: same app package, same device id, same end reason as
+a real listen.
+
+**So the merge in 5b would double-count, and this confirms the question was
+right to be promoted to blocking.** Two notes on what is and is not yet
+established:
+
+- The obvious fix now exists and is cheap: drop segments whose session reads
+  `PLAYBACK_TYPE_REMOTE`, per the correction above. That is a `capture/`
+  change and belongs to 5b.
+- **Not yet established, and worth checking before designing anything:**
+  whether the Pixel's view of a listen *agrees* with the Walkman's. If the
+  remote session's position lags or truncates, a track played in full on the
+  Walkman could be recorded on the Pixel as the 0.06 fragment above — which
+  would make a phantom not merely a duplicate but an actively wrong negative
+  judgement about a song the user was enjoying. Comparing the two devices'
+  rows over the same minutes would settle it. Until then this is a
+  possibility, not a finding.
 
 ### Still unknown — carried into Phase 6
 
