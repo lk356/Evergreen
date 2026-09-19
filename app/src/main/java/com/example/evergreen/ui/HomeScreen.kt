@@ -557,7 +557,17 @@ internal data class NearTheLine(
     val row: RankedTrackRow,
     /** True when it would join next; false when it would leave. */
     val approachingJoin: Boolean,
-    /** How many ranks from the cutoff it is about to cross. */
+    /**
+     * How many places it still has to move before its state actually flips.
+     *
+     * The same meaning on both sides, which takes care because the two rules
+     * are not written the same way. A track joins at rank `join` **or better**,
+     * so a non-member at 101 must gain one place. A member leaves once it falls
+     * **below** `leave`, so a member at 130 is still in and must lose one place
+     * to go. Reading the second as `leave - rank` gives zero for a track that
+     * has not gone anywhere yet, which on screen says "0 off dropping" about a
+     * song that is still comfortably in the playlist.
+     */
     val distance: Int,
 )
 
@@ -576,12 +586,18 @@ internal fun nearTheLine(
     margin: Int = NEAR_MARGIN,
 ): List<NearTheLine> = ranked.mapNotNull { row ->
     when {
-        !row.inPlaylist && row.rank > parameters.playlistJoinRank &&
-            row.rank - parameters.playlistJoinRank <= margin ->
+        // Joins at `join` or better: a non-member at 101 is one place away.
+        !row.inPlaylist && row.rank - parameters.playlistJoinRank in 1..margin ->
             NearTheLine(row, approachingJoin = true, distance = row.rank - parameters.playlistJoinRank)
 
-        row.inPlaylist && parameters.playlistLeaveRank - row.rank in 0 until margin ->
-            NearTheLine(row, approachingJoin = false, distance = parameters.playlistLeaveRank - row.rank)
+        // Leaves once it falls *below* `leave`: a member at 130 is still in and
+        // is one place away, not zero.
+        row.inPlaylist && parameters.playlistLeaveRank + 1 - row.rank in 1..margin ->
+            NearTheLine(
+                row,
+                approachingJoin = false,
+                distance = parameters.playlistLeaveRank + 1 - row.rank,
+            )
 
         else -> null
     }

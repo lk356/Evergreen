@@ -58,7 +58,7 @@ class ScoreHistoryTest {
      */
     @Test
     fun theLastPointIsTodaysScore() = runBlocking {
-        val trackId = aTrackPlayed(onDaysAgo = listOf(1, 5, 12, 30, 60))
+        val trackId = trackPlayedOn(daysAgo = listOf(1, 5, 12, 30, 60), likedDaysAgo = 60)
 
         val history = service.scoreHistory(trackId, nowMs = now, days = 180, points = 30)
         val today = service.breakdown(trackId, nowMs = now)!!.score
@@ -68,26 +68,48 @@ class ScoreHistoryTest {
     }
 
     /**
-     * Each point equals what the scorer says for that instant on its own.
+     * A point on the line counts the past and nothing else.
      *
-     * The line is built in one pass over loaded rows for speed; this pins that
-     * the shortcut produces the same answers as asking the scorer sixty times
-     * from scratch would.
+     * The arithmetic is done here rather than by asking the app a second time,
+     * because the obvious oracle is wrong: [ScoreService.breakdown] takes a
+     * `nowMs` but does **not** exclude events after it, so asking it about a
+     * past instant includes listening that had not happened yet. [Decay]
+     * clamps a future-dated event to weight 1.0 rather than letting a bad
+     * clock inflate a score, so each such play quietly adds a whole play
+     * rather than blowing up — which is exactly the kind of wrongness that
+     * would pass unnoticed.
+     *
+     * So: a track liked and played once 100 days ago, and played again 5 days
+     * ago. Fifty days ago its score was the like and the one play, both decayed
+     * fifty days, and the play still five days in its future contributed
+     * nothing at all.
      */
     @Test
-    fun everyPointMatchesAScoreComputedIndependentlyForThatInstant() = runBlocking {
-        val trackId = aTrackPlayed(onDaysAgo = listOf(3, 9, 21, 44, 70, 120))
+    fun aPointOnTheLineCountsThePastAndNothingElse() = runBlocking {
+        val trackId = trackPlayedOn(daysAgo = listOf(100, 5), likedDaysAgo = 100)
+        val parameters = service.parameters()
 
-        val history = service.scoreHistory(trackId, nowMs = now, days = 150, points = 12)
-        history.forEach { point ->
-            val independent = service.breakdown(trackId, nowMs = point.atMs)!!.score
-            assertEquals(
-                "the line disagrees with the scorer at ${point.atMs}",
-                independent,
-                point.score,
-                1e-6,
-            )
-        }
+        val history = service.scoreHistory(trackId, nowMs = now, days = 60, points = 61)
+        val fiftyDaysAgo = history.single { it.atMs == now - 50 * day }
+
+        // One full play (1.0) and one like (3.0 by default), both fifty days
+        // old. Nothing else existed yet.
+        val expected = (1.0 + parameters.likeWeight) *
+            Decay.weightForAge(50 * day, parameters.halfLifeMs)
+
+        assertEquals(expected, fiftyDaysAgo.score, 1e-9)
+
+        // And it does count, once it has happened: the step is visible against
+        // the day before it, not against fifty days before it. Comparing with
+        // `fiftyDaysAgo` would fail for a reason that is not a bug -- fifty
+        // further days of decay on a like worth three plays outweighs one new
+        // play, so the line is legitimately *lower* at the end than in the
+        // middle.
+        val theDayBefore = history.single { it.atMs == now - 6 * day }
+        assertTrue(
+            "the play five days ago must show as a step up",
+            history.last().score > theDayBefore.score,
+        )
     }
 
     /**
@@ -102,8 +124,10 @@ class ScoreHistoryTest {
      * more wrong it would be.
      */
     @Test
-    fun theLineIsFlatAtZeroBeforeTheFirstPlay() = runBlocking {
-        val trackId = aTrackPlayed(onDaysAgo = listOf(10))
+    fun theLineIsFlatAtZeroBeforeAnythingHappened() = runBlocking {
+        // Liked and played on the same day, so "before the play" really is
+        // before every event this track has.
+        val trackId = trackPlayedOn(daysAgo = listOf(10), likedDaysAgo = 10)
 
         val history = service.scoreHistory(trackId, nowMs = now, days = 180, points = 60)
         val before = history.filter { it.atMs < now - 11 * day }
@@ -118,7 +142,7 @@ class ScoreHistoryTest {
     /** Points are evenly spaced, oldest first, and span exactly the window asked for. */
     @Test
     fun theWindowIsEvenlySpacedAndCoversWhatWasAskedFor() = runBlocking {
-        val trackId = aTrackPlayed(onDaysAgo = listOf(2))
+        val trackId = trackPlayedOn(daysAgo = listOf(2), likedDaysAgo = 2)
 
         val history = service.scoreHistory(trackId, nowMs = now, days = 90, points = 10)
         assertEquals(10, history.size)
@@ -127,7 +151,12 @@ class ScoreHistoryTest {
 
         val gaps = history.zipWithNext { a, b -> b.atMs - a.atMs }.distinct()
         assertTrue("samples should be evenly spaced, found $gaps", gaps.size <= 2)
-        history.zipWithNext { a, b -> assertTrue("oldest first", a.atMs < b.atMs) }
+        // forEach rather than zipWithNext, which returns a List and would make
+        // this method non-void -- JUnit then rejects the whole class rather
+        // than this one test, and every other test in it silently never runs.
+        history.windowed(2).forEach { (a, b) ->
+            assertTrue("oldest first", a.atMs < b.atMs)
+        }
     }
 
     /**
@@ -139,11 +168,11 @@ class ScoreHistoryTest {
      */
     @Test
     fun aSkipShowsAsAFallAndAPlayAfterItAsARecovery() = runBlocking {
-        val trackId = newTrack("Volatile", "Tester")
-        // A full play 40 days ago, a skip 20 days ago, a full play 10 days ago.
-        play(trackId, daysAgo = 40, fraction = 1.0)
-        play(trackId, daysAgo = 20, fraction = 0.05)
-        play(trackId, daysAgo = 10, fraction = 1.0)
+        // A full play 40 days ago, then a skip 20 days ago, then a full play
+        // 10 days ago.
+        val trackId = trackPlayedOn(daysAgo = listOf(40), likedDaysAgo = 40)
+        play(daysAgo = 20, fraction = 0.05)
+        play(daysAgo = 10, fraction = 1.0)
 
         val history = service.scoreHistory(trackId, nowMs = now, days = 60, points = 60)
         fun at(daysAgo: Int) = history.minByOrNull { kotlin.math.abs(it.atMs - (now - daysAgo * day)) }!!
@@ -164,50 +193,59 @@ class ScoreHistoryTest {
 
     // --- Fixtures ------------------------------------------------------------
 
-    private suspend fun aTrackPlayed(onDaysAgo: List<Int>): Long {
-        val trackId = newTrack("Sample", "Tester")
-        onDaysAgo.forEach { play(trackId, daysAgo = it, fraction = 1.0) }
-        return trackId
-    }
-
-    private suspend fun newTrack(title: String, artist: String): Long {
+    /**
+     * A liked track with plays on exactly the days given, and nothing else.
+     *
+     * "Nothing else" is the whole point, and the earlier version of this
+     * fixture got it wrong in two ways that made a test lie. A track can only
+     * be created by recording a segment, so it used to write one 400 days back
+     * purely to bring the row into existence -- a play nobody asked for. And it
+     * dated the like 300 days back, which is a scoring event of its own worth
+     * three plays. A test asserting "the score before the first play is zero"
+     * was then asserting something false about a fixture that had two events
+     * before it.
+     *
+     * Now the oldest requested play *is* the segment that creates the track,
+     * and the like is dated explicitly.
+     */
+    private suspend fun trackPlayedOn(daysAgo: List<Int>, likedDaysAgo: Int): Long {
+        require(daysAgo.isNotEmpty()) { "a track needs at least one play to exist" }
         val dao = db.dao()
+        val oldestFirst = daysAgo.sortedDescending()
+
         dao.recordSegment(
-            trackKey = trackKeyOf(title, artist, "Album"),
-            title = title,
-            artist = artist,
-            album = "Album",
+            trackKey = trackKeyOf(TITLE, ARTIST, ALBUM),
+            title = TITLE,
+            artist = ARTIST,
+            album = ALBUM,
             durationMs = DURATION,
             service = SERVICE_SPOTIFY,
-            serviceTrackId = "spotify:track:$title",
-            segment = segment(now - 400 * day, 1.0),
+            serviceTrackId = URI,
+            segment = segment(now - oldestFirst.first() * day, 1.0),
         )
         val trackId = dao.allTracks().single().id
+
         // Liked, because only liked tracks are scored at all.
-        val serviceRowId = dao.allServiceTracks().single().id
         db.spotifyDao().recordLiked(
-            serviceRowId,
-            serviceAddedAtMs = now - 300 * day,
-            now = now - 300 * day,
+            dao.allServiceTracks().single().id,
+            serviceAddedAtMs = now - likedDaysAgo * day,
+            now = now - likedDaysAgo * day,
         )
+
+        oldestFirst.drop(1).forEach { play(daysAgo = it, fraction = 1.0) }
         return trackId
     }
 
-    private suspend fun play(trackId: Long, daysAgo: Int, fraction: Double) {
-        val dao = db.dao()
-        val serviceRowId = dao.allServiceTracks().single().id
-        dao.recordSegment(
-            trackKey = trackKeyOf("Sample", "Tester", "Album"),
-            title = "Sample",
-            artist = "Tester",
-            album = "Album",
+    private suspend fun play(daysAgo: Int, fraction: Double) {
+        db.dao().recordSegment(
+            trackKey = trackKeyOf(TITLE, ARTIST, ALBUM),
+            title = TITLE,
+            artist = ARTIST,
+            album = ALBUM,
             durationMs = DURATION,
             service = SERVICE_SPOTIFY,
-            serviceTrackId = dao.allServiceTracks().single().serviceTrackId,
-            segment = segment(now - daysAgo * day, fraction).copy(
-                trackId = trackId,
-                serviceTrackRowId = serviceRowId,
-            ),
+            serviceTrackId = URI,
+            segment = segment(now - daysAgo * day, fraction),
         )
     }
 
@@ -233,5 +271,9 @@ class ScoreHistoryTest {
 
     private companion object {
         const val DURATION = 200_000L
+        const val TITLE = "Sample"
+        const val ARTIST = "Tester"
+        const val ALBUM = "Album"
+        const val URI = "spotify:track:sample"
     }
 }

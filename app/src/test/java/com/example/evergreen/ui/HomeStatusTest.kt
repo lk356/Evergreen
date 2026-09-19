@@ -219,28 +219,71 @@ class HomeStatusTest {
         val near = nearTheLine(ranked, parameters)
         val ids = near.map { it.row.rank }
 
-        assertTrue("101 is three off joining", 101 in ids)
-        assertTrue("104 is four off joining", 104 in ids)
-        assertTrue("128 is two off dropping past 130", 128 in ids)
+        assertTrue("101 is one place off joining", 101 in ids)
+        assertTrue("104 is four places off joining", 104 in ids)
+        assertTrue("128 is three places off dropping past 130", 128 in ids)
 
         assertTrue("a member at 95 is nowhere near the leave rank of 130", 95 !in ids)
-        assertTrue("a member at 120 is still ten clear of dropping", 120 !in ids)
+        assertTrue("a member at 120 is still eleven clear of dropping", 120 !in ids)
         assertTrue("a non-member at 140 is forty off joining", 140 !in ids)
 
         assertTrue(near.single { it.row.rank == 101 }.approachingJoin)
         assertTrue(!near.single { it.row.rank == 128 }.approachingJoin)
         assertEquals(1, near.single { it.row.rank == 101 }.distance)
+        assertEquals(3, near.single { it.row.rank == 128 }.distance)
+    }
+
+    /**
+     * Distance means the same thing on both sides: places still to move.
+     *
+     * The two rules are not written the same way — a track joins at the join
+     * rank *or better*, but leaves only once it falls *below* the leave rank —
+     * so reading the second as `leave - rank` gives zero for a member that is
+     * still comfortably in the playlist. On screen that said "0 off dropping"
+     * about a song at rank 130 that has not gone anywhere.
+     */
+    @Test
+    fun aMemberSittingExactlyOnTheLeaveRankIsOnePlaceAwayNotZero() {
+        val parameters = ScoringParameters()
+        val near = nearTheLine(
+            listOf(
+                rankedRow(parameters.playlistLeaveRank, inPlaylist = true),
+                rankedRow(parameters.playlistJoinRank + 1, inPlaylist = false),
+            ),
+            parameters,
+        )
+
+        // Rank 130 is still a member; it leaves at 131.
+        assertEquals(1, near.single { !it.approachingJoin }.distance)
+        // Rank 101 is not a member; it joins at 100. The mirror image.
+        assertEquals(1, near.single { it.approachingJoin }.distance)
+    }
+
+    /**
+     * A track sitting exactly on the join rank is in, and has nothing to
+     * announce — it is not "0 off joining".
+     */
+    @Test
+    fun aTrackOnTheJoinRankIsNotNearAnything() {
+        val parameters = ScoringParameters()
+        val near = nearTheLine(
+            listOf(rankedRow(parameters.playlistJoinRank, inPlaylist = true)),
+            parameters,
+        )
+        assertTrue(near.isEmpty())
     }
 
     @Test
     fun nearTheLineIsOrderedByHowCloseTheChangeIs() {
         val ranked = listOf(
             rankedRow(106, inPlaylist = false),
-            rankedRow(102, inPlaylist = false),
-            rankedRow(129, inPlaylist = true),
+            rankedRow(103, inPlaylist = false),
+            rankedRow(130, inPlaylist = true),
         )
         val near = nearTheLine(ranked, ScoringParameters())
-        assertEquals(listOf(129, 102, 106), near.map { it.row.rank })
+        // 130 is one place off dropping, 103 three off joining, 106 six off.
+        assertEquals(listOf(130, 103, 106), near.map { it.row.rank })
+        assertEquals(listOf(1, 3, 6), near.map { it.distance })
     }
 
     // --- The month diff ------------------------------------------------------
