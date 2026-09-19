@@ -30,10 +30,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MembershipChangeRow
+import com.example.evergreen.data.MirrorState
 import com.example.evergreen.data.RankedTrackRow
 import com.example.evergreen.data.SyncKeys
 import com.example.evergreen.scoring.ScoringParameters
@@ -79,6 +81,7 @@ fun HomeScreen(
     val dao = remember(db) { db.dao() }
     val scoringDao = remember(db) { db.scoringDao() }
 
+    val mirror by db.importDao().mirrorStateFlow().collectAsState(initial = null)
     val lastCaptured by dao.lastCapturedAtMs().collectAsState(initial = null)
     val lastLikeSync by scoringDao.syncValueFlow(SyncKeys.LIKES_LAST_SYNCED_AT)
         .collectAsState(initial = null)
@@ -115,11 +118,12 @@ fun HomeScreen(
     val isWriter = isWriterRow?.valueText == "true"
     val problems = remember(
         accessGranted, connection, configured, lastCaptured, lastLikeSync,
-        lastWritten, writeConfirmed, isWriter, backoffUntil, snapshots, nowMs,
+        lastWritten, writeConfirmed, isWriter, backoffUntil, snapshots, mirror, nowMs,
     ) {
         buildStatus(
             nowMs = nowMs,
             accessGranted = accessGranted,
+            mirror = mirror,
             configured = configured,
             connection = connection,
             lastCapturedAtMs = lastCaptured,
@@ -226,7 +230,14 @@ internal data class StatusProblem(
     val actionLabel: String? = null,
     val action: Action? = null,
 ) {
-    enum class Severity { BROKEN, WARNING }
+    /**
+     * Ordered worst first, and the list is sorted on it.
+     *
+     * [NOTE] is not a problem at all, and sorts *above* both — it is a
+     * standing statement about what this screen is showing, and everything
+     * below it has to be read in its light. A mirror is the only one today.
+     */
+    enum class Severity { NOTE, BROKEN, WARNING }
 
     enum class Action { NOTIFICATION_ACCESS, RECONNECT, SETTINGS }
 }
@@ -240,6 +251,8 @@ internal data class StatusProblem(
 internal fun buildStatus(
     nowMs: Long,
     accessGranted: Boolean,
+    /** Set when this database is a copy of another device's. */
+    mirror: MirrorState? = null,
     configured: Boolean,
     connection: SpotifyConnectionState?,
     lastCapturedAtMs: Long?,
@@ -251,7 +264,55 @@ internal fun buildStatus(
     latestSnapshotMonthKey: String?,
     zone: ZoneId = ZoneId.systemDefault(),
 ): List<StatusProblem> = buildList {
-    if (!accessGranted) {
+    if (mirror != null) {
+        // Always, and always first. A mirror silently going stale while
+        // looking like live data is the one way this feature can mislead, so
+        // this is the single entry in the whole status line that appears when
+        // nothing is wrong. One line, because the Walkman is 339 dp wide.
+        val age = mirror.takenAtMs?.let { nowMs - it }
+        add(
+            StatusProblem(
+                headline = "Mirror of ${mirror.describeSource()}" +
+                    (age?.let { ", taken ${describeAge(it)} ago" } ?: ""),
+                detail = "Everything here was recorded on that device. Nothing is being " +
+                    "recorded here and nothing is written to Spotify. Import again to " +
+                    "bring it up to date." +
+                    if (age != null && age >= MIRROR_STALE_MS) {
+                        " This copy is getting old."
+                    } else {
+                        ""
+                    },
+                severity = if (age != null && age >= MIRROR_STALE_MS) {
+                    StatusProblem.Severity.WARNING
+                } else {
+                    StatusProblem.Severity.NOTE
+                },
+                actionLabel = "Import",
+                action = StatusProblem.Action.SETTINGS,
+            ),
+        )
+    }
+
+    if (mirror != null) {
+        // The ordinary capture warnings address the wrong device here: their
+        // wording is about this device's notification access and Spotify
+        // settings, and their button opens this device's system settings. On a
+        // mirror the same silence has two possible causes and the user is the
+        // only one who can tell them apart, so the entry says both and offers
+        // no button that would be a wild goose chase.
+        if (lastCapturedAtMs != null && nowMs - lastCapturedAtMs >= CAPTURE_SILENT_MS) {
+            add(
+                StatusProblem(
+                    headline = "The newest listening in this copy is old",
+                    detail = "Nothing recorded for ${describeAge(nowMs - lastCapturedAtMs)} " +
+                        "according to this copy. Either the mirror is out of date, or " +
+                        "capture has stopped on ${mirror.describeSource()}. Take a fresh " +
+                        "backup there to tell which.",
+                    severity = StatusProblem.Severity.WARNING,
+                ),
+            )
+        }
+    } else if (!accessGranted) {
         add(
             StatusProblem(
                 headline = "Nothing is being recorded",
@@ -286,7 +347,12 @@ internal fun buildStatus(
         )
     }
 
-    when {
+    // Every entry below is about this device's own connection to Spotify, and a
+    // mirror has no business with one. Question 4 of the Phase 5 questions asks
+    // whether the Pixel needs Spotify connected at all; if facts cross in a file
+    // and the mirror never writes, it does not — and one fewer place a refresh
+    // token lives is worth having. So a mirror says nothing about it.
+    if (mirror == null) when {
         !configured -> add(
             StatusProblem(
                 headline = "Spotify is not configured",
@@ -332,7 +398,7 @@ internal fun buildStatus(
         )
     }
 
-    if (backoffUntilMs != null && backoffUntilMs > nowMs) {
+    if (mirror == null && backoffUntilMs != null && backoffUntilMs > nowMs) {
         add(
             StatusProblem(
                 headline = "Waiting on Spotify's rate limit",
@@ -348,7 +414,11 @@ internal fun buildStatus(
     // write is only news there. On the other device it is the correct state.
     val connectedEnough = connection is SpotifyConnectionState.Connected ||
         connection is SpotifyConnectionState.ExpiringSoon
-    if (isWriter && connectedEnough && configured) {
+    // `mirror == null` as well as the writer flag, and not because the flag
+    // would be set — the import clears it. Because relying on that would be
+    // trusting one guard to keep another honest, which is the habit this phase
+    // exists to break.
+    if (mirror == null && isWriter && connectedEnough && configured) {
         when {
             !writeConfirmed -> add(
                 StatusProblem(
@@ -376,7 +446,7 @@ internal fun buildStatus(
         }
     }
 
-    if (connectedEnough && configured &&
+    if (mirror == null && connectedEnough && configured &&
         (lastLikeSyncAtMs == null || nowMs - lastLikeSyncAtMs >= SYNC_STALE_MS)
     ) {
         add(
@@ -425,15 +495,43 @@ private fun StatusSection(
 ) {
     Spacer(modifier = Modifier.height(12.dp))
 
-    if (problems.isEmpty()) {
+    // A note is a statement, not an alarm, so it is one line of text rather
+    // than a card. A card here would cost about 90 dp of the Walkman's 602 to
+    // say something permanent — the mistake the notification-access banner made
+    // in Phase 3 and that Phase 4's first step undid.
+    problems.filter { it.severity == StatusProblem.Severity.NOTE }.forEach { note ->
+        Text(
+            text = note.headline,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = note.detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+    }
+
+    val isMirror = problems.any { it.severity == StatusProblem.Severity.NOTE }
+    val rest = problems.filter { it.severity != StatusProblem.Severity.NOTE }
+    if (rest.isEmpty()) {
         // One line, and nothing else. When everything is working there is
         // nothing to say, and saying it anyway is how a status line teaches
         // people to stop reading it.
-        Text(
-            text = "Everything is running.",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
+        //
+        // "Everything is running" is the wrong claim on a mirror, where
+        // nothing on this device is running by design. The mirror line above
+        // has already said what this is, so the figures follow on their own.
+        if (!isMirror) {
+            Text(
+                text = "Everything is running.",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+        }
         Text(
             text = buildString {
                 append("$memberCount in the playlist")
@@ -450,7 +548,7 @@ private fun StatusSection(
         return
     }
 
-    problems.forEach { problem ->
+    rest.forEach { problem ->
         val broken = problem.severity == StatusProblem.Severity.BROKEN
         Card(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -690,6 +788,17 @@ private val CAPTURE_SILENT_MS = TimeUnit.DAYS.toMillis(7)
 
 /** Two days, so one missed daily run is not yet news. */
 private val SYNC_STALE_MS = TimeUnit.DAYS.toMillis(2)
+
+/**
+ * How old a mirror gets before the line stops being a note and starts being a
+ * warning.
+ *
+ * A week, matching the capture alert. A mirror is *meant* to be behind — that
+ * is what a manual import means — so a few days is the ordinary state and
+ * saying so loudly would be the same mistake as a permanent banner. Being a
+ * fortnight behind while looking like live data is not.
+ */
+private val MIRROR_STALE_MS = TimeUnit.DAYS.toMillis(7)
 
 private const val NEAR_MARGIN = 8
 private const val NEAR_LIMIT = 12

@@ -112,6 +112,38 @@ object SyncKeys {
     const val CAPTURE_SILENT_NOTIFIED_AT = "capture_silent_notified_at"
 
     /**
+     * The model name of the device this database belongs to, e.g. `NW-A307`.
+     *
+     * Stamped by the backup button immediately before it takes its copy, so a
+     * backup file carries the name of the device that produced it and the
+     * Pixel can say whose mirror it is holding. Nowhere else needs it, and
+     * writing it at any other moment would make it a claim about the wrong
+     * device once the file has been copied.
+     *
+     * `Build.MODEL` is a model name, not an identifier: every NW-A307 in the
+     * world reports the same string. It never leaves the device except inside
+     * a backup file the user moves themselves.
+     */
+    const val DEVICE_NAME = "device_name"
+
+    /**
+     * Present only when this database is a **mirror** of another device's.
+     *
+     * `valueText` is the source device's name as stamped above, absent if the
+     * backup predates the stamp; `valueMs` is when that backup was taken.
+     *
+     * The presence of this row *is* mirror mode — there is no separate boolean
+     * that could disagree with it, and clearing the row is the whole of turning
+     * mirror mode off. Everything that writes to Spotify checks it, because a
+     * mirror arrives carrying the writer device's own `sync_state`, writer flag
+     * and playlist id: the imported copy believes it is the Walkman.
+     */
+    const val MIRROR_SOURCE = "mirror_source"
+
+    /** When the mirror was imported onto *this* device. */
+    const val MIRROR_IMPORTED_AT = "mirror_imported_at"
+
+    /**
      * When the user confirmed the first write.
      *
      * Until this is set, every sync computes its diff and writes nothing. The

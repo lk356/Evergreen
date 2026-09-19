@@ -48,17 +48,59 @@ streaming services:
       _(done 2026-09-18; device-verified on the NW-A307 — 77k plays imported,
       380 tracks scored, Evergreen written, snapshot exported. 219 unit and
       183 instrumented tests.)_
-- [~] **Phase 4 — Usability.** Real UI, a home screen, snapshot browsing,
+- [x] **Phase 4 — Usability.** Real UI, a home screen, snapshot browsing,
       scoring settings, score over time, notifications, data export. _(built
       2026-09-18 on `phase4-usability`; all eight steps of the prompt done,
-      **awaiting device verification on the NW-A307**. The like widget was cut
-      by the user — see below. Database backup was already done in Phase 3.)_
-- [ ] **Phase 5 — Cross-service.** Second service adapter (likely Tidal),
-      ISRC/MusicBrainz matching.
-- [ ] **Phase 6 — Cross-device.** Self-hosted sync backend, Windows agent (WinRT media
-      session API), Linux agent (MPRIS).
-- [ ] **Phase 7 — Public release evaluation.** Terms, quotas, privacy policy,
-      delete-my-data.
+      **device-verified on the NW-A307 2026-09-19 and merged to `main` the
+      same day** as pull request #2. The like widget was cut by the user — see
+      below. Database backup was already done in Phase 3.)_
+- [ ] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
+      mirror of the Walkman, transported as a file. 5b: full peer sync,
+      both devices capturing, segments merged. See
+      `docs/PHASE5_QUESTIONS.md`.
+- [ ] **Phase 6 — Cross-service.** Second service adapter, primarily the
+      Sony Walkman player for local files on the NW-A307; ISRC/MusicBrainz
+      matching. Rule to hold to: scoring merges across services, output is
+      per-service.
+- [ ] **Phase 7 — Desktop capture and sync backend.** Linux agent (MPRIS)
+      first, self-hosted sync backend, Windows agent (WinRT media session
+      API) after.
+- [ ] **Phase 8 — Nice-to-haves.** Richer stats, per-artist figures in the
+      style of the Spicetify stats app or ListenBrainz.
+- [ ] **Phase 9 — Public release evaluation.** Terms, quotas, privacy
+      policy, delete-my-data, and a security review by someone qualified to
+      do one.
+
+### Why the order changed (2026-09-19)
+
+Phase 5 was "cross-service" and cross-device was Phase 6; they are now the
+other way round. Listening happens on both the Walkman and the Pixel, but the
+stats are only readable on the Walkman's small, slow screen — so a mirror on
+the Pixel is the thing the user actually misses, and it is a fraction of the
+work of a second service adapter. Desktop capture moved behind it for a
+structural reason as well as a preference one: a Linux agent has nowhere to
+send its facts except the same fact-shipping protocol that cross-device sync
+needs underneath it, so building that protocol first is not a detour.
+
+### A note beside Phase 8 — artists are not yet entities
+
+Richer per-artist stats need artists as rows with ids, not the single artist
+string `tracks` carries today: "A feat. B" fragments the moment anything is
+counted per artist, and the same artist then appears under several spellings.
+**Not to be built now** — recorded so it is not rediscovered as new. The one
+thing worth knowing is that **the like sync already receives full artist
+objects with Spotify ids** and throws them away; keeping them as they arrive
+is far cheaper than backfilling them from 12,000 stored tracks later.
+
+### A note beside Phase 9 — there is no hosted multi-user path
+
+> Spotify Development Mode is capped at five users per app and requires the
+> app owner to hold an active Premium subscription. Extended quota access has
+> since May 2025 required a registered business entity, an active launched
+> service, and 250,000+ monthly active users. There is no path from a hobby
+> project to a hosted multi-user Spotify integration. **A public version must
+> therefore be self-hostable, with each user supplying their own client ID.**
+> Checked 2026-09-19; re-verify before acting on it.
 
 ## Preparation checklist
 - [x] Android Studio, Git, Claude Code (+ JetBrains plugin) installed
@@ -71,10 +113,75 @@ streaming services:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 4 built, not yet device-verified.** Branch
-  `phase4-usability`, eight commits. Merge to `main` is waiting on the
-  verification checklist below being run on the NW-A307.
-- Last update: 2026-09-18.
+- Current phase: **Phase 5a built and device-verified**, branch
+  `phase5a-mirror`. Its whole checklist passed on both devices on 2026-09-19,
+  and the daily write that had been outstanding since Phase 3 was diagnosed,
+  fixed and seen to fire the same afternoon. **Awaiting the user's word to
+  merge to `main`.**
+  `docs/PHASE5_QUESTIONS.md` is where 5b gets decided, and it is deliberately
+  not started.
+- Last update: 2026-09-19.
+
+**Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
+Mirror mode lives in two `sync_state` rows and needed no schema change — the
+database is still v6. A mirrored database refuses every Spotify write, says
+on the home screen what it is and how old it is, and turns capture off.
+272 unit tests pass; the instrumented suite has not been run, because it
+needs the Pixel attached with the Walkman unplugged.
+
+**The proof the phase was really for holds**: the same facts and parameters
+give the same ranking whatever the device, whatever the order rows arrive in,
+and whenever it is recomputed. The one exception is the device's timezone,
+which is recorded under Phase 5a results as a Phase 5b decision rather than
+fixed.
+
+**Check 0a is answered, and the answer is the awkward one.** The Pixel
+*does* capture phantom segments for music playing on the Walkman — three of
+them in one short test, one of which would have scored as a full play. It
+changes nothing about 5a, which replaces rather than merges, and it is
+blocking for 5b. The good news arrived with it: `dumpsys media_session`
+shows Spotify sets `volumeType=REMOTE` on the remote session, so 5b can drop
+phantoms at the source rather than deduplicating after the fact. Both are
+recorded under "Open questions".
+
+**Phase 5a is verified on the devices.** A 21.0 MiB backup moved across, the
+import was quick, and the two rankings matched when read off the two screens.
+**A full recompute takes ~300 ms on the Pixel against ~2,400 ms on the
+NW-A307** — about eight times faster, which is the phase's justification in
+one number. The Walkman's own figure is within 4% of the Phase 4 baseline, so
+the mirror work cost it nothing.
+
+**The daily write is fixed, and Phase 3's step G is finally closed.** Before
+today the Evergreen playlist had been written only once, manually, at
+03:25 on the 18th. The cause is confirmed on the device: **the schedule
+interval and the write guard are both 24 hours and have fallen out of phase**
+— the scheduled run at ~01:08 on the 19th landed 21 h 43 min after the manual
+write, inside the guard, and did nothing. The next attempt is ~01:25 on the
+20th and would have written. The device being asleep was not the cause.
+**Fixed the same day**: a write is now attempted every six hours against the
+unchanged 24-hour guard, and the unique work was renamed so that devices
+holding the old schedule pick the new one up. **The scheduled worker then ran
+on its own at 16:08 and wrote two tracks**, which closes Phase 4's step J and
+Phase 3's step G. See the two sections under Phase 5a results.
+
+**Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
+whether to fix the daily-write schedule.
+
+**Phase 4 is done, device-verified and merged.** It landed on `main` on
+2026-09-19 as pull request #2. Steps G, I and J of its checklist were still
+outstanding when it merged and are listed under "Still owed"; none of them
+blocks anything.
+
+**The roadmap changed on 2026-09-19.** Cross-device moved ahead of
+cross-service, and desktop capture and the sync backend moved behind both.
+The reasoning is under the roadmap. Phase 5 is now two halves: **5a**, a
+read-only mirror moved as a file, which is what this branch builds, and
+**5b**, full peer sync, which is not started and whose design questions are
+open in `docs/PHASE5_QUESTIONS.md`.
+
+**One Phase 5b question is now blocking**: whether a Spotify Connect remote
+device captures phantom segments. It is recorded under "Open questions" with
+the reason it was promoted.
 
 **Phase 4 is built and has run on both devices.** All eight steps of
 `docs/PHASE4_PROMPT.md`: the access banner, the parameter log, the
@@ -118,8 +225,8 @@ whether a monthly snapshot should describe the last day of the month or the
 month as a whole. Neither blocks anything, and the second one turns out not
 to be urgent at all — see the note on why.
 
-**Next:** run the Phase 4 verification checklist on the NW-A307, then say so
-and `phase4-usability` gets merged to `main`.
+~~**Next:** run the Phase 4 verification checklist on the NW-A307, then say so
+and `phase4-usability` gets merged to `main`.~~ Done 2026-09-19.
 
 **Phase 2 is done.** Merged to `main`, device-verified on the Pixel 10 Pro
 (login, 380/380 likes, 100% ISRC coverage, reconnect, DJ session), and the
@@ -940,7 +1047,10 @@ prompt. 257 unit tests (up from 219). The `capture/` package is unchanged
 except for one new file beside it — `CaptureWatchWorker` — which reads the
 database and touches nothing about how capture works.
 
-**Not yet device-verified.** See the checklist at the end of this section.
+**Device-verified on the NW-A307 on 2026-09-19 and merged to `main` the same
+day** (pull request #2). See the checklist at the end of this section: A to F
+and H passed, G and I were not run, and J is the unattended daily write, which
+is a matter of waiting rather than of doing.
 
 ### What was built
 
@@ -1114,9 +1224,12 @@ a field through it.
 
 ### Still owed
 
-- **Step J / Phase 3's step G:** the unattended daily write. As of
-  2026-09-19 the last write was still the manual first one, made around
-  3–4 am on the 18th. The next one cannot happen before the same time on the
+- ~~**Step J / Phase 3's step G:** the unattended daily write.~~ **Closed
+  2026-09-19.** It had not fired 36.5 hours after the manual first write,
+  which turned out to be a real bug rather than a sleepy device: the schedule
+  interval and the write guard were both 24 hours and had fallen out of
+  phase. Diagnosed, fixed, and the scheduled worker seen to write at 16:08 on
+  the 19th. Both sections are under Phase 5a results. The original note read: The next one cannot happen before the same time on the
   19th — `EvergreenSync` refuses any write inside 24 hours of the last — and
   will land whenever WorkManager's next 24-hour window falls with the Walkman
   awake and on Wi-Fi. On a portable player that is often asleep, "some time
@@ -1161,11 +1274,385 @@ which is the ordinary daily sync.
       should arrive if anything moved.
 
 
+## Phase 5a results (2026-09-19)
+
+Built on branch `phase5a-mirror`, one commit per step of
+`docs/PHASE5A_PROMPT.md`. **272 unit tests** (up from 259). `capture/` is
+unchanged; one new file sits beside it, `CaptureSwitch`, exactly as
+`CaptureWatchWorker` did in Phase 4.
+
+**Not yet device-verified.** The checklist is at the end of this section.
+
+### What was built
+
+- **Mirror mode**, two rows in `sync_state`. It is a key/value table, so this
+  needed no schema change — the database is still v6.
+- **The guard**: a mirrored database never writes to Spotify. Four places
+  check it, and the check comes *first* in each.
+- **"Import a mirror"**, next to the existing backup button, using the system
+  open-document picker. It validates before replacing and neutralises before
+  replacing.
+- **The home screen says so**, in one line, whenever mirror mode is on.
+- **A cross-device determinism proof**, `CrossDeviceRankingTest`.
+
+### What was learned
+
+**The writer flag was never going to be enough, and the reason is worth
+stating plainly.** A mirror is the Walkman's database copied whole, so it
+arrives with the Walkman's `sync_state`: writer flag set, playlist id
+present, first write already confirmed. Every guard built in Phase 3 passes
+on it. The new check therefore cannot be *one more* guard in the list — it
+has to come before the others, including before the dry run, because every
+path that writes begins by computing a diff. The test that pins this
+deliberately leaves the writer flag on.
+
+**Neutralise before replacing, not after.** The obvious shape is: copy the
+file in, then fix up the device-specific rows. That leaves a window in which
+the live database is one that believes it is the Walkman — short, but
+precisely the state the whole feature exists to prevent, and a flat battery
+inside it would make the window permanent. So the copy is staged beside the
+live database, checked and edited there, and the swap is a rename. A process
+death mid-swap leaves *no* database, which Room replaces with an empty one:
+no writer flag, no confirmed write, nothing that can write to Spotify. That
+is the right way to fail.
+
+**A version check has to refuse in both directions, and for different
+reasons.** A newer backup this build cannot read is obvious. An *older* one
+is the dangerous case, because Room's instinct on opening an old file is to
+migrate it forwards — so without an explicit refusal, "can I read last
+year's backup" would have been answered "yes, and it is now a different
+database". The check is `PRAGMA user_version`, read with plain SQLite before
+Room is allowed near the file.
+
+**"Capture off" should mean off, not "read and discard".** The cheap
+implementation is a flag `SegmentWriter` consults, which is three lines — and
+which changes `capture/` for a decision that is not capture's to make, and
+leaves the listener bound, reading media sessions in order to throw the
+results away. Disabling the listener component instead means nothing is read
+at all. The notification-access grant survives a component disable (it is
+cleaned up when the *package* goes, not the component), so turning capture
+back on costs no trip through the system settings.
+
+**The ranking survives every way two devices differ except one.** Pinned in
+`CrossDeviceRankingTest`:
+
+| What differs | Ranking |
+|---|---|
+| Nothing | identical, to the last decimal |
+| The order rows arrive in | identical |
+| `now` — recomputed 9 hours later | identical order, every score smaller |
+| `now` — recomputed a fortnight later | identical order |
+| The default locale | identical, and the parameters hash too |
+| **The device's timezone** | **can differ** |
+
+The `now` result is the one that matters and the reason is not obvious. A
+decay weight is `2^(-(now - at)/halfLife)`, so shifting `now` multiplies
+*every* contribution by the same constant: the scores all shrink and the
+order is untouched. That holds only because the daily cap is applied *before*
+decay, which was a Phase 3 ordering decision made for other reasons and turns
+out to be what makes cross-device recomputation sound.
+
+**The timezone is a real hazard, recorded rather than fixed.** The daily cap
+buckets listening by *local* calendar day — a deliberate Phase 3 choice,
+because "forty loops in one night" is a local idea. Two devices in different
+timezones can therefore cap the same listening differently. It does not bite
+today: both devices are in the same place, and a mirror carries no timezone
+with it. It would bite the moment one travelled, and silently. Fixing it
+means recording the zone a segment was captured in, which is a schema change
+and a **Phase 5b decision**; scoring in UTC instead would change the ranking
+on the device that already works.
+
+**`String.format` localises `%d` and not `%x`.** Under `ar-SA-u-nu-arab`,
+`String.format("%d", 255)` really is `٢٥٥`. The parameters fingerprint is
+built with `%02x` and so is safe — but it is safe for a reason nobody chose,
+and a hash that differed by device locale would have meant a score cache that
+never matched and snapshots claiming settings the other device could not
+reproduce. There is now a test.
+
+### Design notes worth keeping
+
+- **The status line gains one entry that appears when nothing is wrong**,
+  which inverts the rule the rest of that file follows. A mirror silently
+  going stale while looking exactly like live data is the one way this
+  feature can mislead, and nothing else on the screen would give it away. It
+  is text rather than a card, because a permanent card is the mistake the
+  notification-access banner made and Phase 4's first step undid.
+- **Every suppression on a mirror is explicit**, including the ones the
+  import already makes impossible. The Evergreen-stale warning is gated on
+  mirror *and* on the writer flag, although the import clears that flag —
+  relying on it would be trusting one guard to keep another honest.
+- **A refusal is not a failure.** The month export's return type became a
+  small sealed result so that "this is a mirror" could be said in its own
+  words rather than arriving as "export failed, check the connection", which
+  would send the user to fix something that is not broken.
+- **The device's name is stamped at backup time**, not at startup. That is
+  the one moment the row is unambiguously true: it names the device the file
+  came from, and the file is about to be written. `Build.MODEL` is a model
+  name shared by every unit of that model, not an identifier.
+- **The playlist id is not neutralised.** It names the playlist the
+  *account* uses, so if the Pixel were ever promoted to writer it should keep
+  that playlist up to date rather than create a second one. The scoring
+  parameters and the parameter log stay for the same kind of reason: they
+  belong to the data, and a mirror scored under different settings would not
+  be a mirror of anything.
+- **The UI restarts itself after an import.** Everything on screen is reading
+  through a database handle that has just been closed and replaced;
+  recreating the activity is how they all get back onto the new file at once,
+  and it lands on Home, where the mirror announces itself — so the restart
+  doubles as the receipt.
+
+### The daily write has not fired on its own
+
+**Status 2026-09-19, 15:55.** The Evergreen playlist has been written exactly
+once, ever: the manual first write at **03:25 on the 18th**. That is
+**36.5 hours** ago. This is Phase 4's step J and Phase 3's step G, and it has
+now been outstanding long enough to stop being "wait and see".
+
+Nothing in Phase 5a touched it — the mirror import runs on the Pixel and
+cancels the Pixel's schedules; the Walkman was not changed.
+
+**Confirmed on the device, 2026-09-19 16:03**, with the Walkman attached and
+the Pixel unplugged. It is (A): **the schedule and the write guard are both
+24 hours and they have fallen out of phase.** Neither of the two comfortable
+explanations survives contact with the data.
+
+Read from WorkManager's own bookkeeping (`no_backup/androidx.work.workdb`)
+and from `dumpsys jobscheduler`:
+
+| | |
+|---|---|
+| `evergreen-playlist-sync` state | ENQUEUED — the schedule exists |
+| periods completed | **2** — it has run, twice |
+| current period began | **01:08 on the 19th** |
+| next attempt | **+9h21m, so ~01:25 on the 20th** |
+| blocking constraint right now | `TIMING_DELAY` only |
+| `CONNECTIVITY` | **satisfied** |
+| `spotify-like-sync` last ran | 14:14 on the 19th |
+
+So the sequence was:
+
+1. **03:25 on the 18th** — the manual first write. This set the guard's clock
+   and did not touch the schedule's.
+2. **~01:08 on the 19th** — the scheduled run happened. It was
+   **21 h 43 min** after the write, which is inside the 24-hour guard, so it
+   returned `TOO_SOON` and wrote nothing — correctly, and reporting success,
+   because nothing was wrong.
+3. WorkManager then waited a **full further period**. The next attempt is
+   ~01:25 on the 20th, at which point 46 hours will have passed and it will
+   write.
+
+**The device being asleep and off Wi-Fi is not the cause**, plausible as it
+was. The like sync ran at 14:14 the same day on a 12-hour period, period
+counts are incrementing normally, and connectivity is satisfied at this
+moment with only the timer outstanding. WorkManager is doing its job.
+
+**And the steady state is worse than a one-off.** If it writes at ~01:25 on
+the 20th, the following attempt lands ~24 hours later — within minutes of the
+guard boundary, on whichever side the drift falls. Any attempt that arrives
+even a minute early silently costs another whole day, so this will oscillate
+rather than settle.
+
+**Fixed 2026-09-19**, on `phase5a-mirror` at the user's direction, as its own
+commit. The two numbers are no longer equal: a write is **attempted every six
+hours** and the unchanged 24-hour guard remains the only thing deciding
+whether one happens. A write therefore becomes possible within six hours of
+the guard expiring, whatever the phase, and it is still at most one a day.
+
+A refused attempt is genuinely cheap: `TOO_SOON` is checked in step 1 of
+`EvergreenSync.run`, **before the recompute and before any network request**,
+so it costs an open of the database and two indexed reads. The
+`NetworkType.CONNECTED` constraint means the device only wakes for it when it
+already has a network, which is also the answer to "sync every day, but only
+when it can" on a player that is often asleep and off Wi-Fi.
+
+**The unique work had to be renamed, not updated** — `evergreen-playlist-sync`
+became `evergreen-playlist-sync-v2`, and the old name is cancelled wherever it
+is found. This is the same shape of problem as the notification channel in
+Phase 4, and the same answer. `ExistingPeriodicWorkPolicy.KEEP` is what stops
+opening the app restarting the interval, and it would equally have stopped any
+device already holding the 24-hour schedule from ever seeing the six-hour one.
+A new name settles it without depending on what WorkManager does with a
+changed period on existing work.
+
+**A test now pins the inequality**, in `EvergreenScheduleTest`. Both values are
+compile-time constants, so it is a statement about the source rather than about
+a running system — which is the point: nothing at runtime ever complained about
+the old pair, and the only place this could have been caught is where someone
+changes one of the two numbers.
+
+
+### The scheduled write fired — 2026-09-19 16:08
+
+**Phase 4's step J and Phase 3's step G are closed.** The new build was
+installed on the NW-A307 and the app opened, which cancelled the old
+24-hour schedule and enqueued the six-hour one. Being already overdue — 38.7
+hours since the write of 03:25 on the 18th — WorkManager ran it immediately,
+and it wrote:
+
+```
+EvergreenSync:       evergreen sync: +2 -0, 0 refused
+EvergreenSyncWorker: evergreen sync: OK Added 2, removed 0.
+EvergreenSyncWorker: suppressing the change notification: parameters changed
+```
+
+| | |
+|---|---|
+| `evergreen_last_written_at` | **2026-09-19 16:08:39** |
+| tracks added / removed | 2 / 0 |
+| members now | 102 |
+| old `evergreen-playlist-sync` | **CANCELLED** |
+| new `evergreen-playlist-sync-v2` | period 6 h, enqueued 16:08:37 |
+| writer flag / mirror | `true` / not a mirror — the Walkman is unchanged |
+| segments | 77,607 |
+
+**This is the scheduled path, not the "Sync now" button.** The worker ran on
+its own, computed its own diff, wrote two tracks, and recorded the write. The
+whole pipeline has now been exercised unattended.
+
+**The notification was suppressed, and that is correct.** `parameters_changed`
+was still set from the settings change made during the Phase 4 checklist, so
+the worker took and cleared the flag rather than reporting two joins as if
+they were news about listening. It also means that flag has now been consumed
+and the next write will notify normally.
+
+**What is still not proven** is a full unattended cycle with nobody touching
+the device: this run was triggered by the app being opened, which is what
+re-armed the schedule. The next attempt is due ~22:08 tonight and will
+correctly refuse as `TOO_SOON`; the first write that owes nothing to a human
+is any time after 16:08 on the 20th. That is a matter of waiting rather than
+of doing, and it no longer blocks anything.
+
+### Moving the file between the devices
+
+Three ways, in increasing order of faff. Any of them works; the file is an
+ordinary `.db` of a few tens of megabytes.
+
+**Option 1 — a file-sharing app you already have.** On the Walkman, back up
+to somewhere you can reach from the other device (a cloud folder, or whatever
+you already use to move files), then pick it on the Pixel. Easiest, and the
+file leaves your devices, which is worth a thought: it is your listening
+history, and it contains no passwords or tokens.
+
+**Option 2 — USB, device to computer to device.**
+
+1. Plug the **Walkman** into the computer with its USB cable.
+2. On the Walkman, pull down the notification shade, tap the USB notification,
+   and choose **File transfer** (it may be called **MTP** or **Transferring
+   files**).
+3. On the computer, open the Walkman's storage and find the backup file where
+   you saved it — most likely under **Download**.
+4. Copy it to the computer.
+5. Unplug the Walkman, plug in the **Pixel**, and set it to **File transfer**
+   the same way.
+6. Copy the file into the Pixel's **Download** folder.
+7. Unplug, and pick it in the app.
+
+**Option 3 — adb, if the computer already has it.** No shade-pulling:
+
+```
+adb devices                                    # check which is which
+adb -s <walkman-serial> pull /sdcard/Download/evergreen-backup-....db .
+adb -s <pixel-serial>   push evergreen-backup-....db /sdcard/Download/
+```
+
+Both devices need USB debugging on, which they already have. `adb devices`
+lists serials; run it with one plugged in at a time if it is not obvious
+which is which.
+
+### Phase 5a verification checklist
+
+**Take a backup on *both* devices before you start.** This is the one
+operation in the app that destroys a database, and the Pixel's own record is
+what it destroys. Nothing here writes to Spotify at all.
+
+**On the NW-A307 (the Walkman):**
+
+- [x] **A.** Install the new build. Open **Settings** → **Back up database**
+      and save the file. **Note the size it reports.**
+- [x] **B.** Check the home screen is unchanged: it should say "Everything is
+      running" and say nothing about mirrors.
+- [x] **C.** On **Scores**, press **Recompute** and note the milliseconds.
+      Compare it with the 2,309 ms baseline from Phase 4.
+- [x] **D.** Write down the **top ten tracks** in order. You will compare
+      them with the Pixel.
+
+**Move the file to the Pixel**, by whichever of the three ways above suits.
+
+**On the Pixel 10 Pro:**
+
+- [x] **E.** Install the new build. Take a backup here too, if anything on
+      this device matters.
+- [x] **F.** **Settings** → **Mirror of another device** → **Import a
+      mirror**. Pick the file. Read the confirmation: it should name
+      **NW-A307**, when the backup was taken, and the counts on both sides.
+      **Note how long the import takes.**
+- [x] **G.** The app restarts itself and lands on **Home**. The first line
+      should read **"Mirror of NW-A307, taken … ago"**. Check it fits on one
+      line.
+- [x] **H.** On **Scores**, press **Recompute** and note the milliseconds.
+      **Then compare the top ten with what you wrote down in D — they should
+      be the same tracks in the same order.** This is the phase's whole point.
+- [x] **I.** Check there is nowhere left to write to Spotify, and that each
+      place says why rather than failing: the **Evergreen playlist** section
+      in Settings, the **Sync now** button under Likes, the **writer switch**,
+      and **Export to Spotify** on any month.
+- [x] **J.** Check capture is off: the debug screen's **Live log** should
+      stop gaining entries, and playing something in Spotify on the Pixel
+      should add no segment.
+- [x] **K.** Try importing a **file that is not a backup** — any other file
+      will do. It should refuse with a readable reason and change nothing.
+
+**Back on the NW-A307:**
+
+- [x] **L.** Nothing about it has changed: it still says "Everything is
+      running", is still the writer, and still writes Evergreen on schedule.
+      Give it a day and check the write happened (this also closes Phase 3's
+      step G and Phase 4's step J).
+
+### Phase 5a device verification (2026-09-19) — passed
+
+Run by the user across both devices. **All of A to L passed.** The daily
+write, which was the outstanding item from Phase 4's step J and Phase 3's
+step G, was diagnosed, fixed and seen to fire the same afternoon — see the
+two sections below.
+
+| | value |
+|---|---|
+| backup file size | **21.0 MiB** |
+| import time on the Pixel | quick — not worth timing |
+| full recompute on the Pixel 10 Pro | **~300 ms** |
+| full recompute on the NW-A307 | **~2,400 ms** (2,309 ms in Phase 4) |
+
+**The rankings matched.** The top of the Pixel's ranking was the same as the
+Walkman's, read off both screens — which is the cross-device determinism
+proof holding on real data rather than in a fixture, on 21 MiB of it.
+
+**The Pixel recomputes about eight times faster**, and that is the phase's
+whole justification in one number: 2,400 ms is long enough to feel on every
+tap that invalidates the cache, and 300 ms is not. The Walkman's figure is
+within 4% of the Phase 4 baseline, which also says the mirror work cost it
+nothing.
+
+**21.0 MiB is the transport's real cost**, and it is small enough that none
+of the three ways of moving the file is meaningfully better than the others.
+Worth re-reading if it ever grows: `listening_segments` is the only table
+here without a bound, and a backup is taken by hand.
+
 ## Open questions — still open
 
 ### Raised by using it (2026-09-18) — carried through Phase 4
 
-**How volatile should a score be?** Observed in use: a single skip — "not in
+~~**How volatile should a score be?**~~ **Settled 2026-09-19, at the current
+parameters.** Score over time was built to answer this question; the user has
+looked at the charts over their own listening and the reading was that the
+scores behave well. None of the three levers below was pulled, and the
+calibrated defaults stand. **Reopen only if a specific track the user still
+loves visibly falls out of Evergreen** — that is the observation that would
+mean the volatility is real rather than felt. The working is kept below
+because the three levers, and the asymmetry they are about, are still the
+right starting point if it ever is reopened.
+
+Observed in use: a single skip — "not in
 the mood for this right now" rather than "I have gone off this song" — visibly
 drags a score down, though it recovers after one play. That matches the
 design: a skip is −0.5 and a full play +1.0, so one play more than undoes one
@@ -1275,16 +1762,23 @@ before them. Recorded here so they are not rediscovered as if new:
   a guess — measure first, and the score-over-time line is now the tool for
   seeing whether a change helped.
 
-### Still unknown — carried into Phase 6
+### Phase 5b — blocking for the merge
 
 **Does a Spotify Connect remote device capture phantom segments?** If music
 plays on the Walkman while Spotify is open on the Pixel, does the Pixel's
 capture record segments for a track it is not actually playing?
 
-Harmless today — each device has its own database and only the Walkman's is
-used — but it decides how hard the cross-device merge in Phase 6 is. Worth
-ten minutes on the devices if it comes up naturally; nothing should be built
-around it yet.
+**Answered 2026-09-19, and the answer is yes** — see the measurement below.
+The Pixel recorded three plays of music that was coming out of the NW-A307,
+while nobody touched it. **Promoted the same day from a curiosity to a
+blocker.** It was harmless while
+each device had its own database and only the Walkman's was used. It stops
+being harmless the moment the two captures are merged: if the Pixel records
+segments for music playing on the Walkman, merging inflates play counts, and
+it does so **invisibly** — the segments look exactly like real listening, and
+nothing downstream can tell that one evening was counted twice. **Phase 5b
+must not be built until this is answered.** Phase 5a (the read-only mirror)
+does not depend on it, because a mirror replaces rather than merges.
 
 Two things are already true and worth writing down with it:
 
@@ -1301,6 +1795,134 @@ loses no provenance.
 Phase 0 did record that Spotify Connect playback is captured (see the table
 in "Step 0 findings"), but that was the *playing* device observing itself.
 Whether the *remote* device also records it is the open part.
+
+#### What the API offers, read in code 2026-09-19
+
+Checked against `android.jar` for API 37 rather than from memory, because
+this is the kind of thing tutorials get wrong.
+
+`MediaController.PlaybackInfo` **does** carry the distinction:
+`getPlaybackType()` returns `PLAYBACK_TYPE_LOCAL` (1) or `PLAYBACK_TYPE_REMOTE`
+(2). It is reachable from a controller the app already holds —
+`MediaController.getPlaybackInfo()` — and changes arrive through
+`MediaController.Callback.onAudioInfoChanged(PlaybackInfo)`, a callback
+`SessionWatcher` already extends the class for and does not override. So if
+Spotify sets it, capture could drop a phantom at the source for the cost of
+one field and one `if`, with no deduplication rule to design.
+
+One caveat stands, and one was wrong:
+
+- **`PLAYBACK_TYPE_REMOTE` is a statement about volume, not about location.**
+  It is what a session sets through `MediaSession.setPlaybackToRemote()` to
+  say "my volume is not this device's stream volume". An app routing audio to
+  another device usually sets it, but nothing compels it to, and an app could
+  leave a session local while showing "Playing on NW-A307" on screen.
+- ~~**Whether Spotify actually sets it cannot be read out of the SDK.** The
+  only way to get it is to log the value beside a real Connect session, which
+  is a change inside `capture/`.~~ **Wrong, corrected 2026-09-19.** No code
+  change is needed to find out: `adb shell dumpsys media_session` prints the
+  value for every live session. Observed on the Pixel during a real Connect
+  session with audio on the NW-A307:
+
+  ```
+  package=com.spotify.music
+  active=true   state=PLAYING(3)   position=1161
+  volumeType=REMOTE  controlType=FIXED  max=24  current=24
+  volumeControlId=com.spotify.music/...SpotifyMediaRouteProviderService:510c…
+  ```
+
+  **Spotify does set it.** Every other session on the device read `LOCAL` at
+  the same moment, and the `volumeControlId` names Spotify's own Connect
+  media-route provider — a second, independent signal. So the phantom can be
+  dropped at the source for the cost of one field and one `if`, and 5b needs
+  no wall-clock deduplication rule for this case.
+
+Also present and worth knowing: `getVolumeControlId()` (API 34+), which names
+the volume control a remote session is using, and `getAudioAttributes()`.
+Neither is a location either, but a non-null control id alongside
+`PLAYBACK_TYPE_REMOTE` is a stronger reading than the type alone.
+
+#### The measurement — procedure, to run on the devices
+
+Counts and aggregates only; no row of the database goes in this file.
+
+**Before you start.** Have the Pixel and the Walkman both to hand, Spotify
+signed in on both, and Evergreen installed on both with notification access
+granted. Nothing here writes to Spotify and nothing here changes the Walkman.
+
+1. On the **Pixel**, open Evergreen → **Settings** → **Open the debug
+   screens** → the **Segments** tab.
+2. Read the line just under the chips — it says something like
+   `1234 seg · 200 track · 180 listen`. **Write down the first number.** That
+   is the segment count before the test.
+3. Switch to the **Live log** tab and press **Clear**, so anything below is
+   from this test only.
+4. Open **Spotify on the Pixel** and leave it in the foreground, on any screen
+   — do not press play on it.
+5. On the **Walkman**, play **five tracks**: let two play all the way to the
+   end, and skip three of them after a few seconds each.
+6. Back on the **Pixel**, with Spotify still open, wait about **one minute**
+   after the last track — a segment is only written when a listen ends, and
+   a watcher waits a moment before flushing.
+7. In Evergreen on the Pixel, go back to the debug screen → **Segments** and
+   read the first number again. **Write down the difference.**
+8. On the **Live log** tab, note whether any line says `watching media
+   session` or `segment written` in that window. Read the lines; do not copy
+   them here.
+9. For completeness, do the same count on the **Walkman** — its segment count
+   should have gone up by about five. That is the control: it says the test
+   itself worked.
+
+**How to read the answer.**
+
+- Pixel difference **0**, and no `segment written` in the live log → no
+  phantoms. The 5b merge does not need a deduplication rule, and the question
+  closes.
+- Pixel difference **greater than 0** → phantoms are real. Record how many,
+  against five real plays, and 5b needs either the `PlaybackInfo` check above
+  or the wall-clock overlap rule, and probably both.
+
+#### Result — measured 2026-09-19. **Phantoms are real.**
+
+Run on the Pixel 10 Pro with Spotify open on it and audio playing on the
+NW-A307 over Spotify Connect. The Pixel was not touched during the test.
+Counts read from its database over adb; no row is reproduced here.
+
+| | |
+|---|---|
+| Capture segments before | 35 |
+| Capture segments after | **38** |
+| Written while only the Walkman was playing | **3** |
+| Distinct tracks among them | 3 |
+| "Listened" time they claim | 3.6 minutes |
+| End reason | `TRACK_CHANGE` ×3 — indistinguishable from real listening |
+| Fraction heard, lowest | 0.06 |
+| Fraction heard, highest | 0.92 |
+
+**They are not harmless fragments.** One of the three sits above the 0.85
+upper breakpoint and would score as a **full play**; one sits below the 0.20
+lower breakpoint and would score as a **rejection**. A phantom carries the
+whole range of judgements, negative ones included, and nothing on the row
+marks it as second-hand: same app package, same device id, same end reason as
+a real listen.
+
+**So the merge in 5b would double-count, and this confirms the question was
+right to be promoted to blocking.** Two notes on what is and is not yet
+established:
+
+- The obvious fix now exists and is cheap: drop segments whose session reads
+  `PLAYBACK_TYPE_REMOTE`, per the correction above. That is a `capture/`
+  change and belongs to 5b.
+- **Not yet established, and worth checking before designing anything:**
+  whether the Pixel's view of a listen *agrees* with the Walkman's. If the
+  remote session's position lags or truncates, a track played in full on the
+  Walkman could be recorded on the Pixel as the 0.06 fragment above — which
+  would make a phantom not merely a duplicate but an actively wrong negative
+  judgement about a song the user was enjoying. Comparing the two devices'
+  rows over the same minutes would settle it. Until then this is a
+  possibility, not a finding.
+
+### Still unknown — carried into Phase 6
 
 
 - ~~Initial scoring parameters (decay half-life, skip penalty, grace period).~~

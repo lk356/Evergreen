@@ -40,6 +40,18 @@ class EvergreenSyncWorker(
 
         val db = EvergreenDatabase.get(applicationContext)
 
+        // Checked before the writer flag, because a mirror arrives with that
+        // flag already set — it is the Walkman's, copied in with everything
+        // else — and would otherwise sail straight past the next check and
+        // rewrite the Walkman's playlist from a ranking as stale as the last
+        // import. EvergreenSync refuses as well; this stops the device waking
+        // up for it at all.
+        if (db.importDao().isMirror()) {
+            Log.i(TAG, "this database is a mirror; cancelling the schedule")
+            cancel(applicationContext)
+            return Result.success()
+        }
+
         // Checked before the connection, because a device that is not the
         // writer should not even wake up for this. Cancelling the schedule
         // means the Pixel stops running it entirely once the Walkman is set as
@@ -117,22 +129,79 @@ class EvergreenSyncWorker(
 
     companion object {
         private const val TAG = "EvergreenSyncWorker"
-        private const val PERIODIC_WORK = "evergreen-playlist-sync"
+
+        /**
+         * The unique name, version 2.
+         *
+         * Renamed rather than updated, and for the same reason the playlist
+         * notification channel became `playlist_v2` in Phase 4: some things
+         * cannot be changed in place. `ExistingPeriodicWorkPolicy.KEEP` exists
+         * so that opening the app does not restart the interval — which also
+         * means a device already holding the old 24-hour schedule would keep
+         * it forever and never see the new one. A new name sidesteps that
+         * with no ambiguity about what WorkManager does with a changed period,
+         * and the old name is cancelled below.
+         */
+        private const val PERIODIC_WORK = "evergreen-playlist-sync-v2"
+
+        /** The 24-hour schedule this replaces. Cancelled wherever it is found. */
+        private const val LEGACY_PERIODIC_WORK = "evergreen-playlist-sync"
+
         private const val ONE_OFF_WORK = "evergreen-playlist-sync-now"
+
+        /**
+         * How often a write is **attempted** — not how often one happens.
+         *
+         * Deliberately shorter than [EvergreenSync.WRITE_INTERVAL_MS], and
+         * that inequality is the whole point. Both numbers used to be 24
+         * hours, and they are anchored to different things: this one to when
+         * the work was enqueued, the guard to when the last write actually
+         * happened. A manual write moves the second without moving the first,
+         * and after that the two beat against each other — an attempt landing
+         * even a minute inside the guard returns `TOO_SOON`, reports success
+         * because nothing is wrong, and WorkManager then waits a *full further
+         * period*. One unlucky alignment cost a whole day, and the steady
+         * state sat within minutes of the boundary, so it oscillated rather
+         * than settled. Observed on the NW-A307 on 2026-09-19: the write at
+         * 03:25 on the 18th was followed by an attempt at 01:08 on the 19th,
+         * 21 h 43 min later, which did nothing.
+         *
+         * Six hours makes the guard the only thing that decides whether a
+         * write happens, and bounds the delay after it expires at six hours
+         * instead of a day. A refused attempt is genuinely cheap: `TOO_SOON`
+         * is checked in step 1 of [EvergreenSync.run], before the recompute
+         * and before any network request, so it costs an open of the database
+         * and two indexed reads. The `CONNECTED` constraint means the device
+         * only wakes for it when it already has a network — which is also what
+         * "sync every day, but only when it can" asks for on a player that is
+         * often asleep and off Wi-Fi.
+         */
+        const val ATTEMPT_INTERVAL_HOURS = 6L
 
         private val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
         /**
-         * Schedules the daily sync. Safe to call repeatedly; an existing
+         * Schedules the sync attempt. Safe to call repeatedly; an existing
          * schedule is kept rather than restarted.
+         *
+         * Cancels the old 24-hour schedule first. That call is a no-op once
+         * the device has run this build even once, and it is what stops a
+         * device that has been running since Phase 3 keeping the schedule this
+         * replaces alongside the new one — which would be two jobs writing the
+         * same playlist against the same guard.
          */
         fun schedule(context: Context) {
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            val manager = WorkManager.getInstance(context)
+            manager.cancelUniqueWork(LEGACY_PERIODIC_WORK)
+            manager.enqueueUniquePeriodicWork(
                 PERIODIC_WORK,
                 ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<EvergreenSyncWorker>(24, TimeUnit.HOURS)
+                PeriodicWorkRequestBuilder<EvergreenSyncWorker>(
+                    ATTEMPT_INTERVAL_HOURS,
+                    TimeUnit.HOURS,
+                )
                     .setConstraints(constraints)
                     .build(),
             )
@@ -150,7 +219,11 @@ class EvergreenSyncWorker(
         }
 
         fun cancel(context: Context) {
-            WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK)
+            val manager = WorkManager.getInstance(context)
+            manager.cancelUniqueWork(PERIODIC_WORK)
+            // The old name too, so a device that has not yet run [schedule] on
+            // this build is still stopped by a mirror import or a disconnect.
+            manager.cancelUniqueWork(LEGACY_PERIODIC_WORK)
         }
     }
 }

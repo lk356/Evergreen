@@ -1,5 +1,6 @@
 package com.example.evergreen.ui
 
+import com.example.evergreen.data.MirrorState
 import com.example.evergreen.data.RankedTrackRow
 import com.example.evergreen.data.SnapshotEntryEntity
 import com.example.evergreen.scoring.ScoringParameters
@@ -46,9 +47,11 @@ class HomeStatusTest {
         isWriter: Boolean = true,
         backoffUntilMs: Long? = null,
         latestSnapshotMonthKey: String? = "2026-08",
+        mirror: MirrorState? = null,
     ) = buildStatus(
         nowMs = now,
         accessGranted = accessGranted,
+        mirror = mirror,
         configured = configured,
         connection = connection,
         lastCapturedAtMs = lastCapturedAtMs,
@@ -351,5 +354,126 @@ class HomeStatusTest {
         assertEquals("3 months", describeAge(TimeUnit.DAYS.toMillis(90)))
         // A clock that has gone backwards must not produce "-2 days".
         assertEquals("moments", describeAge(-5_000))
+    }
+
+    // --- Mirror mode (Phase 5a) ------------------------------------------------
+
+    private fun mirrorOf(takenAtMs: Long?) = MirrorState(
+        sourceDevice = "NW-A307",
+        takenAtMs = takenAtMs,
+        importedAtMs = takenAtMs ?: now,
+    )
+
+    /**
+     * The one entry that appears when nothing is wrong.
+     *
+     * Everywhere else in this file the rule is that silence means working. Here
+     * it is inverted deliberately: a mirror quietly going stale while looking
+     * exactly like live data is the single way this feature can mislead, and
+     * there is no other signal that would give it away.
+     */
+    @Test
+    fun aMirrorSaysSoEvenWhenNothingIsWrong() {
+        val problems = healthy(mirror = mirrorOf(now - 2 * day))
+
+        assertEquals(1, problems.size)
+        assertEquals(StatusProblem.Severity.NOTE, problems.first().severity)
+        assertTrue(
+            "it names the device and how old the copy is",
+            problems.first().headline.contains("NW-A307") &&
+                problems.first().headline.contains("2 days"),
+        )
+    }
+
+    /** The note comes first, because everything under it has to be read in its light. */
+    @Test
+    fun theMirrorNoteSortsAboveEverythingElse() {
+        val problems = healthy(
+            mirror = mirrorOf(now - 2 * day),
+            latestSnapshotMonthKey = "2026-06",
+        )
+
+        assertTrue(problems.size > 1)
+        assertEquals(StatusProblem.Severity.NOTE, problems.first().severity)
+    }
+
+    /** A mirror is meant to be behind. A fortnight behind is a different matter. */
+    @Test
+    fun anOldMirrorBecomesAWarning() {
+        val fresh = healthy(mirror = mirrorOf(now - 2 * day)).first()
+        val stale = healthy(mirror = mirrorOf(now - 14 * day)).first()
+
+        assertEquals(StatusProblem.Severity.NOTE, fresh.severity)
+        assertEquals(StatusProblem.Severity.WARNING, stale.severity)
+        assertTrue(stale.detail.contains("getting old"))
+    }
+
+    /**
+     * A mirror with no readable timestamp still says what it is.
+     *
+     * Showing today's date because the file would not say would be the one
+     * claim this screen must never make.
+     */
+    @Test
+    fun aMirrorWithNoTimestampStillAnnouncesItself() {
+        val note = healthy(mirror = mirrorOf(null)).first()
+
+        assertEquals(StatusProblem.Severity.NOTE, note.severity)
+        assertTrue(note.headline.contains("NW-A307"))
+        assertTrue("and claims no age it cannot support", !note.headline.contains("ago"))
+    }
+
+    /**
+     * None of the Spotify entries belong on a mirror.
+     *
+     * They are about *this* device's connection, and a mirror does not need
+     * one — question 4 of the Phase 5 questions, answered in the direction of
+     * one fewer place a refresh token lives.
+     */
+    @Test
+    fun aMirrorSaysNothingAboutThisDevicesSpotifyConnection() {
+        val problems = healthy(
+            mirror = mirrorOf(now - 1 * day),
+            connection = SpotifyConnectionState.NotConnected,
+            lastLikeSyncAtMs = null,
+            backoffUntilMs = now + day,
+        )
+
+        assertEquals("only the mirror note", 1, problems.size)
+        assertEquals(StatusProblem.Severity.NOTE, problems.first().severity)
+    }
+
+    /**
+     * Old listening in a mirror has two possible causes and no button.
+     *
+     * The ordinary capture warning tells the user to check notification access
+     * and Spotify's broadcast setting, and offers a button that opens *this*
+     * device's settings — all of which address the wrong device. On a mirror
+     * the honest statement names both possibilities and offers no fix.
+     */
+    @Test
+    fun oldListeningInAMirrorNamesBothPossibleCauses() {
+        val problems = healthy(
+            mirror = mirrorOf(now - 1 * day),
+            lastCapturedAtMs = now - 10 * day,
+        )
+
+        val quiet = problems.first { it.severity != StatusProblem.Severity.NOTE }
+        assertTrue(quiet.headline.contains("this copy"))
+        assertTrue(quiet.detail.contains("out of date"))
+        assertTrue(quiet.detail.contains("NW-A307"))
+        assertEquals("and no button that would send the user in a circle", null, quiet.action)
+    }
+
+    /** A mirror is never the writer, whatever the flag it arrived with says. */
+    @Test
+    fun aMirrorIsNeverToldOffForNotWritingEvergreen() {
+        val problems = healthy(
+            mirror = mirrorOf(now - 1 * day),
+            isWriter = true,
+            lastWrittenAtMs = now - 10 * day,
+        )
+
+        assertEquals(1, problems.size)
     }
 }

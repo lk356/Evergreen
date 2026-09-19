@@ -29,6 +29,26 @@ sealed interface SnapshotResult {
     data class Empty(val monthKey: String) : SnapshotResult
 }
 
+/** What exporting a snapshot to Spotify did. */
+sealed interface SnapshotExport {
+    /** A new private playlist, which the app never touches again. */
+    data class Created(val playlistId: String) : SnapshotExport
+
+    /**
+     * Refused before a single request, with a reason to put on screen.
+     *
+     * A mirror refuses here. Exporting a month creates a playlist on the
+     * account, which is a write like any other, and it is a write the Walkman
+     * could make itself from the same snapshot — so the mirror doing it would
+     * put a playlist on the account from a device whose whole claim is that it
+     * only reads.
+     */
+    data class Refused(val reason: String) : SnapshotExport
+
+    /** The snapshot was missing or empty, or Spotify refused the create. */
+    data object Failed : SnapshotExport
+}
+
 /**
  * Monthly copies of the ranking, kept in the app.
  *
@@ -136,25 +156,32 @@ class Snapshots(
      * The Web API has no folders, so the naming convention is all there is —
      * `Evergreen — 2026 August` sorts next to its siblings.
      */
-    suspend fun export(snapshotId: Long, api: ApiSource): String? = withContext(Dispatchers.IO) {
-        exportOnThisThread(snapshotId, api)
-    }
+    suspend fun export(snapshotId: Long, api: ApiSource): SnapshotExport =
+        withContext(Dispatchers.IO) { exportOnThisThread(snapshotId, api) }
 
     /**
      * Off the main thread for the same reason [export] is: the debug screen
      * calls this from Compose's main-thread scope, and [ApiSource] blocks.
      */
-    private suspend fun exportOnThisThread(snapshotId: Long, api: ApiSource): String? {
-        val snapshot = scoringDao.snapshotById(snapshotId) ?: return null
+    private suspend fun exportOnThisThread(snapshotId: Long, api: ApiSource): SnapshotExport {
+        // Before anything else, as in EvergreenSync: a mirror never writes.
+        db.importDao().mirrorState()?.let { mirror ->
+            return SnapshotExport.Refused(
+                "This is a mirror of ${mirror.describeSource()}. Export the month on " +
+                    "that device — it holds the same snapshot.",
+            )
+        }
+
+        val snapshot = scoringDao.snapshotById(snapshotId) ?: return SnapshotExport.Failed
         val uris = scoringDao.snapshotPlaylistEntries(snapshotId).mapNotNull { it.serviceTrackId }
-        if (uris.isEmpty()) return null
+        if (uris.isEmpty()) return SnapshotExport.Failed
 
         val created = api.createPlaylist(
             name = "$EXPORT_PREFIX${snapshot.label}",
             description = "Evergreen as it stood in ${snapshot.label}. A one-off copy; " +
                 "the app never changes it again.",
         )
-        if (created !is ApiResult.Ok) return null
+        if (created !is ApiResult.Ok) return SnapshotExport.Failed
 
         // In rank order, best first, in batches Spotify accepts.
         uris.chunked(SpotifyApi.MAX_PLAYLIST_WRITE).forEach { batch ->
@@ -167,7 +194,7 @@ class Snapshots(
         }
 
         scoringDao.recordSnapshotExport(snapshotId, created.value.id, now())
-        return created.value.id
+        return SnapshotExport.Created(created.value.id)
     }
 
     companion object {

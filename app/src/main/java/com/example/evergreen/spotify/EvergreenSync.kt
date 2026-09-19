@@ -41,6 +41,17 @@ data class EvergreenSyncResult(
         /** This device is not the one that writes Evergreen. */
         NOT_THE_WRITER,
 
+        /**
+         * This database is a mirror of another device's and never writes.
+         *
+         * Separate from [NOT_THE_WRITER] because they are different facts and
+         * the screens say different things about them. A device that is merely
+         * not the writer could be made the writer with one switch; a mirror
+         * *carries the writer flag already*, set on the device it was copied
+         * from, and must still never write.
+         */
+        MIRRORED,
+
         /** A diff is waiting for the user to confirm the first write. */
         AWAITING_CONFIRMATION,
 
@@ -108,6 +119,21 @@ class EvergreenSync(
         val at = now()
 
         // 1. Guards. Each one stops before a single request is made.
+
+        // Checked for a dry run as well, and first of all. A mirror holds
+        // another device's ranking as of the last import, and another device's
+        // playlist id: a "harmless" dry run here would read the Walkman's
+        // playlist and report a diff that means nothing, and every path that
+        // writes starts by computing one. The cheapest place to be certain is
+        // before the distinction between reading and writing exists.
+        importDao.mirrorState()?.let { mirror ->
+            return EvergreenSyncResult(
+                EvergreenSyncResult.Outcome.MIRRORED,
+                message = "This is a mirror of ${mirror.describeSource()}. " +
+                    "Evergreen is written on that device, not this one.",
+            )
+        }
+
         if (apply) {
             if (!importDao.isEvergreenWriter()) {
                 return EvergreenSyncResult(

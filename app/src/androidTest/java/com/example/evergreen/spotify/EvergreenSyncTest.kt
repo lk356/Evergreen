@@ -208,6 +208,86 @@ class EvergreenSyncTest {
     }
 
     /**
+     * The guard Phase 5a exists to build: a mirrored database never writes.
+     *
+     * **And the writer flag is deliberately left on.** That is not an odd test
+     * setup, it is the real situation: a mirror is the Walkman's database
+     * copied whole, so it arrives carrying the Walkman's `sync_state` — writer
+     * flag set, playlist id present, first write already confirmed. Every
+     * existing guard therefore passes. If the mirror check were missing, or
+     * ordered after the writer check, the Pixel would rewrite the Walkman's
+     * playlist from a ranking as old as the last import, once a day, and
+     * nothing would say so.
+     */
+    @Test
+    fun aMirrorDoesNotWriteEvenThoughItCarriesTheWriterFlag() = runBlocking {
+        likeTracks(3)
+        beTheWriter()
+        confirmWrites()
+        db.importDao().markAsMirror("NW-A307", takenAtMs = clock, importedAtMs = clock)
+
+        // Every other guard would let this through.
+        assertTrue("the imported writer flag is still set", db.importDao().isEvergreenWriter())
+
+        val result = sync().sync()
+
+        assertEquals(EvergreenSyncResult.Outcome.MIRRORED, result.outcome)
+        assertTrue(
+            "the message names the device it mirrors",
+            result.message.orEmpty().contains("NW-A307"),
+        )
+        assertEquals("no requests at all", 0, api.createCalls)
+        assertEquals(0, api.addCalls)
+        assertEquals(0, api.removeCalls)
+        assertNull("and no playlist id is invented", db.scoringDao().syncStateText(SyncKeys.EVERGREEN_PLAYLIST_ID))
+    }
+
+    /**
+     * A dry run refuses too.
+     *
+     * It reads rather than writes, so it looks harmless — but on a mirror it
+     * would read the *other* device's playlist and report a diff against a
+     * ranking this device is not responsible for, which is a confident answer
+     * to the wrong question. Every path that writes starts by computing one, so
+     * the guard sits before the distinction exists.
+     */
+    @Test
+    fun aMirrorRefusesADryRunToo() = runBlocking {
+        likeTracks(3)
+        beTheWriter()
+        db.importDao().markAsMirror("NW-A307", takenAtMs = clock, importedAtMs = clock)
+
+        val result = sync().dryRun()
+
+        assertEquals(EvergreenSyncResult.Outcome.MIRRORED, result.outcome)
+        assertEquals(0, api.createCalls)
+    }
+
+    /**
+     * Leaving mirror mode restores ordinary behaviour, with nothing left over.
+     *
+     * The guard has to be a state the device can come out of — the Pixel might
+     * one day become the writer — and it has to come out of it cleanly, or the
+     * mirror would be a trapdoor.
+     */
+    @Test
+    fun clearingMirrorModeLetsTheDeviceWriteAgain() = runBlocking {
+        likeTracks(3)
+        beTheWriter()
+        confirmWrites()
+        db.importDao().markAsMirror("NW-A307", takenAtMs = clock, importedAtMs = clock)
+        assertEquals(EvergreenSyncResult.Outcome.MIRRORED, sync().sync().outcome)
+
+        db.importDao().clearMirror()
+
+        val result = sync().sync()
+
+        assertEquals(EvergreenSyncResult.Outcome.OK, result.outcome)
+        assertEquals(3, result.added)
+        assertNull(db.importDao().mirrorState())
+    }
+
+    /**
      * The first write is behind a confirmation, the same pattern as the
      * same-song merge. Until it is given, the diff is computed and shown and
      * nothing is written.
