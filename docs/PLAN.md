@@ -150,15 +150,16 @@ NW-A307** — about eight times faster, which is the phase's justification in
 one number. The Walkman's own figure is within 4% of the Phase 4 baseline, so
 the mirror work cost it nothing.
 
-**One thing is outstanding and predates this phase, and it is now
-diagnosed.** The Evergreen playlist has been written only once, manually, at
+**One thing predates this phase and is now diagnosed and fixed.** The Evergreen playlist has been written only once, manually, at
 03:25 on the 18th. The cause is confirmed on the device: **the schedule
 interval and the write guard are both 24 hours and have fallen out of phase**
 — the scheduled run at ~01:08 on the 19th landed 21 h 43 min after the manual
 write, inside the guard, and did nothing. The next attempt is ~01:25 on the
-20th and will write. The device being asleep is not the cause. See "The daily
-write has not fired on its own" under Phase 5a results. The fix is a Phase 3
-change awaiting the user's decision.
+20th and would have written. The device being asleep was not the cause.
+**Fixed the same day**: a write is now attempted every six hours against the
+unchanged 24-hour guard, and the unique work was renamed so that devices
+holding the old schedule pick the new one up. See "The daily write has not
+fired on its own" under Phase 5a results.
 
 **Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
 whether to fix the daily-write schedule.
@@ -1448,16 +1449,33 @@ guard boundary, on whichever side the drift falls. Any attempt that arrives
 even a minute early silently costs another whole day, so this will oscillate
 rather than settle.
 
-**The fix is to stop the two numbers being equal**: attempt every six hours
-and let the 24-hour guard remain the only thing deciding whether a write
-happens. Then a write becomes possible within six hours of the guard
-expiring, whatever the phase, and it is still at most one a day — the guard
-is unchanged and already has a test. A refused attempt is genuinely cheap:
-`TOO_SOON` is checked in step 1 of `EvergreenSync.run`, **before the
-recompute and before any network request**, so it is an open of the database
-and two indexed reads. The `NetworkType.CONNECTED` constraint means the
-device only wakes for it when it already has a network, which is also the
-answer to "sync every day, but only when it can".
+**Fixed 2026-09-19**, on `phase5a-mirror` at the user's direction, as its own
+commit. The two numbers are no longer equal: a write is **attempted every six
+hours** and the unchanged 24-hour guard remains the only thing deciding
+whether one happens. A write therefore becomes possible within six hours of
+the guard expiring, whatever the phase, and it is still at most one a day.
+
+A refused attempt is genuinely cheap: `TOO_SOON` is checked in step 1 of
+`EvergreenSync.run`, **before the recompute and before any network request**,
+so it costs an open of the database and two indexed reads. The
+`NetworkType.CONNECTED` constraint means the device only wakes for it when it
+already has a network, which is also the answer to "sync every day, but only
+when it can" on a player that is often asleep and off Wi-Fi.
+
+**The unique work had to be renamed, not updated** — `evergreen-playlist-sync`
+became `evergreen-playlist-sync-v2`, and the old name is cancelled wherever it
+is found. This is the same shape of problem as the notification channel in
+Phase 4, and the same answer. `ExistingPeriodicWorkPolicy.KEEP` is what stops
+opening the app restarting the interval, and it would equally have stopped any
+device already holding the 24-hour schedule from ever seeing the six-hour one.
+A new name settles it without depending on what WorkManager does with a
+changed period on existing work.
+
+**A test now pins the inequality**, in `EvergreenScheduleTest`. Both values are
+compile-time constants, so it is a statement about the source rather than about
+a running system — which is the point: nothing at runtime ever complained about
+the old pair, and the only place this could have been caught is where someone
+changes one of the two numbers.
 
 
 ### Moving the file between the devices
