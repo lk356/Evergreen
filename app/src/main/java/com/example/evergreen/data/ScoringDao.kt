@@ -192,6 +192,20 @@ abstract class ScoringDao {
     @Query("DELETE FROM scores")
     protected abstract suspend fun deleteAllScores()
 
+    /**
+     * Empties the score cache.
+     *
+     * Public because the mirror import has to: the rows in an imported cache
+     * were computed on another device, and the point of a mirror is that this
+     * device recomputes them and gets the same ranking. Carrying the cache
+     * across would hide exactly the disagreement worth finding.
+     *
+     * Safe at any moment, which is the practical form of invariant 1a — a
+     * score is computed, never accumulated, so an empty cache costs one
+     * recompute and loses nothing.
+     */
+    open suspend fun dropScoreCache() = deleteAllScores()
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     protected abstract suspend fun insertScores(scores: List<ScoreEntity>)
 

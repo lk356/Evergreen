@@ -1,16 +1,21 @@
 package com.example.evergreen.ui
 
+import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,18 +27,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.evergreen.capture.CaptureSwitch
 import com.example.evergreen.data.DataExport
 import com.example.evergreen.data.DatabaseBackup
 import com.example.evergreen.data.EvergreenDatabase
+import com.example.evergreen.data.MirrorImport
+import com.example.evergreen.data.MirrorImportController
+import com.example.evergreen.data.MirrorState
 import kotlinx.coroutines.launch
 
 /**
- * The two per-device settings: whether this device writes Evergreen, and a
- * button to copy the database somewhere safe.
+ * The per-device settings: whether this device writes Evergreen, a button to
+ * copy the database somewhere safe, and — the other end of that button — the
+ * mirror import.
  *
- * Shown above the import, deliberately. The reading order on the screen is the
- * order the user should act in: decide whether this is the writer device, take
- * a backup, then import.
+ * Shown above the streaming-history import, deliberately. The reading order on
+ * the screen is the order the user should act in: decide whether this is the
+ * writer device, take a backup, then import.
  */
 @Composable
 fun DeviceCard() {
@@ -43,6 +53,7 @@ fun DeviceCard() {
 
     val writerRow by importDao.evergreenWriterFlow().collectAsState(initial = null)
     val isWriter = writerRow?.valueText == "true"
+    val mirror by importDao.mirrorStateFlow().collectAsState(initial = null)
 
     var backupMessage by remember { mutableStateOf<String?>(null) }
     var backingUp by remember { mutableStateOf(false) }
@@ -77,16 +88,28 @@ fun DeviceCard() {
             text = "This device writes Evergreen",
             style = MaterialTheme.typography.bodyMedium,
         )
+        // Switched off and unusable on a mirror rather than hidden. The flag
+        // is really there — it came in with the copy — and a control that
+        // vanished would leave the user wondering where it went instead of
+        // reading why it does nothing.
         Switch(
-            checked = isWriter,
+            checked = isWriter && mirror == null,
+            enabled = mirror == null,
             onCheckedChange = { enabled -> scope.launch { importDao.setEvergreenWriter(enabled) } },
         )
     }
     Text(
-        "Turn this on for exactly one device — the one you listen on. Until the " +
-            "sync backend arrives, each device has its own database, so two devices " +
-            "running the Evergreen sync would each undo the other's writes every day, " +
-            "against a quota neither can see. The import should also be run only here.",
+        if (mirror != null) {
+            "Unavailable: this device holds a mirror of ${mirror!!.describeSource()}, and a " +
+                "mirror never writes to Spotify. It arrived carrying that device's own " +
+                "settings, including this one — which is exactly why the app checks for a " +
+                "mirror before it checks this switch."
+        } else {
+            "Turn this on for exactly one device — the one you listen on. Until the " +
+                "sync backend arrives, each device has its own database, so two devices " +
+                "running the Evergreen sync would each undo the other's writes every day, " +
+                "against a quota neither can see. The import should also be run only here."
+        },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -116,6 +139,8 @@ fun DeviceCard() {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    MirrorSection(mirror = mirror)
 
     ExportSection()
 }
@@ -207,5 +232,224 @@ private fun ExportSection() {
             "knowing an offset that changes twice a year.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * Importing a mirror, and living with one.
+ *
+ * Deliberately next to the backup button, because the two are the two ends of
+ * one thing: the Walkman writes the file, this reads it. There is no second
+ * export path to keep in step, no new format, and nothing new that can leave
+ * the device.
+ *
+ * The confirmation is the same pattern as wiping listening history — it says
+ * exactly what will be destroyed, in counts, and asks once. It is a harder
+ * question than the wipe, because what it destroys is *this* device's record
+ * and the file that replaces it is not in view; so the dialog names both sides.
+ */
+@Composable
+private fun MirrorSection(mirror: MirrorState?) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val importDao = remember(context) { EvergreenDatabase.get(context).importDao() }
+    val state by MirrorImportController.state.collectAsState()
+
+    var confirmingCapture by remember { mutableStateOf(false) }
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { MirrorImportController.pick(context, it) } }
+
+    // When the import finishes, start the app's UI over.
+    //
+    // Everything on screen is reading through a database handle that has just
+    // been closed and replaced. Recreating the activity is how they all get
+    // back onto the new file at once, and it lands the user on Home, which is
+    // where the mirror now announces itself — so the restart doubles as the
+    // receipt.
+    val activity = context as? Activity
+    LaunchedEffect(state) {
+        if (state is MirrorImportController.State.Done) {
+            MirrorImportController.dismiss(context)
+            activity?.recreate()
+        }
+    }
+
+    SectionTitle("Mirror of another device")
+
+    if (mirror != null) {
+        Text(
+            text = "This is a mirror of ${mirror.describeSource()}, taken " +
+                "${MirrorImport.describeTakenAt(mirror.takenAtMs)}.",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "Everything here was recorded on that device. Nothing on this one is being " +
+                "recorded, nothing is written to Spotify, and importing again replaces " +
+                "all of it. The scores are recomputed here from the facts in the copy, " +
+                "which is why they should match what that device shows.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        OutlinedButton(
+            onClick = { confirmingCapture = true },
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Text("Start recording on this device")
+        }
+        Text(
+            "Turns capture back on and stops this being a mirror. Do it only if you want " +
+                "this device to keep its own record from now on — the next import would " +
+                "discard it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else {
+        Text(
+            "Replaces everything on this device with a copy of another device's database, " +
+                "taken with the \"Back up database\" button there. This device then shows " +
+                "that device's listening on this screen, recomputed here — and never " +
+                "writes to Spotify.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    when (val current = state) {
+        is MirrorImportController.State.Idle,
+        is MirrorImportController.State.Done,
+        -> Unit
+
+        is MirrorImportController.State.Checking -> StatusLine("Checking that file…")
+
+        is MirrorImportController.State.Importing ->
+            StatusLine("Replacing the database. Do not close the app.")
+
+        is MirrorImportController.State.Failed -> {
+            Text(
+                text = current.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { MirrorImportController.dismiss(context) }) { Text("Dismiss") }
+        }
+
+        is MirrorImportController.State.Confirming -> ConfirmMirrorImport(
+            preview = current.preview,
+            onConfirm = { MirrorImportController.confirm(context) },
+            onCancel = { MirrorImportController.dismiss(context) },
+        )
+    }
+
+    OutlinedButton(
+        onClick = {
+            // The same generous MIME list as the streaming-history import, and
+            // for the same reason: file managers report a .db file as
+            // application/octet-stream, application/x-sqlite3 or nothing at
+            // all, and a filter that misses leaves the file greyed out with no
+            // explanation. The content is checked after it is copied.
+            picker.launch(
+                arrayOf("application/octet-stream", "application/x-sqlite3", "application/vnd.sqlite3", "*/*"),
+            )
+        },
+        enabled = state is MirrorImportController.State.Idle ||
+            state is MirrorImportController.State.Failed,
+        modifier = Modifier.padding(top = 8.dp),
+    ) {
+        Text(if (mirror == null) "Import a mirror" else "Import a newer mirror")
+    }
+
+    if (confirmingCapture) {
+        AlertDialog(
+            onDismissRequest = { confirmingCapture = false },
+            title = { Text("Start recording on this device?") },
+            text = {
+                Text(
+                    "This stops being a mirror. Capture starts again here, and this " +
+                        "device's database becomes its own record rather than a copy of " +
+                        "${mirror?.describeSource() ?: "another device"}'s.\n\n" +
+                        "The copied history stays — nothing is deleted. But importing a " +
+                        "mirror again later would replace all of it, including whatever " +
+                        "is recorded here in the meantime.\n\n" +
+                        "It still will not write to Spotify unless you also turn on " +
+                        "\"This device writes Evergreen\", which should be on for exactly " +
+                        "one device.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingCapture = false
+                    scope.launch {
+                        importDao.clearMirror()
+                        CaptureSwitch.setEnabled(context, true)
+                    }
+                }) {
+                    Text("Start recording")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingCapture = false }) { Text("Stay a mirror") }
+            },
+        )
+    }
+}
+
+/**
+ * The one destructive confirmation in this phase.
+ *
+ * It names both sides in counts, because the user cannot see either: what is
+ * arriving is inside a file, and what is leaving is this device's own record,
+ * which is about to stop existing. "Are you sure" without numbers would be a
+ * question nobody can answer.
+ */
+@Composable
+private fun ConfirmMirrorImport(
+    preview: MirrorImport.Preview,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Replace everything on this device?") },
+        text = {
+            Text(
+                "The file is a copy of ${preview.describeSource()}, taken " +
+                    "${MirrorImport.describeTakenAt(preview.takenAtMs)}. It holds " +
+                    "${preview.incomingSegments} play(s) and ${preview.incomingLikes} " +
+                    "liked song(s).\n\n" +
+                    "It will replace this device's database, which holds " +
+                    "${preview.existingSegments} play(s) and ${preview.existingLikes} " +
+                    "liked song(s). That cannot be undone, and cloud backup is switched " +
+                    "off for this app, so take a backup here first if any of it matters.\n\n" +
+                    "Afterwards this device stops recording, stops syncing likes, and " +
+                    "will not write to Spotify. Evergreen keeps being written by " +
+                    "${preview.describeSource()}.",
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text("Replace it")
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun StatusLine(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 4.dp),
     )
 }

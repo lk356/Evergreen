@@ -354,6 +354,16 @@ abstract class SpotifyDao {
     @Query("SELECT COUNT(*) FROM likes WHERE unlikedAt IS NULL")
     abstract fun likedNowCount(): Flow<Int>
 
+    /**
+     * The same count, read once rather than observed.
+     *
+     * For the mirror import, which reads an incoming file that nothing is
+     * watching — a Flow there would never emit a second time and would keep a
+     * database open that is about to be renamed.
+     */
+    @Query("SELECT COUNT(*) FROM likes WHERE unlikedAt IS NULL")
+    abstract suspend fun likedNowCountOnce(): Int
+
     /** Everything ever liked, including what has since been unliked. */
     @Query("SELECT COUNT(*) FROM likes")
     abstract fun archivedLikeCount(): Flow<Int>
