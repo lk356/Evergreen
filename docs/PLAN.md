@@ -150,13 +150,15 @@ NW-A307** — about eight times faster, which is the phase's justification in
 one number. The Walkman's own figure is within 4% of the Phase 4 baseline, so
 the mirror work cost it nothing.
 
-**One thing is outstanding and predates this phase:** the Evergreen playlist
-has still been written only once, manually, at 03:25 on the 18th. See "The
-daily write has not fired on its own" under Phase 5a results for the three
-candidate explanations and the one command that tells them apart. One of
-them is a real design flaw — the schedule interval and the write guard are
-both 24 hours and can fall out of phase — and fixing it is a Phase 3 change
-awaiting the user's decision.
+**One thing is outstanding and predates this phase, and it is now
+diagnosed.** The Evergreen playlist has been written only once, manually, at
+03:25 on the 18th. The cause is confirmed on the device: **the schedule
+interval and the write guard are both 24 hours and have fallen out of phase**
+— the scheduled run at ~01:08 on the 19th landed 21 h 43 min after the manual
+write, inside the guard, and did nothing. The next attempt is ~01:25 on the
+20th and will write. The device being asleep is not the cause. See "The daily
+write has not fired on its own" under Phase 5a results. The fix is a Phase 3
+change awaiting the user's decision.
 
 **Next:** merge `phase5a-mirror` to `main` on the user's word, then decide
 whether to fix the daily-write schedule.
@@ -1405,62 +1407,58 @@ now been outstanding long enough to stop being "wait and see".
 Nothing in Phase 5a touched it — the mirror import runs on the Pixel and
 cancels the Pixel's schedules; the Walkman was not changed.
 
-**Reasoned from the code, not yet confirmed on the device.** There are three
-candidate explanations and they are cheap to tell apart.
+**Confirmed on the device, 2026-09-19 16:03**, with the Walkman attached and
+the Pixel unplugged. It is (A): **the schedule and the write guard are both
+24 hours and they have fallen out of phase.** Neither of the two comfortable
+explanations survives contact with the data.
 
-**(A) The schedule and the write guard are the same 24 hours, and they race.**
-This is a real design flaw regardless of whether it is the cause here.
-`EvergreenSyncWorker.schedule` enqueues periodic work with a 24-hour period;
-`EvergreenSync.WRITE_INTERVAL_MS` refuses a write within 24 hours of the last
-one. The periodic interval is anchored to when the work was *enqueued*, and
-the guard is measured from when the last write *happened* — and a manual
-write, like the one at 03:25 on the 18th, sets the second without moving the
-first. So the two can fall out of phase.
+Read from WorkManager's own bookkeeping (`no_backup/androidx.work.workdb`)
+and from `dumpsys jobscheduler`:
 
-When they do, a run that lands even a minute inside the guard returns
-`TOO_SOON`, and — correctly, since nothing is wrong — returns
-`Result.success()`. WorkManager then waits a **full further period** before
-trying again. One unlucky alignment therefore costs a whole day, and in the
-steady state consecutive runs sit almost exactly 24 hours apart, which is
-precisely where the margin is thinnest.
+| | |
+|---|---|
+| `evergreen-playlist-sync` state | ENQUEUED — the schedule exists |
+| periods completed | **2** — it has run, twice |
+| current period began | **01:08 on the 19th** |
+| next attempt | **+9h21m, so ~01:25 on the 20th** |
+| blocking constraint right now | `TIMING_DELAY` only |
+| `CONNECTIVITY` | **satisfied** |
+| `spotify-like-sync` last ran | 14:14 on the 19th |
 
-**The fix, if this is it, is to stop the two numbers being equal**: schedule
-the attempt more often than the guard allows a write — every six hours, say —
-and let the guard be the thing that enforces "at most once a day". Attempts
-are nearly free when they refuse: `TOO_SOON` is checked before a single
-request is made. **Not done. It is a Phase 3 behaviour change and outside
-Phase 5a's scope**, and it costs a few extra wakeups a day on a
-battery-powered device, which is the user's call.
+So the sequence was:
 
-**(B) The schedule may not exist at all.** `EvergreenSyncWorker` cancels its
-own unique work when it finds it is not the writer device or not connected.
-If it ever ran in one of those states the schedule is gone, and only
-`MainActivity.onResume` re-arms it — with `KEEP`, which anchors a *fresh*
-24-hour period at that moment. Opening the app on the Walkman during the
-Phase 5a checklist (~15:00 on the 19th) would have done exactly that, in
-which case the first run is due some time before ~15:00 on the 20th.
+1. **03:25 on the 18th** — the manual first write. This set the guard's clock
+   and did not touch the schedule's.
+2. **~01:08 on the 19th** — the scheduled run happened. It was
+   **21 h 43 min** after the write, which is inside the 24-hour guard, so it
+   returned `TOO_SOON` and wrote nothing — correctly, and reporting success,
+   because nothing was wrong.
+3. WorkManager then waited a **full further period**. The next attempt is
+   ~01:25 on the 20th, at which point 46 hours will have passed and it will
+   write.
 
-**(C) It is simply a portable player asleep.** The work requires
-`NetworkType.CONNECTED`, and the NW-A307 spends most of its life asleep and
-often off Wi-Fi. Doze defers deferred work hard. This is what was already
-predicted under Phase 4's "Still owed": *"on a portable player that is often
-asleep, 'some time that day' is the honest expectation rather than a clock
-time"*. 36.5 hours stretches that expectation but does not break it.
+**The device being asleep and off Wi-Fi is not the cause**, plausible as it
+was. The like sync ran at 14:14 the same day on a 12-hour period, period
+counts are incrementing normally, and connectivity is satisfied at this
+moment with only the timer outstanding. WorkManager is doing its job.
 
-**How to tell them apart**, with the Walkman plugged in and the Pixel
-unplugged — this runs no instrumented test, so the build's Walkman guard is
-not involved:
+**And the steady state is worse than a one-off.** If it writes at ~01:25 on
+the 20th, the following attempt lands ~24 hours later — within minutes of the
+guard boundary, on whichever side the drift falls. Any attempt that arrives
+even a minute early silently costs another whole day, so this will oscillate
+rather than settle.
 
-```
-adb shell am broadcast -a "androidx.work.diagnostics.REQUEST_DIAGNOSTICS" \
-    -p com.example.evergreen
-adb logcat -d -s WM-DiagnosticsWrkr
-```
+**The fix is to stop the two numbers being equal**: attempt every six hours
+and let the 24-hour guard remain the only thing deciding whether a write
+happens. Then a write becomes possible within six hours of the guard
+expiring, whatever the phase, and it is still at most one a day — the guard
+is unchanged and already has a test. A refused attempt is genuinely cheap:
+`TOO_SOON` is checked in step 1 of `EvergreenSync.run`, **before the
+recompute and before any network request**, so it is an open of the database
+and two indexed reads. The `NetworkType.CONNECTED` constraint means the
+device only wakes for it when it already has a network, which is also the
+answer to "sync every day, but only when it can".
 
-That prints every piece of work WorkManager is holding, with its state and
-its next run time. Read off whether `evergreen-playlist-sync` exists at all
-(distinguishes B), and when it last ran (distinguishes A from C: a run that
-happened and did nothing is A, no run at all is C).
 
 ### Moving the file between the devices
 
