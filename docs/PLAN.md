@@ -1711,9 +1711,115 @@ batch keyed on "this device" would have shipped 393 rows and silently left
 77,364 behind — and the mirror would have looked complete, because a ranking
 computed from a fraction of the history is still a ranking.
 
-### Phase 5b device verification — results
+### Phase 5b device verification — results (2026-09-20)
 
-_In progress, 2026-09-20. Step A done; see above._
+Run by the user across both devices, with the readings taken over adb where a
+number was wanted rather than read off a screen. **Everything up to the gap
+test passed.**
+
+| | value |
+|---|---|
+| v7 migration, cold launch on the NW-A307 | **3,797 ms**, integrity ok, nothing lost |
+| full recompute on the NW-A307 after it | **2,204 ms** (2,309 ms in Phase 4, ~2,400 ms in 5a) |
+| whole-file backup, v7 | 23.4 MiB |
+| **whole-history batch** | **52.7 MiB, 79,008 records, 35,253 ms** |
+| whole-history batch applied to a mirror that already held it | 1 added, **77,760 already here**, 3,022 ms |
+| **first real delta** | **497 KiB, 1,252 records, 864 ms** |
+| delta applied on the Pixel | 5 plays added, 0 already here, **418 ms** |
+| full recompute on the Pixel afterwards | **297 ms**, 381 tracks |
+| top ten after the delta | **same tracks, same order** |
+| same delta imported twice | nothing added, nothing changed |
+| capture listener, read from `dumpsys package` | **enabled on the Walkman, disabled on the Pixel** |
+| duplicate global names across 77,761 segments | **0** |
+
+**497 KiB against 21.0 MiB is the phase in one number** — a factor of 43, and
+864 ms against the 35 s the whole history takes.
+
+#### The whole-history batch is the wrong tool for a whole history
+
+52.7 MiB of text for a database that vacuums to 23.4 MiB, and 35 s to write
+it. That is not a defect, it is arithmetic, and it is worth writing down
+because it settles when to use which transport.
+
+| type | lines | bytes each | share of the file |
+|---|---|---|---|
+| `seg` | 77,761 | 704 | **99.1%** |
+| everything else | 1,247 | ~405 | 0.9% — **494 KiB in total** |
+
+**Every segment carries a full copy of its track's metadata** — key, title,
+artist, album, duration, URI, ISRC — because facts are content-addressed and
+never carry a row id. That is what lets a Linux agent in Phase 7 produce a
+batch without knowing anything about the receiver. Over 77,761 segments
+spanning 12,343 distinct tracks, each track's metadata is repeated about six
+times, and that repetition is most of the 704 bytes.
+
+So the two transports divide cleanly, and neither replaces the other:
+
+- **establishing a mirror** stays a whole-file job — 23.4 MiB that copies in
+  a second, against 52.7 MiB that takes 35 s to write;
+- **keeping it current** is the batch, at 497 KiB and under a second.
+
+If the whole-history case ever needs to be good rather than merely possible,
+the fix is a track dictionary section in a later format version, which a
+version 1 reader would ignore exactly as `docs/SYNC_FORMAT.md` §1 requires.
+
+**The 494 KiB floor is the honest figure for "a small delta".** Everything
+that is not a segment is sent in full every time, because only segments have
+a watermark the receiver can check. A delta is therefore about
+`494 KiB + 700 bytes per new play` — 497 KiB for the five plays measured
+here. Still 43× smaller than a whole file, and it does not grow with
+listening; it grows with liked tracks and with snapshot months.
+
+#### The two devices agree to within the clock
+
+The user noticed the Pixel's scores were "ever so slightly different" from the
+Walkman's while the order was identical, and then recomputed both at nearly
+the same moment and found they matched. That is worth turning into a number,
+because it is the strongest form of the phase's central claim.
+
+Cached scores pulled from both devices, 381 tracks each, same parameters
+hash, recomputes **48.5 s apart**:
+
+| | |
+|---|---|
+| ranking order | **identical** |
+| predicted relative difference from decay alone, 45-day half-life | 8.6465 × 10⁻⁶ |
+| **observed** largest relative difference across 381 tracks | 8.6400 × 10⁻⁶ |
+| agreement between predicted and observed | **0.07%** |
+
+So the difference is *entirely* the clock. A decay weight is
+`2^(-(now - at)/halfLife)`, so a later `now` multiplies every contribution by
+the same constant: the scores all shrink and the order is untouched. This is
+`CrossDeviceRankingTest`'s `now` case holding on 77,766 real segments rather
+than on a fixture, and it is the first time the two devices have been
+compared score by score rather than by reading ten titles off two screens.
+
+#### Smaller things found while verifying
+
+- **A no-op import still drops the score cache.** Importing the same batch
+  twice correctly changes no fact, but the second import empties `scores`
+  anyway, so the next screen recomputes for nothing. Dropping a cache is
+  always safe, so this is waste rather than a bug — but the import could skip
+  it when it applied nothing.
+- **The document picker renames the file.** The export suggests
+  `evergreen-batch-<device>-<stamp>.jsonl` and the file arrives as
+  `.jsonl.txt`, because the picker is asked for `text/plain` — which it has
+  to be, or Android offers no save location at all, the same trap the backup
+  button hit with `.db`. Cosmetic, and the import accepts any extension.
+- **`run-as ... cat databases/evergreen.db` reads a stale database.** Used
+  while verifying and it silently reported the count from before the last
+  import, because in write-ahead-logging mode the recent writes are in the
+  `-wal` file beside it. All three files have to be copied. This is the same
+  trap `VACUUM INTO` exists to avoid, met from the other side.
+
+#### Still to run
+
+- [ ] **M.** The gap refusal: export changes twice on the Walkman without
+      importing the first, then offer the **second** file to the Pixel. It
+      should refuse and say roughly how many plays are missing.
+- [ ] **N.** Every Spotify write still refused on the Pixel, each saying why.
+- [ ] **R.** Every screen checked at 339 × 602 dp on the Walkman, especially
+      the new export section and its counts.
 
 | | value |
 |---|---|
