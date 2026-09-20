@@ -1605,9 +1605,10 @@ wrote it. Take a second backup *after* the migration; that one is the file
 
 **On the NW-A307 (the Walkman) — restore first:**
 
-- [ ] **A.** Install the new build. It migrates the database to v7 on first
+- [x] **A.** Install the new build. It migrates the database to v7 on first
       open. **Note how long the app takes to open the first time**, and check
       the Scores tab still shows the same ranking afterwards.
+      **Done 2026-09-20 — see "The v7 migration on the real database" below.**
 - [ ] **B.** **Settings** → **Back up database**. Note the size.
 - [ ] **C.** Check **Settings** now offers **Restore from backup** below the
       backup button, and that the text explains it is for *this* device.
@@ -1668,9 +1669,51 @@ wrote it. Take a second backup *after* the migration; that one is the file
 - [ ] **R.** Check every screen at 339 × 602 dp — especially the new export
       section and its counts.
 
+### The v7 migration on the real database — 2026-09-20
+
+Run on the NW-A307 against six years of real listening. **It cost 3.8 seconds
+and lost nothing.**
+
+| | before | after |
+|---|---|---|
+| `PRAGMA user_version` | 6 | **7** |
+| database file | 23.3 MB | 25.8 MB |
+| `PRAGMA integrity_check` | — | **ok** |
+| cold launch including the migration | — | **3,797 ms** |
+
+Counts after, all intact: **77,757 segments**, 12,343 tracks, 12,796 service
+tracks, 381 likes, 381 like events, 102 membership rows, 1 snapshot with 380
+entries, 2 parameter-log entries. The `scores` cache survived with its 380
+rows, which is right — the migration changes no fact and no parameter, so the
+cache is not stale. The unique index
+`index_listening_segments_deviceId_originRowId` is present, and every row has
+`originRowId IS NULL`, meaning "originated here".
+
+The 3.8 seconds is a cold launch *including* the migration, not the migration
+alone, so it is an upper bound. It is also the number that says the decision
+to hand-write the migration was worth making: Room's generated one would have
+copied all 77,757 rows into a new table and rebuilt six indices.
+
+### The multi-origin decision, vindicated by the real data
+
+The batch format carries a **list** of origins rather than one device, which
+was a design change made while building, on the argument that the
+streaming-history import writes its rows under the fixed origin
+`spotify-history-import`. The real database says how much that mattered:
+
+| origin | segments | watermark |
+|---|---|---|
+| the Walkman's own install id | 393 | 77,757 |
+| `spotify-history-import` | **77,364** | 77,384 |
+
+**99.5% of the Walkman's listening history is under the imported origin.** A
+batch keyed on "this device" would have shipped 393 rows and silently left
+77,364 behind — and the mirror would have looked complete, because a ranking
+computed from a fraction of the history is still a ranking.
+
 ### Phase 5b device verification — results
 
-_Not yet run._
+_In progress, 2026-09-20. Step A done; see above._
 
 | | value |
 |---|---|
