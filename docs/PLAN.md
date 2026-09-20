@@ -2578,6 +2578,107 @@ established:
   rows over the same minutes would settle it. Until then this is a
   possibility, not a finding.
 
+#### Does the Pixel's view of a listen *agree* with the Walkman's? — measured 2026-09-20
+
+**Answered. It agrees. It does not truncate — but it fragments, and the
+fragments score as rejections.**
+
+Run with both devices attached, the Pixel taken out of mirror mode with
+capture on, Spotify open and untouched on it, and six tracks played on the
+Walkman: three to the end, three skipped at an early, a one-third and a
+two-thirds point. Clock skew measured three times before the window and
+stable: **the Pixel is 660 ms behind the Walkman** (±20 ms, against a ~130 ms
+adb round trip), so nothing here is clock drift.
+
+Counts and aggregates only; track identity is reduced to an index.
+
+**Agreement, for the six tracks the Pixel saw from the start:**
+
+| # | Walkman listened | Pixel listened | difference | W frac | P frac |
+|---|---|---|---|---|---|
+| 3 | 162,306 ms | 165,856 ms | +3,550 ms | 0.91 | 0.93 |
+| 4 | 13,316 ms | 13,629 ms | +313 ms | 0.09 | 0.09 |
+| 5 | 170,132 ms | 169,056 ms | −1,076 ms | 0.99 | 0.99 |
+| 6 | 85,029 ms | 86,826 ms | +1,797 ms | 0.33 | 0.34 |
+| 7 | 210,409 ms | 209,796 ms | −613 ms | 0.97 | 0.97 |
+| 9 | 73,613 ms | 75,373 ms | +1,760 ms | 0.62 | 0.63 |
+
+**Fraction heard agrees to within 0.02 on every one**, and the difference in
+listened time runs from −1.1 s to +3.6 s with no bias towards the Pixel being
+short. Start times agree to within 2.7 s. A phantom is therefore a *faithful*
+duplicate of a listen, not a shortened one.
+
+**Track #1 is excluded and the reason is worth recording.** The Pixel's first
+row for it begins **112 seconds after** the Walkman's, giving 0.37 against
+0.86. That is not truncation: capture was enabled on the Pixel while the
+track was already playing, and the device slept during part of the session.
+It is a reminder that a device joining mid-track records what it saw, which is
+correct behaviour and would be a genuine hazard for a merge — but a different
+one from the question being asked here.
+
+**The fragmentation, which is the real finding.** The Pixel recorded **11
+rows to the Walkman's 9**. Twice out of seven tracks it saw a small *backward*
+position jump near the end — 187,025 → 185,157 ms and 212,178 → 209,826 ms,
+about 1.9 s and 2.4 s back — which capture correctly cut the segment on. Each
+left a **trailing row of zero listened milliseconds**:
+
+| | track | listened | fraction | endReason | lastSampleAge |
+|---|---|---|---|---|---|
+| tail 1 | #1 | 0 ms | **0.00** | TRACK_CHANGE | 3,848 ms |
+| tail 2 | #7 | 0 ms | **0.00** | TRACK_CHANGE | 3,681 ms |
+
+**The Walkman recorded no such jump at all — zero, across the same nine
+listens.**
+
+**So the answer to the question is "no, but".** The fear was that a phantom
+might be a *shortened* listen and therefore a wrong negative judgement. It is
+not shortened. But it can still be a wrong negative judgement, by a mechanism
+nobody had guessed: track #7 was played to **0.97** on both devices, and the
+Pixel additionally holds a row for it at **0.00**, which is below the 0.20
+lower breakpoint and scores as a **rejection**. The consequence the question
+was worried about is real; the mechanism is fragmentation, not truncation.
+
+The `lastSampleAgeMs` of 3.7–3.8 s on both tails says why. A remote session's
+position arrives sparsely, so a refresh can report a position slightly behind
+the one capture had extrapolated to — a backward jump that never happened.
+This is also the most likely explanation for the **0.06 fraction** in the
+Phase 5a sample, which was recorded as possible truncation: it was probably
+one of these tails rather than a shortened listen.
+
+**`PLAYBACK_TYPE_REMOTE` was confirmed set during this window.** Read from
+`dumpsys media_session` on the Pixel with the session still active:
+
+```
+package=com.spotify.music   active=true   state=PLAYING(3)
+volumeType=REMOTE  controlType=FIXED  max=24  current=24
+volumeControlId=com.spotify.music/...SpotifyMediaRouteProviderService:541283b8…
+```
+
+Every other session on the device read `LOCAL` at the same moment. So all
+eleven rows — the six faithful duplicates, the two zero-length rejections, the
+late-starting first track and the two DJ commentary rows — came from a session
+marked remote, and **the source-level drop removes every one of them.**
+
+**What this settles for Phase 5c:**
+
+- The phantom fix stays exactly what `docs/SYNC_FOUNDATION.md` 5.1 says: drop
+  segments whose session reads `PLAYBACK_TYPE_REMOTE`, one field and one `if`.
+- **The wall-clock overlap rule is not needed for this case.** It was held
+  open in case of truncation; truncation does not happen.
+- The fix is more valuable than "avoid double counting" made it sound. It also
+  removes spurious rejections of songs that were played in full, which is a
+  harm that would have survived any amount of deduplication — a duplicate can
+  be spotted, a zero-length rejection of a real play looks exactly like a real
+  rejection.
+
+**Caveats, stated plainly.** One session, seven tracks, one pair of devices,
+with Spotify DJ running (both devices recorded two commentary rows each, and
+they agree; commentary is filtered at read time by URI prefix and scores
+nothing). The Pixel slept during part of it. The agreement result is strong
+because six of six agree closely; the fragmentation rate — two in seven — is a
+single small sample and should be read as "this happens" rather than as a
+frequency.
+
 ### Still unknown — carried into Phase 6
 
 
