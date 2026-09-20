@@ -575,6 +575,14 @@ private data class ResolvedTrack(val trackId: Long, val serviceTrackRowId: Long?
  *   device has never seen. The *other* device's observation time, not now:
  *   claiming to have first seen a track at the moment a file was opened would
  *   be this database inventing an observation.
+ *
+ * One consequence worth knowing rather than fixing: the shared resolution also
+ * sets `lastSeenAt` from `at`, so a batch's later sections — which are ordered
+ * by type rather than by time — can move a track's `lastSeenAt` backwards.
+ * Nothing reads it. It is bookkeeping on `tracks` and `service_tracks`, not a
+ * fact, and no part of the scoring touches either column; the alternative is
+ * changing a Phase 2 path that four other callers depend on, to tidy a number
+ * nobody looks at.
  */
 private suspend fun EvergreenDatabase.resolveTrackFor(
     track: SyncBatch.TrackRef,
