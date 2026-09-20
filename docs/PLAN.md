@@ -182,8 +182,17 @@ _Update at the end of each task: what was done, what's next, any blockers._
 - **The number the phase exists for: a delta is 497 KiB against 21.0 MiB for
   the whole-file mirror it replaces**, and 864 ms against 35 s. It applied on
   the Pixel in 418 ms and the ranking matched.
-- **Next:** step 2's measurement whenever both devices are free — it informs
-  Phase 5c and blocks nothing.
+- **Phase 5b is merged to `main`** as pull request #4, 2026-09-20.
+- **Check 0a is now fully answered**, measured the same day while both
+  devices were attached — deliberately *before* 5c starts, because the
+  phantom fix is 5c's first commit and once it lands there are no phantom
+  rows left to measure. **The Pixel does not truncate a listen; it fragments
+  it**, and the fragments score as rejections of songs played in full. Full
+  figures under Phase 5c in "Open questions".
+- **Next:** nothing is in progress. 5c is specified well enough to start —
+  its fix is settled and one of its merge rules has been ruled out — but it
+  is gated on check 0b, which the Spotify export can answer from a file
+  already on disk.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
