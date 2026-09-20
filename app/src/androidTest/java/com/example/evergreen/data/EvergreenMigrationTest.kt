@@ -857,8 +857,8 @@ class EvergreenMigrationTest {
                          endedAtMs, startPositionMs, endPositionMs, listenedMs, trackDurationMs,
                          forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
                          lastSampleAgeMs, createdAt, source, sourceEndReason)
-                    VALUES ($id, 1, 1, 'com.spotify.music', 'device-a', ${'$'}{1_700_000_000_000 + id},
-                            ${'$'}{1_700_000_100_000 + id}, 0, $SEEKED_END_POSITION, $SEEKED_LISTENED,
+                    VALUES ($id, 1, 1, 'com.spotify.music', 'device-a', ${1_700_000_000_000 + id},
+                            ${1_700_000_100_000 + id}, 0, $SEEKED_END_POSITION, $SEEKED_LISTENED,
                             $SEEKED_DURATION, 1, 200000, 'TRACK_CHANGE', NULL, NULL, 500,
                             1700000000000, 'CAPTURE', NULL)
                     """.trimIndent(),

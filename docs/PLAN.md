@@ -175,13 +175,14 @@ _Update at the end of each task: what was done, what's next, any blockers._
 - Current phase: **Phase 5b — delta sync**, built 2026-09-20 on branch
   `phase5b-delta`. **Every build step of `docs/PHASE5B_PROMPT.md` is done
   except step 2, which is a measurement rather than a build.** Nothing is
-  merged, and nothing has run on a device.
-- **Blocking, and the next thing to do:** run the instrumented suite on the
-  Pixel with the Walkman unplugged, then the Phase 5b verification checklist
-  across both devices. 278 unit tests pass; **the instrumented suite has not
-  been run at all this phase**, because no device was attached to the machine
-  this was built on and there is no emulator image installed on it. Until it
-  runs, the delta path is code that compiles rather than code that works.
+  merged.
+- **278 unit tests and 251 instrumented tests pass**, the instrumented ones
+  on the Pixel 10 Pro on 2026-09-20. The delta path runs: the batch is
+  exported, applied, applied again to no effect, and the ranking it produces
+  matches the ranking of a database built by whole copy.
+- **Next:** the Phase 5b verification checklist across both devices, which is
+  the part no test can stand in for — the v7 migration against 77,518 real
+  rows, and the size of a real delta next to 21.0 MiB.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
@@ -1413,10 +1414,9 @@ which is the ordinary daily sync.
 ## Phase 5b results (2026-09-20)
 
 Built on branch `phase5b-delta`, one commit per step of
-`docs/PHASE5B_PROMPT.md`. **278 unit tests pass. The instrumented suite has
-not been run** — it needs the Pixel attached with the Walkman unplugged, and
-no device was attached to the machine this was built on. That is the first
-thing to do with it.
+`docs/PHASE5B_PROMPT.md`. **278 unit tests and 251 instrumented tests pass**
+(up from 275 and 225 in Phase 5a), the instrumented ones on the Pixel 10 Pro
+with the Walkman unplugged as the build insists.
 
 `capture/` is unchanged, as the phase required. The Pixel stays read-only
 throughout: mirror mode, capture off, every Spotify write refused.
@@ -1506,11 +1506,31 @@ silently not recording, with reinstalling as the only cure. The settings
 screen now says when recording is off on a device that is not a mirror, and
 offers to start it again.
 
+### The instrumented suite, run on the Pixel (2026-09-20)
+
+**251 tests, 0 failures**, up from 225 in Phase 5a. The 26 new ones are
+`BatchSyncTest` (14), `DatabaseRestoreTest` (11) and the v6→v7 migration (1).
+
+The first run failed one test, and it is worth recording which kind of
+failure it was: the v7 migration test's *setup* SQL had a literal `${...}`
+in it instead of an interpolated value, so the rows it meant to insert were
+never inserted and the assertions about the unique index never ran. A test
+that fails in its own setup proves nothing about the thing it names, which is
+why the number to trust is the one after the fix.
+
+What the suite now actually demonstrates, beyond the shape of the code:
+
+- a batch applied twice leaves the database identical, row for row;
+- two overlapping batches applied in either order agree;
+- a delta on an older copy ranks identically to a whole copy — Phase 5b's
+  equivalent of `CrossDeviceRankingTest`;
+- a delta with no baseline, one that would leave a gap, and a truncated file
+  are each refused with nothing changed;
+- restoring on the writer leaves it the writer, and the same file imported as
+  a mirror still neutralises.
+
 ### Still owed
 
-- **The instrumented suite has not been run at all this phase.** Attach the
-  Pixel with the Walkman unplugged and run it before trusting any of the
-  above.
 - **Check 0a continued** (step 2 below) is a measurement, not a build, and
   has not been done. It informs 5c, not 5b.
 - **The home screen still says "Capture has gone quiet"** and offers to check
