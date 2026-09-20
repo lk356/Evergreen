@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import com.example.evergreen.capture.CaptureSwitch
 import com.example.evergreen.data.DataExport
 import com.example.evergreen.data.DatabaseBackup
+import com.example.evergreen.data.DatabaseRestore
+import com.example.evergreen.data.DatabaseRestoreController
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MirrorImport
 import com.example.evergreen.data.MirrorImportController
@@ -140,9 +142,202 @@ fun DeviceCard() {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
+    RestoreSection()
+
+    RecordingSection(mirror = mirror)
+
     MirrorSection(mirror = mirror)
 
     ExportSection()
+}
+
+/**
+ * Putting a backup back on the device that took it.
+ *
+ * The other half of the button above, and missing until Phase 5b. It sits here
+ * rather than under "Mirror of another device" on purpose: this is about this
+ * device's own record, and the mirror import — which looks almost identical and
+ * means the opposite — is a screen-length away under its own heading.
+ */
+@Composable
+private fun RestoreSection() {
+    val context = LocalContext.current
+    val state by DatabaseRestoreController.state.collectAsState()
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { DatabaseRestoreController.pick(context, it) } }
+
+    // Same reasoning as the mirror import: the database handle every composable
+    // is reading through has just been closed and replaced, and recreating the
+    // activity is how they all get back onto the new file at once.
+    val activity = context as? Activity
+    LaunchedEffect(state) {
+        if (state is DatabaseRestoreController.State.Done) {
+            DatabaseRestoreController.dismiss(context)
+            activity?.recreate()
+        }
+    }
+
+    when (val current = state) {
+        is DatabaseRestoreController.State.Idle,
+        is DatabaseRestoreController.State.Done,
+        -> Unit
+
+        is DatabaseRestoreController.State.Checking -> StatusLine("Checking that file…")
+
+        is DatabaseRestoreController.State.Restoring ->
+            StatusLine("Putting the backup back. Do not close the app.")
+
+        is DatabaseRestoreController.State.Failed -> {
+            Text(
+                text = current.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { DatabaseRestoreController.dismiss(context) }) { Text("Dismiss") }
+        }
+
+        is DatabaseRestoreController.State.Confirming -> ConfirmRestore(
+            preview = current.preview,
+            onConfirm = { DatabaseRestoreController.confirm(context) },
+            onCancel = { DatabaseRestoreController.dismiss(context) },
+        )
+    }
+
+    OutlinedButton(
+        onClick = {
+            // The same generous MIME list as everywhere else a .db is picked:
+            // file managers report one as application/octet-stream,
+            // application/x-sqlite3 or nothing at all, and a filter that misses
+            // leaves the file greyed out with no explanation.
+            picker.launch(
+                arrayOf("application/octet-stream", "application/x-sqlite3", "application/vnd.sqlite3", "*/*"),
+            )
+        },
+        enabled = state is DatabaseRestoreController.State.Idle ||
+            state is DatabaseRestoreController.State.Failed,
+        modifier = Modifier.padding(top = 8.dp),
+    ) {
+        Text("Restore from backup")
+    }
+    Text(
+        "Puts a backup of *this* device back, replacing what is here now. It changes " +
+            "the listening history and nothing else: whatever this device is — the one " +
+            "that writes Evergreen, or a mirror, recording or not — it still is " +
+            "afterwards. A backup taken on a different device is refused, because " +
+            "showing another device's listening is what \"Import a mirror\" below is for.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * Whether this device is recording, and a way back if it is not.
+ *
+ * Shown **only when recording is off and this is not a mirror**, which is a
+ * state that should not happen and has to be recoverable when it does. Capture
+ * is switched by disabling the listener component, and the two operations that
+ * replace the database both turn it off for the moment of the swap. If the
+ * process dies inside that moment, or the swap fails after it, recording stays
+ * off on a device that was recording — and until Phase 5b there was no control
+ * anywhere that turned it back on outside mirror mode, so the only cure was to
+ * reinstall.
+ *
+ * It is not shown in the ordinary case, because a permanent card saying
+ * everything is fine is the mistake Phase 4's first step undid.
+ */
+@Composable
+private fun RecordingSection(mirror: MirrorState?) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Read once per composition rather than observed: the component enabled
+    // setting is not a flow, and the only things that change it are on this
+    // screen, which recomposes after each of them.
+    var enabled by remember { mutableStateOf(CaptureSwitch.isEnabled(context)) }
+    if (enabled || mirror != null) return
+
+    Text(
+        text = "Recording is off on this device.",
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+    Text(
+        "This device is not a mirror, so it should be recording. The likely cause is a " +
+            "restore or an import that was interrupted while the database was being " +
+            "replaced — both switch recording off for that moment. Nothing that happened " +
+            "while it was off was recorded, and that cannot be recovered.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedButton(
+        onClick = {
+            scope.launch {
+                CaptureSwitch.setEnabled(context, true)
+                enabled = CaptureSwitch.isEnabled(context)
+            }
+        },
+        modifier = Modifier.padding(top = 8.dp),
+    ) {
+        Text("Start recording again")
+    }
+}
+
+/**
+ * The confirmation for the one operation that could change what a device is.
+ *
+ * It does not change it — that is the whole design — so the dialog's job is to
+ * say so in as many words, alongside the counts on both sides. "Are you sure"
+ * without the numbers would be a question nobody can answer, and without the
+ * sentence about the role it would be the one question the user actually has.
+ */
+@Composable
+private fun ConfirmRestore(
+    preview: DatabaseRestore.Preview,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Put this backup back?") },
+        text = {
+            Text(
+                (
+                    if (preview.sourceIsUnknown) {
+                        "The file does not say which device took it, which means it was " +
+                            "taken before September 2026. Be sure it is this device's. "
+                    } else {
+                        "The file was taken on ${preview.sourceDevice}, which is this " +
+                            "device. "
+                    }
+                    ) +
+                    "It was taken ${DatabaseRestore.describeTakenAt(preview.takenAtMs)} and " +
+                    "holds ${preview.incomingSegments} play(s) and " +
+                    "${preview.incomingLikes} liked song(s).\n\n" +
+                    "It will replace this device's database, which holds " +
+                    "${preview.existingSegments} play(s) and ${preview.existingLikes} " +
+                    "liked song(s). That cannot be undone, and cloud backup is switched " +
+                    "off for this app, so take a backup here first if any of it matters.\n\n" +
+                    preview.describeRoleAfterwards() +
+                    " The scores are recomputed here from the facts in the file.",
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) {
+                Text("Put it back")
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
 }
 
 /**

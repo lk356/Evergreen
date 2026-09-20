@@ -174,6 +174,18 @@ abstract class EvergreenDatabase : RoomDatabase() {
             context.getDatabasePath("evergreen-mirror-staging.db")
 
         /**
+         * The same, for a restore.
+         *
+         * A path of its own rather than sharing the one above. Both operations
+         * are reachable from the same screen, both stage before they ask, and
+         * one shared staging file is a way for "yes" to a restore to apply a
+         * file that was staged for a mirror import — which is precisely the
+         * confusion the two operations exist to keep apart.
+         */
+        fun restoreStagingFileFor(context: Context): File =
+            context.getDatabasePath("evergreen-restore-staging.db")
+
+        /**
          * Closes the database and forgets the instance, so the next [get]
          * opens whatever file is on disk now.
          *
