@@ -30,6 +30,10 @@ import androidx.compose.ui.unit.dp
 import com.example.evergreen.capture.CaptureSwitch
 import com.example.evergreen.data.DataExport
 import com.example.evergreen.data.DatabaseBackup
+import com.example.evergreen.data.BatchExport
+import com.example.evergreen.data.BatchExportController
+import com.example.evergreen.data.BatchImport
+import com.example.evergreen.data.BatchImportController
 import com.example.evergreen.data.DatabaseRestore
 import com.example.evergreen.data.DatabaseRestoreController
 import com.example.evergreen.data.EvergreenDatabase
@@ -146,9 +150,252 @@ fun DeviceCard() {
 
     RecordingSection(mirror = mirror)
 
+    ChangesSection(mirror = mirror)
+
     MirrorSection(mirror = mirror)
 
     ExportSection()
+}
+
+/**
+ * Sending and receiving **changes** — the small file, as opposed to the whole
+ * database.
+ *
+ * One section with two halves rather than two sections, because which half a
+ * device uses is decided by what the device is: the writer sends, a mirror
+ * receives. Showing both everywhere would invite the one thing this must not
+ * do, which is the mirror sending its copy of the writer's facts back.
+ */
+@Composable
+private fun ChangesSection(mirror: MirrorState?) {
+    SectionTitle("Changes since last time")
+    if (mirror == null) {
+        ExportChangesSection()
+    } else {
+        ImportChangesSection(mirror = mirror)
+    }
+}
+
+/**
+ * The writer's half: "Export changes since…".
+ *
+ * Beside the backup button and through the same create-document picker, which
+ * is the whole transport. A backup is 21.0 MiB of database; this is a list of
+ * what is new, and the size it reports is the point of the phase.
+ */
+@Composable
+private fun ExportChangesSection() {
+    val context = LocalContext.current
+    val state by BatchExportController.state.collectAsState()
+
+    val saver = rememberLauncherForActivityResult(
+        // Plain text rather than something JSON-specific: the picker will not
+        // offer a save location for a MIME type no app on the device claims,
+        // which is the same trap the backup button hit.
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri == null) BatchExportController.dismiss() else BatchExportController.writeTo(context, uri)
+    }
+
+    Text(
+        "Writes a small file listing what this device has recorded since the last " +
+            "time you did this — plays, likes, settings, snapshots — for the other " +
+            "device to add to its copy. It is the same idea as the backup above, " +
+            "minus everything the other device already has.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    when (val current = state) {
+        is BatchExportController.State.Idle -> Unit
+
+        is BatchExportController.State.Planning -> StatusLine("Counting what is new…")
+
+        is BatchExportController.State.Ready -> {
+            val plan = current.plan
+            Text(
+                text = if (plan.segments == 0) {
+                    "Nothing new to send since ${plan.describeWatermark()}. The other " +
+                        "types are always sent in full, so the file would still hold " +
+                        "${plan.totalFacts} record(s)."
+                } else {
+                    "${plan.segments} new play(s) since ${plan.describeWatermark()}, and " +
+                        "${plan.totalFacts} record(s) in all."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = { saver.launch(BatchExport.suggestedFileName()) }) {
+                    Text("Save the file")
+                }
+                TextButton(onClick = { BatchExportController.dismiss() }) { Text("Cancel") }
+            }
+        }
+
+        is BatchExportController.State.Writing -> StatusLine("Writing the file…")
+
+        is BatchExportController.State.Done -> {
+            val written = current.written
+            Text(
+                text = "Wrote ${written.plan.totalFacts} record(s), " +
+                    "${BatchExport.describeSize(written.bytes)}, in " +
+                    "${written.tookMs} ms.",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { BatchExportController.dismiss() }) { Text("Done") }
+        }
+
+        is BatchExportController.State.Failed -> {
+            Text(
+                text = current.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { BatchExportController.dismiss() }) { Text("Dismiss") }
+        }
+    }
+
+    if (state is BatchExportController.State.Idle ||
+        state is BatchExportController.State.Failed
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(onClick = { BatchExportController.plan(context, false) }) {
+                Text("Export changes")
+            }
+            // Offered rather than hidden, because it is the only way to rebuild
+            // a mirror from changes alone, and because a watermark that has
+            // drifted is fixed by starting again rather than by explaining.
+            TextButton(onClick = { BatchExportController.plan(context, true) }) {
+                Text("From the beginning")
+            }
+        }
+    }
+}
+
+/**
+ * The mirror's half: "Import changes".
+ *
+ * It inserts; it does not replace. A delta arriving on top of a mirror extends
+ * it, and the device is still a mirror afterwards — capture off, no Spotify
+ * writes, and the home screen still says so.
+ */
+@Composable
+private fun ImportChangesSection(mirror: MirrorState) {
+    val context = LocalContext.current
+    val state by BatchImportController.state.collectAsState()
+
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let { BatchImportController.pick(context, it) } }
+
+    Text(
+        "Adds what ${mirror.describeSource()} has recorded since this copy was made, " +
+            "from the small file its \"Export changes\" button wrote. Nothing is " +
+            "replaced and nothing is lost — and this device stays a mirror, so it " +
+            "still records nothing and still never writes to Spotify.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    when (val current = state) {
+        is BatchImportController.State.Idle -> Unit
+
+        is BatchImportController.State.Checking -> StatusLine("Checking that file…")
+
+        is BatchImportController.State.Applying -> StatusLine("Adding the changes…")
+
+        is BatchImportController.State.Confirming -> ConfirmBatchImport(
+            preview = current.preview,
+            onConfirm = { BatchImportController.confirm(context) },
+            onCancel = { BatchImportController.dismiss() },
+        )
+
+        is BatchImportController.State.Done -> {
+            val applied = current.applied
+            Text(
+                text = if (applied.changedNothing) {
+                    "Nothing to add — this copy already held all " +
+                        "${applied.preview.totalFacts} record(s) in that file."
+                } else {
+                    "Added ${applied.segmentsAdded} play(s) and " +
+                        "${applied.likeEventsAdded} like change(s); " +
+                        "${applied.segmentsAlreadyHeld} play(s) were already here. " +
+                        "Took ${applied.tookMs} ms."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { BatchImportController.dismiss() }) { Text("Done") }
+        }
+
+        is BatchImportController.State.Failed -> {
+            Text(
+                text = current.message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = { BatchImportController.dismiss() }) { Text("Dismiss") }
+        }
+    }
+
+    OutlinedButton(
+        onClick = {
+            picker.launch(arrayOf("text/plain", "application/json", "application/x-ndjson", "*/*"))
+        },
+        enabled = state is BatchImportController.State.Idle ||
+            state is BatchImportController.State.Failed ||
+            state is BatchImportController.State.Done,
+        modifier = Modifier.padding(top = 8.dp),
+    ) {
+        Text("Import changes")
+    }
+}
+
+/**
+ * The confirmation for a delta.
+ *
+ * Gentler than the mirror import's, and honestly so: this one destroys
+ * nothing. What it still has to say is where the file came from and how much
+ * is in it, because the user cannot see inside it.
+ */
+@Composable
+private fun ConfirmBatchImport(
+    preview: BatchImport.Preview,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Add these changes?") },
+        text = {
+            Text(
+                "The file was written by ${preview.describeProducer()} on " +
+                    "${MirrorImport.describeTakenAt(preview.takenAtMs)}. It holds " +
+                    "${preview.incomingSegments} play(s) and " +
+                    "${preview.totalFacts} record(s) in all.\n\n" +
+                    "They are added to this copy; nothing here is replaced or removed, and " +
+                    "anything this copy already has is skipped. The scores are worked out " +
+                    "again afterwards from the facts.\n\n" +
+                    "This device stays a mirror: it still records nothing and still will " +
+                    "not write to Spotify.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Add them") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
 }
 
 /**

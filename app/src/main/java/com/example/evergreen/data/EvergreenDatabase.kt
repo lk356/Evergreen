@@ -193,6 +193,9 @@ abstract class EvergreenDatabase : RoomDatabase() {
     /** The streaming-history import's reads and bookkeeping. */
     abstract fun importDao(): ImportDao
 
+    /** Phase 5b's delta export and import, separate for the same reason again. */
+    abstract fun syncDao(): SyncDao
+
     companion object {
         private const val DB_NAME = "evergreen.db"
 

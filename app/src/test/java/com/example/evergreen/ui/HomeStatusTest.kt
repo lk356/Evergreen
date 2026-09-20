@@ -48,6 +48,7 @@ class HomeStatusTest {
         backoffUntilMs: Long? = null,
         latestSnapshotMonthKey: String? = "2026-08",
         mirror: MirrorState? = null,
+        newestFactAtMs: Long? = null,
     ) = buildStatus(
         nowMs = now,
         accessGranted = accessGranted,
@@ -55,6 +56,7 @@ class HomeStatusTest {
         configured = configured,
         connection = connection,
         lastCapturedAtMs = lastCapturedAtMs,
+        newestFactAtMs = newestFactAtMs,
         lastLikeSyncAtMs = lastLikeSyncAtMs,
         lastWrittenAtMs = lastWrittenAtMs,
         writeConfirmed = writeConfirmed,
@@ -406,6 +408,52 @@ class HomeStatusTest {
         assertEquals(StatusProblem.Severity.NOTE, fresh.severity)
         assertEquals(StatusProblem.Severity.WARNING, stale.severity)
         assertTrue(stale.detail.contains("getting old"))
+    }
+
+    /**
+     * "How old" means the newest fact held, not the age of the file.
+     *
+     * Phase 5b is the whole reason this distinction exists. Before it, a copy
+     * was only ever brought up to date by being replaced, so the age of the
+     * import and the age of the newest listening in it were the same number.
+     * Now changes can be added on top without the file being replaced, and a
+     * line still reading "taken three weeks ago" over this morning's listening
+     * would be the one way this screen could mislead — which is the exact
+     * failure the mirror note exists to prevent.
+     */
+    @Test
+    fun aMirrorUpdatedByChangesIsAsOldAsItsNewestFactNotItsFile() {
+        val note = healthy(
+            mirror = mirrorOf(now - 21 * day),
+            newestFactAtMs = now - TimeUnit.HOURS.toMillis(3),
+        ).first()
+
+        assertEquals(StatusProblem.Severity.NOTE, note.severity)
+        assertTrue(
+            "it reports the newest listening, not the age of the whole-file import",
+            note.headline.contains("3 hours"),
+        )
+        assertTrue("and does not still claim three weeks", !note.headline.contains("21 days"))
+    }
+
+    /** And the staleness warning follows the same number, not the file's. */
+    @Test
+    fun aCopyWhoseChangesAreCurrentIsNotStaleHoweverOldItsFileIs() {
+        val note = healthy(
+            mirror = mirrorOf(now - 30 * day),
+            newestFactAtMs = now - day,
+        ).first()
+
+        assertEquals(StatusProblem.Severity.NOTE, note.severity)
+        assertTrue(!note.detail.contains("getting old"))
+    }
+
+    /** With no facts at all, the file's own timestamp is still the best answer. */
+    @Test
+    fun anEmptyCopyFallsBackToWhenTheFileWasTaken() {
+        val note = healthy(mirror = mirrorOf(now - 2 * day), newestFactAtMs = null).first()
+
+        assertTrue(note.headline.contains("2 days"))
     }
 
     /**
