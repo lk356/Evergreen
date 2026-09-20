@@ -172,17 +172,18 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5b — delta sync**, built 2026-09-20 on branch
-  `phase5b-delta`. **Every build step of `docs/PHASE5B_PROMPT.md` is done
-  except step 2, which is a measurement rather than a build.** Nothing is
-  merged.
-- **278 unit tests and 251 instrumented tests pass**, the instrumented ones
-  on the Pixel 10 Pro on 2026-09-20. The delta path runs: the batch is
-  exported, applied, applied again to no effect, and the ranking it produces
-  matches the ranking of a database built by whole copy.
-- **Next:** the Phase 5b verification checklist across both devices, which is
-  the part no test can stand in for — the v7 migration against 77,518 real
-  rows, and the size of a real delta next to 21.0 MiB.
+- Current phase: **Phase 5b — delta sync. Built and device-verified on
+  2026-09-20**, on branch `phase5b-delta`. Every build step of
+  `docs/PHASE5B_PROMPT.md` is done except step 2, which is a measurement for
+  Phase 5c rather than a build, and every item on the verification checklist
+  passed on both devices.
+- **278 unit tests and 251 instrumented tests pass** (up from 275 and 225),
+  the instrumented ones on the Pixel with the Walkman unplugged.
+- **The number the phase exists for: a delta is 497 KiB against 21.0 MiB for
+  the whole-file mirror it replaces**, and 864 ms against 35 s. It applied on
+  the Pixel in 418 ms and the ranking matched.
+- **Next:** step 2's measurement whenever both devices are free — it informs
+  Phase 5c and blocks nothing.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
@@ -1812,14 +1813,42 @@ compared score by score rather than by reading ten titles off two screens.
   `-wal` file beside it. All three files have to be copied. This is the same
   trap `VACUUM INTO` exists to avoid, met from the other side.
 
-#### Still to run
+#### The gap refusal, and how it was tested
 
-- [ ] **M.** The gap refusal: export changes twice on the Walkman without
-      importing the first, then offer the **second** file to the Pixel. It
-      should refuse and say roughly how many plays are missing.
-- [ ] **N.** Every Spotify write still refused on the Pixel, each saying why.
-- [ ] **R.** Every screen checked at 339 × 602 dp on the Walkman, especially
-      the new export section and its counts.
+**It refuses, and the message is one a person can act on.** Offered a batch
+beginning after a play the mirror has never held, the Pixel said the file
+would leave a gap, that it starts after **#77800** while the device holds up
+to **#77766**, so about **34 plays** are in neither — and then what to do
+about it. Nothing changed.
+
+**How the file was made, because the distinction matters.** It is the real
+497 KiB delta with **only its header edited**: one origin's `afterOriginId`
+moved from 77761 to 77800. The receiver does the gap check from the header
+before reading a single fact, so this exercises exactly the code path a
+genuine double export reaches, and it answers what this checklist item is
+really asking — whether the refusal reads well to a human. **A genuine double
+export was not performed on the devices.** That path is covered by
+`aBatchThatWouldLeaveAGapIsRefusedAndSaysWhatIsMissing` in the instrumented
+suite, which builds the two batches for real.
+
+#### The guards, after a delta
+
+- [x] **N.** Every Spotify write still refused on the Pixel, each saying why:
+      the Evergreen playlist section, **Sync now**, the writer switch and
+      **Export to Spotify** on a month. **A mirror that has had deltas
+      applied is still a mirror**, which is the Phase 5a guarantee surviving
+      contact with the new code.
+- [x] **O.** Capture listener disabled on the Pixel and enabled on the
+      Walkman, read from `dumpsys package` rather than inferred from a log
+      that did not fill up.
+- [x] **P.** The Pixel's home screen reads **"newest listening … ago"**, and
+      the figure moved when the delta landed.
+- [x] **R.** Every screen checked at 339 × 602 dp on the Walkman, including
+      the new **Changes since last time** section, its counts line and its
+      two buttons.
+
+**Phase 5b is device-verified.** Everything on the checklist passed on both
+devices on 2026-09-20.
 
 | | value |
 |---|---|
