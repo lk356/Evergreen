@@ -72,13 +72,16 @@ Exactly one, and it is the first line.
   "format": "evergreen-batch",
   "formatVersion": 1,
   "schemaVersion": 7,
-  "deviceId": "6f1c9a3e-3c2f-4f1e-9a11-2d4e5b6c7d8e",
-  "deviceName": "NW-A307",
+  "producerName": "NW-A307",
   "takenAtMs": 1789603200000,
-  "afterOriginId": 77518,
-  "throughOriginId": 77602,
+  "origins": [
+    {"deviceId": "6f1c9a3e-3c2f-4f1e-9a11-2d4e5b6c7d8e",
+     "afterOriginId": 77518, "throughOriginId": 77602},
+    {"deviceId": "spotify-history-import",
+     "afterOriginId": 77369, "throughOriginId": 77369}
+  ],
   "counts": {"seg": 84, "like_event": 2, "like": 380, "params": 0,
-             "member": 3, "snap": 0, "snap_entry": 0}
+             "member": 3, "snap": 1, "snap_entry": 380}
 }
 ```
 
@@ -87,16 +90,44 @@ Exactly one, and it is the first line.
 | `format` | always the literal `"evergreen-batch"`. A reader refuses anything else rather than trying. |
 | `formatVersion` | this document is version **1**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know. |
 | `schemaVersion` | the producer's database schema, **7** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
-| `deviceId` | **the identity that matters.** A random UUID, generated once per install, not a hardware identifier. Every `seg` in the batch belongs to this device. |
-| `deviceName` | a model name such as `NW-A307`, for saying whose batch it is on a screen. Every unit of that model reports the same string, so it identifies a *kind* of device, not one. Never used as identity. |
+| `producerName` | a model name such as `NW-A307`, for saying whose batch it is on a screen. Every unit of that model reports the same string, so it identifies a *kind* of device, not one. **Never used as identity.** |
 | `takenAtMs` | when the batch was produced, epoch milliseconds. |
-| `afterOriginId` | **the watermark this batch starts from.** The batch contains no segment from `deviceId` with an originating id at or below this number. `0` means "from the beginning of this device's history". |
-| `throughOriginId` | the highest originating id included, or `null` when the batch carries no segments. |
+| `origins` | one entry per **originating device** whose segments the batch carries. See below. |
 | `counts` | how many of each `t` follow. A reader compares and refuses a truncated file. |
 
-A producer that has no notion of a previous export writes `afterOriginId: 0`
-and ships everything it has. That is a valid batch and the receiver will take
-it; it is simply larger than it needs to be.
+### Why `origins` is a list
+
+The obvious design is one batch, one device. It is wrong for a reason that is
+easy to miss: **a device's database holds facts that originated on more than
+one "device"**, and all of them are facts only that database has.
+
+- Rows read from a Spotify **extended streaming history export** carry the
+  fixed origin `spotify-history-import`, not the id of the phone that ran the
+  import. That is deliberate and correct — an imported play was not observed by
+  any device, and may have happened on a desktop this app has never run on.
+  There are 77,369 of them today.
+- A **reinstall** produces a new install id, so rows recorded before it carry
+  the old one. They are still this database's to ship.
+
+A batch keyed on one device would silently leave both behind, and "silently" is
+the word that rules it out. So a batch enumerates its origins, and a single-
+origin producer — a Linux agent, say — writes a list of one.
+
+| field in an `origins` entry | meaning |
+|---|---|
+| `deviceId` | **the identity that matters.** For a real device, a random UUID generated once per install; not a hardware identifier, and it says nothing about the device or its owner. For imported history, the literal `spotify-history-import`. |
+| `afterOriginId` | **the watermark this batch starts from for that device.** The batch contains no segment from it with an originating id at or below this number. `0` means "from the beginning". |
+| `throughOriginId` | the highest originating id included for that device, or `null` if the batch carries none of its segments. |
+
+**A producer ships only facts it originated.** In database terms that is
+`originRowId IS NULL` — rows this database assigned the ids of, rather than
+rows that arrived in someone else's batch. Passing on another device's facts
+would mean two paths by which the same fact could arrive, which is a merge
+question and belongs to Phase 5c.
+
+A producer with no memory of a previous export writes `afterOriginId: 0` for
+every origin and ships everything it has. That is a valid batch and the
+receiver will take it; it is simply larger than it needs to be.
 
 ---
 
@@ -192,7 +223,7 @@ One continuous stretch of listening to one track. Not one row per callback:
 roughly one per song played.
 
 ```json
-{"t":"seg","originRowId":77519,"track":{...},
+{"t":"seg","deviceId":"6f1c9a3e-...","originRowId":77519,"track":{...},
  "appPackage":"com.spotify.music",
  "startedAtMs":1789600000000,"endedAtMs":1789600180000,
  "startPositionMs":0,"endPositionMs":178000,
@@ -205,7 +236,8 @@ roughly one per song played.
 
 | field | notes |
 |---|---|
-| `originRowId` | the row id this segment has **on the producer**. Strictly ascending within a batch, and within a device's history. This is half of the segment's global name; the other half is the header's `deviceId`. |
+| `deviceId` | which origin this segment belongs to. Must be one of the header's `origins`. |
+| `originRowId` | the row id this segment has **on the device that recorded it**. Strictly ascending within one `deviceId`. Together with `deviceId` it is the segment's global name. |
 | `appPackage` | the package that played it, always from the capture allowlist. |
 | `startedAtMs`, `endedAtMs` | wall clock, epoch milliseconds. |
 | `startPositionMs`, `endPositionMs` | position within the track. **Nullable.** Null means "not observed" — an imported row from a streaming-history export has no position at all — which is a different statement from `0`, "observed at the very start". |
@@ -302,11 +334,12 @@ it, so nothing merges it.
 Reasons are `JOINED_BY_RANK`, `LEFT_BY_RANK`, `LEFT_UNLIKED`,
 `REJOINED_BY_LIKE`.
 
-**This is the one fact type that changes after it is written**: a row is opened
-at join and closed later by setting `leftAt`. So a batch re-sends any membership
-row whose `leftAt` is still null, or which was closed since the last export, and
-the receiver upserts on `(track, joinedAt)`. That is why membership is not
-watermarked by an ascending id the way segments are.
+**This is one of the fact types that changes after it is written**: a row is
+opened at join and closed later by setting `leftAt`. There is therefore no
+ascending id that could watermark it, so **a batch carries every membership
+row** and the receiver upserts on `(track, joinedAt)`.
+
+That is the general rule for everything except segments, and §5 says why.
 
 ### 4.7 `snap` and `snap_entry` — a monthly snapshot
 
@@ -319,6 +352,12 @@ watermarked by an ascending id the way segments are.
  "serviceTrackId":"spotify:track:aaa","title":"...","artist":"...",
  "inPlaylist":true}
 ```
+
+**A batch carries every snapshot and every entry**, for the reason in §5. Today
+that is a few hundred lines; it grows by roughly one line per liked track per
+month, so a batch taken years from now will be mostly snapshot entries. When
+that starts to matter, the fix is a per-type watermark in the header, which a
+version 1 reader will ignore exactly as §1 requires.
 
 Every `snap_entry` names its `monthKey`, so strictly the order does not matter
 — but a producer **should** write a `snap` immediately followed by its entries,
@@ -343,14 +382,14 @@ In order, and the order is the whole of the safety argument.
 1. **Read the header.** Refuse an unknown `format` or `formatVersion`, saying
    which. Nothing has been changed.
 
-2. **Refuse a batch with no baseline.** If `afterOriginId > 0` and this
-   database holds no segment from `deviceId`, the batch is a delta against
-   something that is not here. Say so, naming the device, and say that a whole
-   mirror import has to come first. A batch with `afterOriginId == 0` is
-   self-contained and needs no baseline.
+2. **Refuse a batch with no baseline**, checked per origin. If an origin's
+   `afterOriginId > 0` and this database holds no segment from that
+   `deviceId`, the batch is a delta against something that is not here. Say so,
+   naming the device, and say that a whole mirror import has to come first. An
+   origin with `afterOriginId == 0` is self-contained and needs no baseline.
 
-3. **Refuse a batch that would leave a gap.** Compute this database's watermark
-   for `deviceId`:
+3. **Refuse a batch that would leave a gap**, also per origin. Compute this
+   database's watermark for each:
 
    ```sql
    SELECT MAX(COALESCE(originRowId, id))
@@ -370,14 +409,18 @@ In order, and the order is the whole of the safety argument.
    are missing".
 
    If `afterOriginId <= watermark`, accept. The overlap is not a problem; step
-   5 discards it.
+   4 discards it.
+
+   **One origin failing refuses the whole batch.** A batch is applied whole or
+   not at all, and applying the parts that happened to fit would leave a
+   database nobody could describe.
 
 4. **Apply the facts, in one transaction.** Either the whole batch lands or
    none of it does. Half a batch is a watermark that lies.
 
-   - `seg`: skip any whose `originRowId <= watermark` — that is where
-     idempotence actually comes from. Insert the rest with `deviceId` from the
-     header and `originRowId` from the line. The unique index over
+   - `seg`: skip any whose `originRowId` is at or below that origin's
+     watermark — that is where idempotence actually comes from. Insert the rest
+     with the line's own `deviceId` and `originRowId`. The unique index over
      `(deviceId, originRowId)` is the backstop if the watermark is ever wrong.
    - `like_event`: insert unless an identical one is already present, on the
      identity in §3.
@@ -398,12 +441,37 @@ In order, and the order is the whole of the safety argument.
    flag, not its playlist id, not its mirror state. A mirror that has had
    deltas applied is still a mirror.
 
-**Applying a batch twice changes nothing.** After the first application the
-watermark has moved past `throughOriginId`, so the second application skips
-every segment; the other types deduplicate on the identities in §3. This is the
-property the whole design rests on, and it is what makes a transport that might
-deliver a file twice — a folder re-synced, a copy repeated, a connection
-retried — safe rather than a corruption risk.
+### Why only segments are watermarked
+
+Every other fact type is sent **in full, every time**. That is a deliberate
+choice and not an oversight.
+
+A watermark is only safe when the **receiver** can check it, and the receiver
+can only check something it can compute from what it holds — which for
+segments is `MAX(COALESCE(originRowId, id))` per device. There is no equivalent
+for the rest:
+
+- `like` and `member` rows **change in place** after they are written, so no
+  ascending id could describe "what is new".
+- A watermark the *producer* remembers instead — "everything since my last
+  export" — cannot be checked by anyone. If a batch went somewhere else in
+  between, or a whole-file import landed in between, the receiver would be
+  missing facts and nothing would say so. Silent staleness is the one failure
+  mode this design will not accept.
+
+So the rest is sent whole and deduplicated on arrival, which is always correct
+and costs file size. Today that floor is a few hundred lines — mostly one
+`like` per liked track. It grows with snapshots, and §4.7 says what to do when
+it matters.
+
+### Two properties that follow
+
+**Applying a batch twice changes nothing.** After the first application each
+origin's watermark has moved past its `throughOriginId`, so the second
+application skips every segment; the other types deduplicate on the identities
+in §3. This is the property the whole design rests on, and it is what makes a
+transport that might deliver a file twice — a folder re-synced, a copy
+repeated, a connection retried — safe rather than a corruption risk.
 
 **Applying two batches in either order gives the same database.** Segments are
 keyed on `(deviceId, originRowId)` and not on arrival; everything else is
