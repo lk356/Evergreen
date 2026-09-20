@@ -106,6 +106,9 @@ commitment into a preference.
 
 ### 3.2 There is no wire format that is not a SQLite file
 
+**Written down 2026-09-20 in `docs/SYNC_FORMAT.md`, and built in Phase 5b.**
+The rest of this section is the argument that produced it, kept as written.
+
 Shipping a `.db` file works for Android to Android and **only** for Android to
 Android. It is a ceiling rather than a foundation, and the thing it forbids is
 already on the roadmap: a Linux agent reading MPRIS (Phase 7) cannot produce a

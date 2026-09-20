@@ -83,6 +83,7 @@ fun HomeScreen(
 
     val mirror by db.importDao().mirrorStateFlow().collectAsState(initial = null)
     val lastCaptured by dao.lastCapturedAtMs().collectAsState(initial = null)
+    val newestFact by db.syncDao().newestFactAtMsFlow().collectAsState(initial = null)
     val lastLikeSync by scoringDao.syncValueFlow(SyncKeys.LIKES_LAST_SYNCED_AT)
         .collectAsState(initial = null)
     val lastWritten by scoringDao.syncValueFlow(SyncKeys.EVERGREEN_LAST_WRITTEN_AT)
@@ -119,6 +120,7 @@ fun HomeScreen(
     val problems = remember(
         accessGranted, connection, configured, lastCaptured, lastLikeSync,
         lastWritten, writeConfirmed, isWriter, backoffUntil, snapshots, mirror, nowMs,
+        newestFact,
     ) {
         buildStatus(
             nowMs = nowMs,
@@ -127,6 +129,7 @@ fun HomeScreen(
             configured = configured,
             connection = connection,
             lastCapturedAtMs = lastCaptured,
+            newestFactAtMs = newestFact,
             lastLikeSyncAtMs = lastLikeSync?.valueMs,
             lastWrittenAtMs = lastWritten?.valueMs,
             writeConfirmed = writeConfirmed?.valueMs != null,
@@ -256,6 +259,18 @@ internal fun buildStatus(
     configured: Boolean,
     connection: SpotifyConnectionState?,
     lastCapturedAtMs: Long?,
+    /**
+     * The newest fact this database holds, whenever it arrived and whoever
+     * recorded it. **Phase 5b.**
+     *
+     * Before deltas existed, "how old is this mirror" could only mean the age
+     * of the last whole-file import, because that was the only way a fact ever
+     * arrived. Now a copy can be brought up to date without being replaced, so
+     * the import's age is an answer to a question nobody asked — it would go on
+     * saying "taken three weeks ago" about a copy that holds this morning's
+     * listening.
+     */
+    newestFactAtMs: Long? = null,
     lastLikeSyncAtMs: Long?,
     lastWrittenAtMs: Long?,
     writeConfirmed: Boolean,
@@ -269,14 +284,18 @@ internal fun buildStatus(
         // looking like live data is the one way this feature can mislead, so
         // this is the single entry in the whole status line that appears when
         // nothing is wrong. One line, because the Walkman is 339 dp wide.
-        val age = mirror.takenAtMs?.let { nowMs - it }
+        //
+        // "How old" means the newest fact held, falling back to when the file
+        // was taken for a copy that holds no listening at all. Those were the
+        // same number until Phase 5b and are not any more.
+        val age = (newestFactAtMs ?: mirror.takenAtMs)?.let { nowMs - it }
         add(
             StatusProblem(
                 headline = "Mirror of ${mirror.describeSource()}" +
-                    (age?.let { ", taken ${describeAge(it)} ago" } ?: ""),
+                    (age?.let { ", newest listening ${describeAge(it)} ago" } ?: ""),
                 detail = "Everything here was recorded on that device. Nothing is being " +
-                    "recorded here and nothing is written to Spotify. Import again to " +
-                    "bring it up to date." +
+                    "recorded here and nothing is written to Spotify. Import its changes " +
+                    "to bring it up to date." +
                     if (age != null && age >= MIRROR_STALE_MS) {
                         " This copy is getting old."
                     } else {
@@ -287,7 +306,7 @@ internal fun buildStatus(
                 } else {
                     StatusProblem.Severity.NOTE
                 },
-                actionLabel = "Import",
+                actionLabel = "Update",
                 action = StatusProblem.Action.SETTINGS,
             ),
         )
@@ -305,9 +324,9 @@ internal fun buildStatus(
                 StatusProblem(
                     headline = "The newest listening in this copy is old",
                     detail = "Nothing recorded for ${describeAge(nowMs - lastCapturedAtMs)} " +
-                        "according to this copy. Either the mirror is out of date, or " +
-                        "capture has stopped on ${mirror.describeSource()}. Take a fresh " +
-                        "backup there to tell which.",
+                        "according to this copy. Either it is out of date, or capture has " +
+                        "stopped on ${mirror.describeSource()}. Export its changes there " +
+                        "and add them here to tell which.",
                     severity = StatusProblem.Severity.WARNING,
                 ),
             )

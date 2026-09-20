@@ -151,4 +151,30 @@ object SyncKeys {
      * shown in full and confirmed once.
      */
     const val EVERGREEN_WRITE_CONFIRMED_AT = "evergreen_write_confirmed_at"
+
+    /**
+     * The highest originating id this device has **exported**, per origin.
+     *
+     * One row per origin device, keyed by this prefix plus the device id, with
+     * the id itself in `valueMs`. A prefix and many rows rather than one row
+     * holding a list, for the same reason as the history import's file record:
+     * the lookup is a primary-key hit, and a database holds facts from more
+     * than one origin -- its own install, the fixed `spotify-history-import`,
+     * and any install id left behind by a reinstall.
+     *
+     * This is a *convenience*, not a correctness mechanism. It is what lets the
+     * export screen offer "everything since last time" instead of the whole
+     * history, and losing it costs one larger batch and nothing else. The
+     * watermark that actually matters is the **receiver's**, computed from the
+     * rows it holds -- a watermark only the producer remembers could not be
+     * checked by anybody, and a batch that quietly began after what the
+     * receiver had would lose facts in silence.
+     */
+    const val SYNC_EXPORT_THROUGH_PREFIX = "sync_export_through:"
+
+    /** When the last delta export finished, for the export screen to say. */
+    const val SYNC_EXPORT_AT = "sync_export_at"
+
+    /** When the last delta import finished, with its counts in `valueText`. */
+    const val SYNC_IMPORT_AT = "sync_import_at"
 }

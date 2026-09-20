@@ -103,11 +103,45 @@ rule has to be designed rather than assumed.
 
 ### Check 0b. How much listening actually happens on the Pixel?
 
-This decides whether full peer capture is worth building at all, or whether
-a read-only mirror is the whole feature. Over the day-to-day use period
-before Phase 5 starts, keep a rough count: what fraction of listening happens
-on the Pixel rather than the Walkman? If it is small, question 1 below almost
-answers itself.
+This decides whether the **merge** (now Phase 5c) is worth building at all,
+or whether a mirror the writer keeps up to date is the whole feature. What
+fraction of listening happens on the Pixel rather than the Walkman? If it is
+small, question 1 below almost answers itself.
+
+**The original method is impossible, corrected 2026-09-20.** It said: *"over
+the day-to-day use period before Phase 5 starts, keep a rough count."* Mirror
+mode took that away. Decision 3b turns the Pixel's capture off while it holds
+a mirror — built in 5a as a component disable, so the listener is not even
+bound — and 5a is meant to be *lived with*. The Pixel therefore cannot count
+its own listening during exactly the period the check wanted counted, and
+turning capture back on to measure it would both defeat mirror mode and, per
+check 0a, fill the Pixel with phantom rows for music playing on the Walkman.
+
+**The alternative answers it exactly, and retroactively.** Spotify's extended
+streaming history export carries a **per-row platform field** — the device or
+client each stream was played on. An export therefore answers 0b as a
+straightforward count over rows already written, with no capture running
+anywhere, no measurement period, and no phantoms: it is a record of what
+*Spotify* played, so music played on the Walkman is attributed to the
+Walkman however many other devices had the app open at the time. That is a
+better answer than the one the original method could have produced.
+
+**The existing export may already answer it.** The one imported in Phase 3
+runs to 2026-09-15 and covers 2020–2026, 77,369 rows. Whether its platform
+values distinguish the two devices usefully is unchecked.
+
+**Nothing is being built for this, and in particular the app's parser is not
+changed.** `HistoryParser` reads the export through a **field allowlist** of
+seven keys, and `platform` is deliberately not one of them — the same
+allowlist that keeps the IP address on every row from ever reaching a
+variable. Answering 0b is a throwaway pass over the export file itself, the
+way the Phase 3 calibration was done, not a new column in the database. That
+keeps the allowlist intact and keeps a device-identifying string out of the
+app's storage, where nothing would use it.
+
+So this is a note, so that when 5c is considered the check is one pass over a
+file already on disk rather than weeks of waiting. Privacy rule as ever: the
+answer is a fraction, and no row of the export goes in any document.
 
 ---
 

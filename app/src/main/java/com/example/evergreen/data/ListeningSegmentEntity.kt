@@ -130,6 +130,17 @@ enum class SegmentSource {
         // The importer asks "is there already an imported row for this service
         // track at this instant?" once per row, 77,000 times.
         Index(value = ["source"]),
+        // Schema v7. A segment's global name, and the thing that makes
+        // applying a delta batch twice a no-op rather than a duplication.
+        //
+        // Unique, and the uniqueness leans on a SQLite rule that is usually a
+        // nuisance and here is exactly right: two NULLs are *different* values
+        // to a unique index. Every locally captured row carries NULL in
+        // `originRowId`, so local capture collides with nothing and needs no
+        // change; every imported row carries a real number, so the same batch
+        // arriving a second time hits this index and is rejected by the
+        // database rather than by the import code remembering to check.
+        Index(value = ["deviceId", "originRowId"], unique = true),
     ],
 )
 data class ListeningSegmentEntity(
@@ -249,4 +260,31 @@ data class ListeningSegmentEntity(
      * skip.
      */
     val sourceEndReason: String? = null,
+
+    /**
+     * The row id this segment had on the device that recorded it. **Schema v7.**
+     *
+     * Null means "this row originated here", and its originating id is its own
+     * [id]. A segment's global name is therefore
+     * `(deviceId, COALESCE(originRowId, id))` — one expression that gives the
+     * right answer for a row captured on this device, for a row that arrived in
+     * a whole-file mirror import, and for a row that arrived in a delta batch.
+     *
+     * **Why the column has to exist at all.** Until Phase 5b the only way a
+     * segment crossed between devices was inside a complete database file, and
+     * a file replacement carries the ids with it. A *delta* is inserted into a
+     * database that already has rows, so the receiving device's SQLite assigns
+     * its own row numbers and the originating one is lost — which would make
+     * the same batch applied twice insert everything twice. Idempotence is what
+     * makes an unreliable transport safe rather than a corruption risk
+     * (`docs/SYNC_FOUNDATION.md` Part 1), so losing it is not an option.
+     *
+     * **Why nullable rather than "default to my own id".** Backfilling every
+     * existing row would rewrite 77,518 rows on the slowest device in the
+     * project, and keeping it filled would mean `SegmentWriter` writing the
+     * column after each insert — a change inside `capture/` for a decision that
+     * is not capture's to make. Null costs one `COALESCE` at the two places
+     * that ask, and leaves capture untouched.
+     */
+    val originRowId: Long? = null,
 )

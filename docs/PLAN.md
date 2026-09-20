@@ -59,12 +59,37 @@ true of the *data* for the sync transport to stay a free choice, what is
 already built, and the one hard prerequisite. Read it before designing
 anything that moves facts between devices.
 
-- [~] **Phase 5 — Cross-device (Android).** 5a: the Pixel as a read-only
-      mirror of the Walkman, transported as a file. **Done 2026-09-19;
-      device-verified on both devices and merged to `main` as pull request
-      #3.** 5b: full peer sync, both devices capturing, segments merged —
-      **not started**, and blocked on the phantom-segment question now
-      answered under "Open questions". See `docs/PHASE5_QUESTIONS.md`.
+- [~] **Phase 5 — Cross-device (Android).** Now three parts rather than two.
+      The middle one was split out of "full peer sync" on 2026-09-20, because
+      the piece the merge needs underneath it is worth having on its own —
+      see below.
+  - [x] **5a — read-only mirror, whole-file transport.** The Pixel holds a
+        copy of the Walkman's database, moved across as a single 21.0 MiB
+        file by hand. **Done 2026-09-19; device-verified on both devices and
+        merged to `main` as pull request #3.**
+  - [~] **5b — delta sync.** A documented **fact batch** — *these facts,
+        from this device, after this watermark* — written to a file on the
+        writer and read back on the mirror, so an update is kilobytes rather
+        than a whole database. One way, writer to mirror, over the file
+        transport that already exists. **The Pixel stays read-only
+        throughout**: mirror mode, capture off, every Spotify write refused.
+        No merge, no second capturing device. **Started 2026-09-20** on
+        `phase5b-delta`.
+  - [ ] **5c — the merge.** Both devices capturing, facts flowing both ways,
+        segments deduplicated, writer arbitration. **Opens with the phantom
+        fix in `capture/`, which is its hard prerequisite** per
+        `docs/SYNC_FOUNDATION.md` 5.1. Gated on check 0b — what fraction of
+        listening actually happens on the Pixel — which may say the merge is
+        not worth building at all. Its design questions are open in
+        `docs/PHASE5_QUESTIONS.md`.
+
+  **Why 5b is a deliverable and not the first half of one.** The fact batch
+  is needed by the merge, by the Linux agent in Phase 7 (which cannot produce
+  a Room database and so cannot speak the 5a transport at all), and by any
+  future server. It is also useful entirely on its own, because it is what
+  turns a mirror update from a 21 MiB file into a small one. Something wanted
+  by three unbuilt things and one built one is a deliverable in its own
+  right; **if the merge is never built, almost none of 5b is wasted.**
 - [ ] **Phase 6 — Cross-service.** Second service adapter, primarily the
       Sony Walkman player for local files on the NW-A307; ISRC/MusicBrainz
       matching. Rule to hold to: scoring merges across services, output is
@@ -147,18 +172,71 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5a is done, and merged.** Its whole checklist passed
-  on both devices on 2026-09-19 and it landed on `main` the same day as pull
-  request #3. The daily write that had been outstanding since Phase 3 was
-  diagnosed, fixed and seen to fire that afternoon.
-- **Nothing is in progress.** The next move is the user's: live with the
-  mirror for a while, then decide whether 5b is wanted.
-  `docs/PHASE5_QUESTIONS.md` is where that gets decided, and it is
-  deliberately not started. **`docs/SYNC_FOUNDATION.md` (new, 2026-09-19)**
-  records what keeps the transport a free choice, so that research into
-  Syncthing, a self-hosted server or anything else has something to be
-  measured against.
-- Last update: 2026-09-19.
+- Current phase: **Phase 5b — delta sync. Built and device-verified on
+  2026-09-20**, on branch `phase5b-delta`. Every build step of
+  `docs/PHASE5B_PROMPT.md` is done except step 2, which is a measurement for
+  Phase 5c rather than a build, and every item on the verification checklist
+  passed on both devices.
+- **278 unit tests and 251 instrumented tests pass** (up from 275 and 225),
+  the instrumented ones on the Pixel with the Walkman unplugged.
+- **The number the phase exists for: a delta is 497 KiB against 21.0 MiB for
+  the whole-file mirror it replaces**, and 864 ms against 35 s. It applied on
+  the Pixel in 418 ms and the ranking matched.
+- **Next:** step 2's measurement whenever both devices are free — it informs
+  Phase 5c and blocks nothing.
+- **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
+  is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
+  — a documented fact batch over the existing file transport, one way,
+  writer to mirror, with the Pixel staying read-only — and **5c, the merge**,
+  which is where both devices capture and where the phantom fix in `capture/`
+  sits as the hard prerequisite. The reasoning is under the roadmap.
+- Last update: 2026-09-20.
+
+**Phase 5b is built: a mirror update is a small text file rather than a
+21 MiB database.** "Export changes" on the writer and "Import changes" on the
+mirror, over the same file transport as Phase 5a, in the format written down
+in `docs/SYNC_FORMAT.md`. The import inserts rather than replaces, refuses a
+delta with no baseline and one that would leave a gap, and applying the same
+batch twice changes nothing. `capture/` is untouched and the Pixel stays
+read-only throughout.
+
+**The database is at schema v7.** One nullable column, `originRowId`, and a
+unique index over `(deviceId, originRowId)`. It is the one hand-written
+migration in the project: Room's generated one would have rebuilt the table
+and copied all 77,518 rows for a change that needs no rebuild at all. Full
+reasoning under Phase 5b results.
+
+**Two things in the plan turned out to be slightly wrong, and both were found
+by building it.** A batch cannot be keyed on one device — the Walkman's
+database holds 77,369 rows under the origin `spotify-history-import`, and a
+single-origin batch would have left every one of them behind in silence. And
+only *segments* can be watermarked, because a watermark is only safe when the
+**receiver** can check it; likes and membership change in place, so they are
+sent whole every time and deduplicated on arrival.
+
+**Restore from backup now exists**, which closes the gap below, and with it a
+control that turns recording back on when it has been left off — a hazard
+both database-replacing operations have always had and neither could recover
+from.
+
+**Two things came out of writing Phase 5b's documents, and both are gaps
+rather than plans.**
+
+- **There is no way to restore a backup onto the writer device.** The backup
+  button has produced files since Phase 3, and nothing puts one back on the
+  Walkman: "Import a mirror" neutralises before replacing, so importing the
+  Walkman's own backup onto the Walkman would make it a mirror of itself and
+  stop it writing Evergreen. Restore is a distinct operation and is 5b's
+  first build step — deliberately before anything else, since step 2 attaches
+  both devices to adb. Recorded under Phase 5a results.
+- **Check 0b could not be measured the way it was written.** It said to keep
+  a rough count of how much listening happens on the Pixel over the
+  day-to-day use period — but mirror mode turns the Pixel's capture off, so
+  the Pixel cannot count its own listening while it is a mirror. The Spotify
+  extended streaming history export carries a per-row platform field and
+  answers the question exactly and retroactively, with no capture at all, and
+  the existing export may already answer it. Corrected in
+  `docs/PHASE5_QUESTIONS.md`; nothing is being built for it.
 
 **Phase 5a is built: the Pixel can hold a read-only mirror of the Walkman.**
 Mirror mode lives in two `sync_state` rows and needed no schema change — the
@@ -170,8 +248,9 @@ needs the Pixel attached with the Walkman unplugged.
 **The proof the phase was really for holds**: the same facts and parameters
 give the same ranking whatever the device, whatever the order rows arrive in,
 and whenever it is recomputed. The one exception is the device's timezone,
-which is recorded under Phase 5a results as a Phase 5b decision rather than
-fixed.
+which is recorded under Phase 5a results and re-parked on 2026-09-20 as a
+Phase 5c decision rather than a 5b one — it only bites when two devices both
+produce facts, which 5b does not do.
 
 **Check 0a is answered, and the answer is the awkward one.** The Pixel
 *does* capture phantom segments for music playing on the Walkman — three of
@@ -1333,6 +1412,455 @@ which is the ordinary daily sync.
       should arrive if anything moved.
 
 
+## Phase 5b results (2026-09-20)
+
+Built on branch `phase5b-delta`, one commit per step of
+`docs/PHASE5B_PROMPT.md`. **278 unit tests and 251 instrumented tests pass**
+(up from 275 and 225 in Phase 5a), the instrumented ones on the Pixel 10 Pro
+with the Walkman unplugged as the build insists.
+
+`capture/` is unchanged, as the phase required. The Pixel stays read-only
+throughout: mirror mode, capture off, every Spotify write refused.
+
+### What was built
+
+- **"Restore from backup"** (step 1), a distinct operation from "Import a
+  mirror". It replaces the data and changes nothing else. See the restore gap
+  under Phase 5a results for why it was missing.
+- **Schema v7**: `listening_segments.originRowId`, nullable, with a unique
+  index over `(deviceId, originRowId)`. The one hand-written migration in the
+  project, and the reason is 77,518 rows — see below.
+- **`docs/SYNC_FORMAT.md`**, the batch format, written so a Linux agent in
+  Phase 7 could produce a valid batch without reading any Kotlin.
+- **"Export changes"** on the writer and **"Import changes"** on the mirror,
+  both through the pickers that already existed.
+- **`BatchSyncTest`**, including the phase's equivalent of
+  `CrossDeviceRankingTest`: a database built by whole copy and one built by
+  older copy plus delta must rank identically.
+
+### What was learned, and what the plan got slightly wrong
+
+**A batch cannot be keyed on one device, and the reason is already in the
+database.** The plan said "everything from this device after local id N" and
+that is what a batch header was first written to say. It is wrong here: the
+Walkman's `listening_segments` holds rows from **two** origins, because the
+77,369 rows from the streaming-history export carry the fixed device id
+`spotify-history-import` rather than the phone's install id. That was a
+deliberate Phase 3 decision and a correct one — an imported play was not
+observed by any device and may have happened on a desktop this app has never
+run on — but it means a single-origin batch would have left all 77,369 of
+them behind, silently. A reinstall would do the same to everything recorded
+before it. So a batch header carries a **list** of origins, each with its own
+watermark, and a single-origin producer writes a list of one.
+
+**Only segments can be watermarked, and the reason is about who checks.** The
+obvious extension is to watermark everything by "since my last export". It
+cannot be done safely: a watermark the *producer* remembers cannot be checked
+by anybody, so a batch that began after what the receiver held would lose
+facts and nothing would say so. A watermark is only safe when the receiver
+can compute it from what it holds, which is possible for segments
+(`MAX(COALESCE(originRowId, id))` per device) and impossible for `likes` and
+`evergreen_membership`, which change in place. So those are sent whole every
+time and deduplicated on arrival. That is always correct and costs file size:
+a few hundred lines today, growing by roughly one line per liked track per
+snapshot month.
+
+**`COALESCE(originRowId, id)` is what lets the two transports coexist.** A row
+that arrived in a whole-file mirror import carries the producer's own id in
+`id` with `originRowId` null; a row that arrived in a batch carries the
+producer's id in `originRowId` and a local one in `id`. One expression gives
+the right answer for both, which is why the column could be added as nullable
+and why the 77,518 existing rows needed no backfill.
+
+**Room's auto-migration would have rebuilt the table, and it did not need
+to.** Adding the column alone generates `ALTER TABLE ... ADD COLUMN`, which
+changes the stored schema text and reads no rows at all. Adding an *index* as
+well puts the table into Room's "complex change" bucket, and the generated
+migration then creates a new table, copies every row into it, drops the old
+one and rebuilds all six indices. That is what v2 and v4 did, and it was
+right there — a foreign key's delete rule and a column's nullability are
+things SQLite cannot alter in place. Nothing here needs it. **v7 is therefore
+the one hand-written migration in the project: two statements.** Room still
+validates the result against `schemas/7.json` at open, so a hand-written
+migration producing the wrong shape is refused at the first open rather than
+discovered later.
+
+**A unique index gets a partial index for free, from a rule that is usually a
+nuisance.** SQLite treats two NULLs as *different* values in a unique index.
+Every locally captured row carries NULL in `originRowId`, so local capture
+collides with nothing and needed no change in `capture/`; every imported row
+carries a real number, so a repeated batch collides and is refused by the
+database rather than by the import code remembering to check.
+
+**"How old is this mirror" had to change meaning.** It meant the age of the
+last whole-file import, because that was the only way a fact ever arrived.
+After deltas that is an answer to a question nobody asked — the line would go
+on saying "taken three weeks ago" over this morning's listening. It now means
+the newest fact held, falling back to the file's timestamp for a copy that
+holds no listening at all.
+
+**The restore gap and the capture-off hazard were found together.** Both
+operations that replace the database switch capture off for the moment of the
+swap, and until this phase there was no control anywhere that turned it back
+on outside mirror mode — so a process death inside that window left a device
+silently not recording, with reinstalling as the only cure. The settings
+screen now says when recording is off on a device that is not a mirror, and
+offers to start it again.
+
+### The instrumented suite, run on the Pixel (2026-09-20)
+
+**251 tests, 0 failures**, up from 225 in Phase 5a. The 26 new ones are
+`BatchSyncTest` (14), `DatabaseRestoreTest` (11) and the v6→v7 migration (1).
+
+The first run failed one test, and it is worth recording which kind of
+failure it was: the v7 migration test's *setup* SQL had a literal `${...}`
+in it instead of an interpolated value, so the rows it meant to insert were
+never inserted and the assertions about the unique index never ran. A test
+that fails in its own setup proves nothing about the thing it names, which is
+why the number to trust is the one after the fix.
+
+What the suite now actually demonstrates, beyond the shape of the code:
+
+- a batch applied twice leaves the database identical, row for row;
+- two overlapping batches applied in either order agree;
+- a delta on an older copy ranks identically to a whole copy — Phase 5b's
+  equivalent of `CrossDeviceRankingTest`;
+- a delta with no baseline, one that would leave a gap, and a truncated file
+  are each refused with nothing changed;
+- restoring on the writer leaves it the writer, and the same file imported as
+  a mirror still neutralises.
+
+### Still owed
+
+- **Check 0a continued** (step 2 below) is a measurement, not a build, and
+  has not been done. It informs 5c, not 5b.
+- **The home screen still says "Capture has gone quiet"** and offers to check
+  notification access when the listener component is disabled, which sends
+  the user to fix something that is not broken. Small, and the settings
+  screen now covers the recovery.
+
+### Step 2 — check 0a continued, still to run
+
+**A measurement, not a build.** Phase 5a established that the Pixel records
+phantom segments for music playing on the Walkman over Spotify Connect. What
+is *not* established is whether the Pixel's view of a listen **agrees** with
+the Walkman's or truncates it. If it truncates, a phantom is not merely a
+duplicate but an actively wrong negative judgement about a song being
+enjoyed, and 5c needs the wall-clock overlap rule as well as the source-level
+drop.
+
+**Read this before running a single command.**
+
+- Instrumented tests were run on the Walkman by accident once already and
+  destroyed its database. **The Gradle guard covers `connectedAndroidTest`
+  and nothing else** — it will not help here. Every `adb` invocation in this
+  step carries `-s <serial>`. Read both serials first, pin them in variables,
+  and say which is which before running anything against either.
+- **Nothing in this step writes to the Walkman.** It plays music; that is its
+  whole role. Every command aimed at it is a read.
+- Take a backup on the Walkman first, and know that **restore** now exists.
+
+**Procedure.**
+
+1. Read both serials, and confirm which is which.
+2. **Measure clock skew**: `date +%s` on both, twice, a few seconds apart.
+   Record the offset. Without it, a few seconds of drift reads as truncation.
+3. Take the Pixel out of mirror mode and turn capture on. Its database is
+   disposable; it is only ever a copy.
+4. Note the segment count on both devices.
+5. On the Walkman, play **six tracks over Spotify Connect** with Spotify open
+   on the Pixel and untouched: three to the end, three skipped — one very
+   early, one around a third, one around two thirds.
+6. Wait a minute after the last track, then read the new segments from both.
+7. **Compare per listen, not in aggregate.** A small table of
+   `(index, fractionHeard on the Walkman, fractionHeard on the Pixel,
+   listenedMs difference, start-time offset after clock correction)`, with
+   track identity reduced to an index. **No titles, no artists, no raw rows.**
+8. In the same window, run `dumpsys media_session` on the Pixel and confirm
+   Spotify's Connect session reads `volumeType=REMOTE` while other sessions
+   read `LOCAL`.
+
+**How to read it.** Agreement across all six — fraction heard within a few
+percent — means a phantom is a plain duplicate and the source-level drop is
+sufficient for 5c. Systematic truncation on the Pixel means 5c needs the
+overlap rule too, and that the existing sample's 0.06 was probably truncation
+rather than a genuine early skip.
+
+Afterwards, re-import a fresh mirror on the Pixel and leave it as a mirror.
+
+**Result:** _not yet run._
+
+### Phase 5b verification checklist
+
+**Take a backup on both devices before you start.** Restore now exists, and
+part of the point of this list is to prove it does.
+
+**One thing to know about that backup.** Take it *before* installing the new
+build, and keep the **old APK** beside it. A backup taken by the current
+build is a v6 database, and the v7 build refuses a v6 file in both
+directions, deliberately — the refusal exists so that "can I read last year's
+backup" is never answered "yes, and it is now a different database". So the
+pre-migration backup is a rollback path only in company with the build that
+wrote it. Take a second backup *after* the migration; that one is the file
+"Restore from backup" is for.
+
+**On the NW-A307 (the Walkman) — restore first:**
+
+- [x] **A.** Install the new build. It migrates the database to v7 on first
+      open. **Note how long the app takes to open the first time**, and check
+      the Scores tab still shows the same ranking afterwards.
+      **Done 2026-09-20 — see "The v7 migration on the real database" below.**
+- [ ] **B.** **Settings** → **Back up database**. Note the size.
+- [ ] **C.** Check **Settings** now offers **Restore from backup** below the
+      backup button, and that the text explains it is for *this* device.
+- [ ] **D.** Write down the **top ten tracks** in order, and the segment count
+      from the debug screen. You will compare these several times.
+
+**Prove the restore route on the Pixel, not on the Walkman:**
+
+- [ ] **E.** Install the new build on the Pixel and import the Walkman's
+      backup as a **mirror**, as in Phase 5a. It should still neutralise:
+      home screen says it is a mirror, writer switch off and unavailable.
+- [ ] **F.** On the Pixel, press **Restore from backup** and pick the
+      Walkman's file. **It should refuse**, name NW-A307 and this device, and
+      say to use "Import a mirror" instead. Nothing changes.
+- [ ] **G.** On the Pixel, take a backup of its own (**Back up database**),
+      then **Restore from backup** and pick *that* file. It should say plainly
+      what it is about to do, name the device, and say the device stays a
+      mirror. Afterwards it is still a mirror and still refuses Spotify.
+
+**The delta, writer to mirror:**
+
+- [ ] **H.** On the Walkman: **Settings** → **Export changes**. The first one
+      has no watermark, so it offers the whole history — **note how long it
+      takes and how big the file is.** Compare with **21.0 MiB**.
+- [ ] **I.** Listen to a few tracks on the Walkman, then **Export changes**
+      again. **Note the size of this one.** This number is the phase.
+- [ ] **J.** Move the small file to the Pixel and press **Import changes**.
+      Read the confirmation: it should name NW-A307 and the counts. **Note
+      how long it takes.**
+- [ ] **K.** On **Scores**, press **Recompute** and compare the top ten with
+      **D**. They should be the same tracks in the same order. Check the
+      segment count went up by the number the import reported.
+- [ ] **L.** Press **Import changes** again with the **same file**. It should
+      say nothing was added, and nothing on the screens should change.
+- [ ] **M.** On the Walkman, listen to another track and export changes twice
+      in a row without importing the first one. Offer the **second** file to
+      the Pixel: it should **refuse, readably**, and say roughly how many
+      plays are missing. Then import the first, then the second.
+
+**The guards still hold:**
+
+- [ ] **N.** On the Pixel, check there is still nowhere to write to Spotify
+      and that each place says why: the **Evergreen playlist** section, the
+      **Sync now** button, the **writer switch**, **Export to Spotify** on any
+      month.
+- [ ] **O.** Check capture is still off on the Pixel — the debug screen's
+      **Live log** gains nothing, and playing something in Spotify there adds
+      no segment.
+- [ ] **P.** The Pixel's home screen first line should now say **"newest
+      listening … ago"** rather than the age of the file, and that number
+      should move after **J**. Check it fits on one line.
+
+**Back on the NW-A307:**
+
+- [ ] **Q.** Nothing about it has changed: still "Everything is running",
+      still the writer, still recording. Give it a day and check Evergreen
+      was written on schedule.
+- [ ] **R.** Check every screen at 339 × 602 dp — especially the new export
+      section and its counts.
+
+### The v7 migration on the real database — 2026-09-20
+
+Run on the NW-A307 against six years of real listening. **It cost 3.8 seconds
+and lost nothing.**
+
+| | before | after |
+|---|---|---|
+| `PRAGMA user_version` | 6 | **7** |
+| database file | 23.3 MB | 25.8 MB |
+| `PRAGMA integrity_check` | — | **ok** |
+| cold launch including the migration | — | **3,797 ms** |
+
+Counts after, all intact: **77,757 segments**, 12,343 tracks, 12,796 service
+tracks, 381 likes, 381 like events, 102 membership rows, 1 snapshot with 380
+entries, 2 parameter-log entries. The `scores` cache survived with its 380
+rows, which is right — the migration changes no fact and no parameter, so the
+cache is not stale. The unique index
+`index_listening_segments_deviceId_originRowId` is present, and every row has
+`originRowId IS NULL`, meaning "originated here".
+
+The 3.8 seconds is a cold launch *including* the migration, not the migration
+alone, so it is an upper bound. It is also the number that says the decision
+to hand-write the migration was worth making: Room's generated one would have
+copied all 77,757 rows into a new table and rebuilt six indices.
+
+### The multi-origin decision, vindicated by the real data
+
+The batch format carries a **list** of origins rather than one device, which
+was a design change made while building, on the argument that the
+streaming-history import writes its rows under the fixed origin
+`spotify-history-import`. The real database says how much that mattered:
+
+| origin | segments | watermark |
+|---|---|---|
+| the Walkman's own install id | 393 | 77,757 |
+| `spotify-history-import` | **77,364** | 77,384 |
+
+**99.5% of the Walkman's listening history is under the imported origin.** A
+batch keyed on "this device" would have shipped 393 rows and silently left
+77,364 behind — and the mirror would have looked complete, because a ranking
+computed from a fraction of the history is still a ranking.
+
+### Phase 5b device verification — results (2026-09-20)
+
+Run by the user across both devices, with the readings taken over adb where a
+number was wanted rather than read off a screen. **Everything up to the gap
+test passed.**
+
+| | value |
+|---|---|
+| v7 migration, cold launch on the NW-A307 | **3,797 ms**, integrity ok, nothing lost |
+| full recompute on the NW-A307 after it | **2,204 ms** (2,309 ms in Phase 4, ~2,400 ms in 5a) |
+| whole-file backup, v7 | 23.4 MiB |
+| **whole-history batch** | **52.7 MiB, 79,008 records, 35,253 ms** |
+| whole-history batch applied to a mirror that already held it | 1 added, **77,760 already here**, 3,022 ms |
+| **first real delta** | **497 KiB, 1,252 records, 864 ms** |
+| delta applied on the Pixel | 5 plays added, 0 already here, **418 ms** |
+| full recompute on the Pixel afterwards | **297 ms**, 381 tracks |
+| top ten after the delta | **same tracks, same order** |
+| same delta imported twice | nothing added, nothing changed |
+| capture listener, read from `dumpsys package` | **enabled on the Walkman, disabled on the Pixel** |
+| duplicate global names across 77,761 segments | **0** |
+
+**497 KiB against 21.0 MiB is the phase in one number** — a factor of 43, and
+864 ms against the 35 s the whole history takes.
+
+#### The whole-history batch is the wrong tool for a whole history
+
+52.7 MiB of text for a database that vacuums to 23.4 MiB, and 35 s to write
+it. That is not a defect, it is arithmetic, and it is worth writing down
+because it settles when to use which transport.
+
+| type | lines | bytes each | share of the file |
+|---|---|---|---|
+| `seg` | 77,761 | 704 | **99.1%** |
+| everything else | 1,247 | ~405 | 0.9% — **494 KiB in total** |
+
+**Every segment carries a full copy of its track's metadata** — key, title,
+artist, album, duration, URI, ISRC — because facts are content-addressed and
+never carry a row id. That is what lets a Linux agent in Phase 7 produce a
+batch without knowing anything about the receiver. Over 77,761 segments
+spanning 12,343 distinct tracks, each track's metadata is repeated about six
+times, and that repetition is most of the 704 bytes.
+
+So the two transports divide cleanly, and neither replaces the other:
+
+- **establishing a mirror** stays a whole-file job — 23.4 MiB that copies in
+  a second, against 52.7 MiB that takes 35 s to write;
+- **keeping it current** is the batch, at 497 KiB and under a second.
+
+If the whole-history case ever needs to be good rather than merely possible,
+the fix is a track dictionary section in a later format version, which a
+version 1 reader would ignore exactly as `docs/SYNC_FORMAT.md` §1 requires.
+
+**The 494 KiB floor is the honest figure for "a small delta".** Everything
+that is not a segment is sent in full every time, because only segments have
+a watermark the receiver can check. A delta is therefore about
+`494 KiB + 700 bytes per new play` — 497 KiB for the five plays measured
+here. Still 43× smaller than a whole file, and it does not grow with
+listening; it grows with liked tracks and with snapshot months.
+
+#### The two devices agree to within the clock
+
+The user noticed the Pixel's scores were "ever so slightly different" from the
+Walkman's while the order was identical, and then recomputed both at nearly
+the same moment and found they matched. That is worth turning into a number,
+because it is the strongest form of the phase's central claim.
+
+Cached scores pulled from both devices, 381 tracks each, same parameters
+hash, recomputes **48.5 s apart**:
+
+| | |
+|---|---|
+| ranking order | **identical** |
+| predicted relative difference from decay alone, 45-day half-life | 8.6465 × 10⁻⁶ |
+| **observed** largest relative difference across 381 tracks | 8.6400 × 10⁻⁶ |
+| agreement between predicted and observed | **0.07%** |
+
+So the difference is *entirely* the clock. A decay weight is
+`2^(-(now - at)/halfLife)`, so a later `now` multiplies every contribution by
+the same constant: the scores all shrink and the order is untouched. This is
+`CrossDeviceRankingTest`'s `now` case holding on 77,766 real segments rather
+than on a fixture, and it is the first time the two devices have been
+compared score by score rather than by reading ten titles off two screens.
+
+#### Smaller things found while verifying
+
+- **A no-op import still drops the score cache.** Importing the same batch
+  twice correctly changes no fact, but the second import empties `scores`
+  anyway, so the next screen recomputes for nothing. Dropping a cache is
+  always safe, so this is waste rather than a bug — but the import could skip
+  it when it applied nothing.
+- **The document picker renames the file.** The export suggests
+  `evergreen-batch-<device>-<stamp>.jsonl` and the file arrives as
+  `.jsonl.txt`, because the picker is asked for `text/plain` — which it has
+  to be, or Android offers no save location at all, the same trap the backup
+  button hit with `.db`. Cosmetic, and the import accepts any extension.
+- **`run-as ... cat databases/evergreen.db` reads a stale database.** Used
+  while verifying and it silently reported the count from before the last
+  import, because in write-ahead-logging mode the recent writes are in the
+  `-wal` file beside it. All three files have to be copied. This is the same
+  trap `VACUUM INTO` exists to avoid, met from the other side.
+
+#### The gap refusal, and how it was tested
+
+**It refuses, and the message is one a person can act on.** Offered a batch
+beginning after a play the mirror has never held, the Pixel said the file
+would leave a gap, that it starts after **#77800** while the device holds up
+to **#77766**, so about **34 plays** are in neither — and then what to do
+about it. Nothing changed.
+
+**How the file was made, because the distinction matters.** It is the real
+497 KiB delta with **only its header edited**: one origin's `afterOriginId`
+moved from 77761 to 77800. The receiver does the gap check from the header
+before reading a single fact, so this exercises exactly the code path a
+genuine double export reaches, and it answers what this checklist item is
+really asking — whether the refusal reads well to a human. **A genuine double
+export was not performed on the devices.** That path is covered by
+`aBatchThatWouldLeaveAGapIsRefusedAndSaysWhatIsMissing` in the instrumented
+suite, which builds the two batches for real.
+
+#### The guards, after a delta
+
+- [x] **N.** Every Spotify write still refused on the Pixel, each saying why:
+      the Evergreen playlist section, **Sync now**, the writer switch and
+      **Export to Spotify** on a month. **A mirror that has had deltas
+      applied is still a mirror**, which is the Phase 5a guarantee surviving
+      contact with the new code.
+- [x] **O.** Capture listener disabled on the Pixel and enabled on the
+      Walkman, read from `dumpsys package` rather than inferred from a log
+      that did not fill up.
+- [x] **P.** The Pixel's home screen reads **"newest listening … ago"**, and
+      the figure moved when the delta landed.
+- [x] **R.** Every screen checked at 339 × 602 dp on the Walkman, including
+      the new **Changes since last time** section, its counts line and its
+      two buttons.
+
+**Phase 5b is device-verified.** Everything on the checklist passed on both
+devices on 2026-09-20.
+
+| | value |
+|---|---|
+| v7 migration, first open on the NW-A307 | |
+| whole-history batch: size | |
+| whole-history batch: time to write on the NW-A307 | |
+| **first real delta: size** (vs **21.0 MiB** for a whole file) | |
+| delta import time on the Pixel | |
+| top ten matched after the delta | |
+| same file imported twice changed nothing | |
+| gapped batch refused readably | |
+
 ## Phase 5a results (2026-09-19)
 
 Built on branch `phase5a-mirror`, one commit per step of
@@ -1355,6 +1883,24 @@ on 2026-09-19. The checklist is at the end of this section.
   replacing.
 - **The home screen says so**, in one line, whenever mirror mode is on.
 - **A cross-device determinism proof**, `CrossDeviceRankingTest`.
+
+### The restore gap — found 2026-09-20, closed in 5b step 1
+
+> The backup button produces a file, but until Phase 5b there was no
+> operation that put it back on the writer device. "Import a mirror"
+> neutralises before replacing, so importing a backup onto the NW-A307 would
+> have made it a mirror of itself and stopped it writing Evergreen. Restore
+> is a distinct operation and is built in 5b step 1.
+
+Worth saying why it went unnoticed for two phases. The backup button was
+built in Phase 3 for a specific, narrow fear — the instrumented tests
+uninstall the app and destroy its database — and on the **Pixel**, which is
+the device those tests run on, "restore" has always meant *reinstall and
+import the Walkman's file*, which is exactly the mirror import. The gap only
+exists on the **writer**, where a mirror import is the wrong operation, and
+the writer is the one device the tests are forbidden from touching. So the
+missing half of the backup button was hidden behind the rule that keeps the
+Walkman safe.
 
 ### What was learned
 
@@ -1420,8 +1966,16 @@ timezones can therefore cap the same listening differently. It does not bite
 today: both devices are in the same place, and a mirror carries no timezone
 with it. It would bite the moment one travelled, and silently. Fixing it
 means recording the zone a segment was captured in, which is a schema change
-and a **Phase 5b decision**; scoring in UTC instead would change the ranking
-on the device that already works.
+and — **re-parked 2026-09-20** — a **Phase 5c decision** rather than a 5b
+one; scoring in UTC instead would change the ranking on the device that
+already works.
+
+The reason it moved is the same reason `offline_timestamp` stays parked: both
+only bite when **two devices both produce facts**. In 5b the Walkman produces
+every fact and the Pixel produces none, so there is only ever one timezone in
+play and it is the one the ranking was already computed under. 5c is where a
+second producer appears and where the zone has to start travelling with the
+row.
 
 **`String.format` localises `%d` and not `%x`.** Under `ar-SA-u-nu-arab`,
 `String.format("%d", 255)` really is `٢٥٥`. The parameters fingerprint is
@@ -1602,7 +2156,10 @@ mirror.** It is question 3 of Part 4 in `docs/PHASE5_QUESTIONS.md`, and the
 answer in practice is "yes, acceptable" — but only while the mirror is
 read-only and reconstructible from the Walkman. It would stop being
 acceptable the moment the Pixel held facts of its own, which is another thing
-5b would have to deal with.
+**5c** would have to deal with. It survives 5b unchanged: a delta-updated
+mirror is still reconstructible from the Walkman, and now more cheaply than
+before — a wipe costs one whole-file import plus whatever deltas followed it,
+rather than a re-export.
 
 ### Moving the file between the devices
 
@@ -1844,7 +2401,21 @@ before them. Recorded here so they are not rediscovered as if new:
   a guess — measure first, and the score-over-time line is now the tool for
   seeing whether a change helped.
 
-### Phase 5b — blocking for the merge
+### Phase 5c — the phantom fix, which opens the merge
+
+**Relocated 2026-09-20, when Phase 5 was split into three.** This was written
+as "Phase 5b — blocking for the merge", back when 5b *was* the merge. 5b is
+now delta sync, and the phantom fix moved with the merge into **5c, where it
+sits at the front as its hard prerequisite** (`docs/SYNC_FOUNDATION.md` 5.1).
+
+**It does not block 5b, for two independent reasons.** Nothing merges in 5b —
+a delta from the writer is inserted into the mirror, and the mirror
+contributes no facts of its own — so there is nothing for a phantom to be
+double-counted against. And while the Pixel is a mirror its capture is off
+(decision 3b, built in 5a as a component disable rather than a flag), so no
+phantom rows are accumulating on it in the meantime. The one moment 5b turns
+capture back on is step 2's measurement, which is deliberate and whose
+database is discarded afterwards by re-importing a mirror.
 
 **Does a Spotify Connect remote device capture phantom segments?** If music
 plays on the Walkman while Spotify is open on the Pixel, does the Pixel's
@@ -1858,9 +2429,11 @@ each device had its own database and only the Walkman's was used. It stops
 being harmless the moment the two captures are merged: if the Pixel records
 segments for music playing on the Walkman, merging inflates play counts, and
 it does so **invisibly** — the segments look exactly like real listening, and
-nothing downstream can tell that one evening was counted twice. **Phase 5b
-must not be built until this is answered.** Phase 5a (the read-only mirror)
-does not depend on it, because a mirror replaces rather than merges.
+nothing downstream can tell that one evening was counted twice. **The merge
+must not be built until this is fixed.** Neither Phase 5a (the read-only
+mirror) nor Phase 5b (delta sync) depends on it: 5a replaces rather than
+merges, and 5b inserts facts from one device into a database that produces
+none of its own.
 
 Two things are already true and worth writing down with it:
 
@@ -1916,8 +2489,8 @@ One caveat stands, and one was wrong:
   **Spotify does set it.** Every other session on the device read `LOCAL` at
   the same moment, and the `volumeControlId` names Spotify's own Connect
   media-route provider — a second, independent signal. So the phantom can be
-  dropped at the source for the cost of one field and one `if`, and 5b needs
-  no wall-clock deduplication rule for this case.
+  dropped at the source for the cost of one field and one `if`, and the
+  merge needs no wall-clock deduplication rule for this case.
 
 Also present and worth knowing: `getVolumeControlId()` (API 34+), which names
 the volume control a remote session is using, and `getAudioAttributes()`.
@@ -1958,11 +2531,11 @@ granted. Nothing here writes to Spotify and nothing here changes the Walkman.
 **How to read the answer.**
 
 - Pixel difference **0**, and no `segment written` in the live log → no
-  phantoms. The 5b merge does not need a deduplication rule, and the question
+  phantoms. The merge does not need a deduplication rule, and the question
   closes.
 - Pixel difference **greater than 0** → phantoms are real. Record how many,
-  against five real plays, and 5b needs either the `PlaybackInfo` check above
-  or the wall-clock overlap rule, and probably both.
+  against five real plays, and the merge needs either the `PlaybackInfo`
+  check above or the wall-clock overlap rule, and probably both.
 
 #### Result — measured 2026-09-19. **Phantoms are real.**
 
@@ -1988,13 +2561,14 @@ whole range of judgements, negative ones included, and nothing on the row
 marks it as second-hand: same app package, same device id, same end reason as
 a real listen.
 
-**So the merge in 5b would double-count, and this confirms the question was
-right to be promoted to blocking.** Two notes on what is and is not yet
+**So the merge would double-count, and this confirms the question was right
+to be promoted to blocking.** Two notes on what is and is not yet
 established:
 
 - The obvious fix now exists and is cheap: drop segments whose session reads
   `PLAYBACK_TYPE_REMOTE`, per the correction above. That is a `capture/`
-  change and belongs to 5b.
+  change and is **the first step of 5c**, not of 5b — `capture/` is untouched
+  in 5b.
 - **Not yet established, and worth checking before designing anything:**
   whether the Pixel's view of a listen *agrees* with the Walkman's. If the
   remote session's position lags or truncates, a track played in full on the

@@ -23,3 +23,25 @@ keystore.properties
 
 # Claude Code worktrees: local scratch checkouts, never part of the project
 .claude/worktrees/
+
+# Listening history, in every shape it leaves the app in.
+#
+# None of these belongs in the repository under any circumstances. A backup is
+# six years of what the user listened to; a sync batch is the same thing in a
+# text format, which makes it *easier* to paste or commit by accident than a
+# binary .db is; a CSV export is the same again in the most portable form of
+# all. They live in ~/evergreen-backups/ or similar, outside the repo.
+#
+# Matched by extension anywhere in the tree rather than by directory, because
+# the risk is a file saved into the repo root by mistake — a picker defaulting
+# somewhere, an adb pull run from the wrong working directory.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+evergreen-backup-*
+evergreen-batch-*
+*.evergreen.jsonl
+evergreen-*.csv
