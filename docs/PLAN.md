@@ -1574,6 +1574,15 @@ Afterwards, re-import a fresh mirror on the Pixel and leave it as a mirror.
 **Take a backup on both devices before you start.** Restore now exists, and
 part of the point of this list is to prove it does.
 
+**One thing to know about that backup.** Take it *before* installing the new
+build, and keep the **old APK** beside it. A backup taken by the current
+build is a v6 database, and the v7 build refuses a v6 file in both
+directions, deliberately — the refusal exists so that "can I read last year's
+backup" is never answered "yes, and it is now a different database". So the
+pre-migration backup is a rollback path only in company with the build that
+wrote it. Take a second backup *after* the migration; that one is the file
+"Restore from backup" is for.
+
 **On the NW-A307 (the Walkman) — restore first:**
 
 - [ ] **A.** Install the new build. It migrates the database to v7 on first
