@@ -81,25 +81,52 @@ source, and no wall-clock deduplication rule is needed for this case.
 a hard prerequisite for any merge.** Full counts and the correction to an
 earlier wrong claim are in `docs/PLAN.md`.
 
-Still open, and worth settling before designing the merge: whether the
-Pixel's view of a listen *agrees* with the Walkman's or truncates it. If it
-truncates, a phantom is not merely a duplicate but a wrong negative judgement
-about a song being enjoyed.
+### ~~Does the Pixel's view of a listen agree?~~ **ANSWERED 2026-09-20.**
 
-**Procedure.** Open Spotify on the Pixel with capture running. Play several
-tracks on the Walkman, some to the end, some skipped. On the Pixel, check the
-debug screen's live log and segment count for that window. Report counts and
-aggregates only — never rows.
+The remaining half of 0a was whether a phantom is a *shortened* listen, which
+would make it a wrong negative judgement rather than a duplicate. **Measured
+on both devices, six tracks, clock skew 660 ms and corrected for. Full
+figures in `docs/PLAN.md`.**
 
-**Also check:** whether `MediaController.PlaybackInfo` distinguishes remote
-from local playback. If it does, capture can drop phantoms at the source,
-which is far better than deduplicating after the fact.
+**It does not truncate.** Fraction heard agrees to within **0.02** on every
+one of the six tracks the Pixel saw from the start, with listened time
+differing by −1.1 s to +3.6 s and no bias towards being short.
 
-**If it does happen and `PlaybackInfo` cannot tell them apart**, the merge
-can still catch it, because two segments overlapping in wall-clock time are
-by definition at most one real listen. One person cannot listen to two things
-at once. That makes this a deduplication rule rather than a dead end, but the
-rule has to be designed rather than assumed.
+**It fragments instead, and the fragments score as rejections.** Twice in
+seven tracks the Pixel saw a spurious backward position jump of about two
+seconds near the end of a track, cutting the segment and leaving a trailing
+row of **zero listened milliseconds — fraction 0.00, below the 0.20 lower
+breakpoint, a rejection.** One of them was for a track played to 0.97 on both
+devices. The Walkman recorded no such jump at all. The likely cause is on the
+row itself: `lastSampleAgeMs` of 3.7–3.8 s, a remote session's position
+arriving too sparsely to extrapolate from.
+
+So the consequence the question feared is real and the mechanism is not the
+one it named. It also means the Phase 5a sample's **0.06** was probably one of
+these tails rather than truncation.
+
+**`PLAYBACK_TYPE_REMOTE` was confirmed set on the session during the
+measurement window**, with `volumeControlId` naming Spotify's Connect
+media-route provider, while every other session read `LOCAL`. So the
+source-level drop removes all of it.
+
+**Consequences for 5c, now settled rather than open:**
+
+- The fix is the one already described: drop segments whose session reads
+  `PLAYBACK_TYPE_REMOTE`. One field, one `if`, in `capture/`.
+- **3g's first merge rule — the wall-clock overlap rule — is not needed for
+  this case** and should not be built for it. It was held open against the
+  possibility of truncation, and truncation does not happen.
+- The fix is worth more than "stops double counting": it removes wrong
+  *negative* judgements about songs played in full. A duplicate can be
+  noticed; a zero-length rejection of a real play is indistinguishable from a
+  real rejection.
+
+**One hazard found on the way, and it is not this one.** The Pixel's row for
+the first track began 112 s after the Walkman's, because capture was enabled
+mid-track and the device slept. A device that joins a listen late records what
+it saw, correctly, and a merge that trusted it would understate that play.
+That is a separate question from phantoms and belongs to 5c's merge rules.
 
 ### Check 0b. How much listening actually happens on the Pixel?
 
