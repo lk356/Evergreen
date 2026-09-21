@@ -239,6 +239,47 @@ abstract class ImportDao {
     }
 
     /**
+     * Marks every segment in a freshly imported whole-file copy as having
+     * originated elsewhere. **Phase 5c.**
+     *
+     * ### Why this is needed, and why 5b did not need it
+     *
+     * `originRowId IS NULL` is how a device answers "did I originate this
+     * row?", and it is what `BatchExport` selects on. It was a sound proxy
+     * while the only rows a device held were ones it had captured or imported
+     * from an export — but a **whole-file mirror import** is a copy of another
+     * device's database, ids and all, and every row in it arrives with
+     * `originRowId` NULL. The receiving device then believes it originated all
+     * of them.
+     *
+     * In Phase 5b that was harmless, because the mirror never exported. Phase
+     * 5c makes both devices export, and then it is not harmless at all.
+     * Measured on the real Pixel database on 2026-09-21, before the fix: it
+     * would have shipped **77,816 rows it did not originate** — the entire
+     * imported Spotify history plus the Walkman's own captures — against the
+     * 56 rows it had actually recorded. That is the whole point of the delta
+     * (497 KiB against 21 MiB) thrown away on every export, and it is the "two
+     * paths by which the same fact could arrive" that `docs/SYNC_FORMAT.md` §2
+     * names and defers to this phase.
+     *
+     * ### Why `originRowId = id` and not something else
+     *
+     * Because that is the truth: these rows carry the *producer's* ids in
+     * `id`, so the producer's id for each one is its own `id`. Copying it into
+     * `originRowId` states the provenance explicitly instead of leaving it to
+     * be inferred, and it keeps `MAX(COALESCE(originRowId, id))` — the
+     * receiver-side watermark in `docs/SYNC_FORMAT.md` §5.3 — returning
+     * exactly the same number as before.
+     *
+     * One full scan of the table, inside an operation that already replaces a
+     * 21 MiB file, so the cost is noise.
+     */
+    @Query(
+        "UPDATE listening_segments SET originRowId = id WHERE originRowId IS NULL",
+    )
+    abstract suspend fun stampImportedRowsAsForeign(): Int
+
+    /**
      * Stops this database being a mirror.
      *
      * Deliberately does **not** restore the writer flag or re-arm any schedule.

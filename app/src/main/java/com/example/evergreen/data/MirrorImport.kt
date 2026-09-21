@@ -1,6 +1,7 @@
 package com.example.evergreen.data
 
 import android.content.Context
+import android.os.Build
 import android.net.Uri
 import android.util.Log
 import com.example.evergreen.capture.CaptureSwitch
@@ -195,11 +196,28 @@ object MirrorImport {
      */
     internal suspend fun neutralise(database: EvergreenDatabase, preview: Preview, at: Long) {
         database.importDao().setEvergreenWriter(false)
+        // Every row in this copy came from the other device, so say so on the
+        // rows rather than leaving it to be inferred from `originRowId IS
+        // NULL` -- which, on a whole-file copy, wrongly reads as "mine". Until
+        // Phase 5c a mirror never exported and it did not matter; now that
+        // both devices export it decides whether this one ships 56 rows or
+        // 77,816. See ImportDao.stampImportedRowsAsForeign.
+        database.importDao().stampImportedRowsAsForeign()
         database.importDao().markAsMirror(
             sourceDevice = preview.sourceDevice,
             takenAtMs = preview.takenAtMs,
             importedAtMs = at,
         )
+        // The copy arrives stamped with the *source* device's name, and
+        // without this it keeps it: observed on the real Pixel on
+        // 2026-09-21, still calling itself `NW-A300Series` a day after the
+        // import. It self-heals at the next backup, which restamps -- but
+        // until then every screen that names this device names the wrong
+        // one, and Phase 5c adds a screen saying which device holds the
+        // writer role. Whose copy this *was* is not lost: it is in
+        // MIRROR_SOURCE, written a line above, which is where the screens
+        // read it from.
+        database.importDao().setDeviceName(Build.MODEL, at)
         // The score cache is the one table that must not be trusted from
         // another device: its rows were computed there, and the point of this
         // phase is to prove that computing them here gives the same ranking. A

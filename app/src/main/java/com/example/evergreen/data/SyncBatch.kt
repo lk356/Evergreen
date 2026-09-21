@@ -36,7 +36,27 @@ import java.io.Writer
 object SyncBatch {
 
     const val FORMAT = "evergreen-batch"
-    const val FORMAT_VERSION = 1
+
+    /**
+     * The wire format version, `docs/SYNC_FORMAT.md`.
+     *
+     * **v2, Phase 5c**: `seg` gains `playbackType` and `utcOffsetMinutes`.
+     *
+     * **A reader refuses a version it does not know, in both directions**, and
+     * for v1 that is a deliberate choice rather than an oversight. The format's
+     * own rule is that an unrecognised *field* is ignored, so a v2 reader could
+     * technically read a v1 batch — every v1 segment would simply arrive with
+     * both new fields null.
+     *
+     * That is exactly the problem. Null `playbackType` means "not observed",
+     * and a row that was not observed scores **normally**. A v1 batch is
+     * precisely a batch produced before capture could tell a phantom from a
+     * real listen, so reading one would let the phantoms this phase exists to
+     * exclude in through the side door — unmarked, indistinguishable, and
+     * inflating the other device's play counts invisibly. Refusing costs one
+     * re-export; accepting costs the guarantee.
+     */
+    const val FORMAT_VERSION = 2
 
     /** The `t` tag on each line. */
     object Type {
@@ -170,7 +190,9 @@ object SyncBatch {
                     .putOrNull("lastSampleAgeMs", row.lastSampleAgeMs)
                     .put("createdAt", row.createdAt)
                     .put("source", row.source)
-                    .putOrNull("sourceEndReason", row.sourceEndReason),
+                    .putOrNull("sourceEndReason", row.sourceEndReason)
+                    .putOrNull("playbackType", row.playbackType)
+                    .putOrNull("utcOffsetMinutes", row.utcOffsetMinutes),
             )
         }
 
@@ -387,6 +409,23 @@ object SyncBatch {
         val createdAt: Long,
         val source: String,
         val sourceEndReason: String?,
+        /**
+         * Whose volume the session was controlling, `LOCAL` or `REMOTE`.
+         * **Format version 2.** Null means the producer did not observe one,
+         * which is every row captured before schema v8 and every row from a
+         * producer that cannot tell.
+         *
+         * **A receiver must not treat a missing value as `LOCAL`.** A batch
+         * without it is a batch whose phantoms are unmarked, which is why
+         * version 1 is refused outright rather than read as "all local".
+         */
+        val playbackType: String?,
+        /**
+         * The producer's UTC offset in minutes when the segment ended.
+         * **Format version 2.** Null falls back to the receiver's own zone,
+         * which is what happened before the field existed.
+         */
+        val utcOffsetMinutes: Int?,
     )
 
     data class LikeEventFact(
@@ -466,6 +505,8 @@ object SyncBatch {
         createdAt = json.requireLong("createdAt"),
         source = json.optString("source").ifEmpty { SegmentSource.CAPTURE.name },
         sourceEndReason = json.stringOrNull("sourceEndReason"),
+        playbackType = json.stringOrNull("playbackType"),
+        utcOffsetMinutes = json.longOrNull("utcOffsetMinutes")?.toInt(),
     )
 
     fun readLikeEvent(json: JSONObject) = LikeEventFact(

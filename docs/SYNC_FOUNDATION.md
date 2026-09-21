@@ -137,6 +137,16 @@ listen is something that happened *on a device*; two devices recording the
 same minute are two independent observations, and which of them is real is a
 merge question (see the phantom problem below). Already built.
 
+> **One thing this section assumed and did not say, found 2026-09-21.**
+> Identity is not the same question as *provenance*. `(deviceId, id)` names a
+> segment; it does not say whether **this** database originated it. Phase 5b
+> used `originRowId IS NULL` for that, which held right up until a device
+> acquired rows by **whole-file mirror import** — a copy of another device's
+> database, ids and all, every row landing with `originRowId` null. The
+> receiving device then believed it had recorded the lot. Harmless while a
+> mirror never exported; decisive once both devices do. The mirror import now
+> stamps `originRowId = id` on arrival. See `docs/SYNC_FORMAT.md` §2.
+
 **`like_events` — content-addressed, and deliberately has no device column.**
 A like event is not a local observation. It is an observation *of Spotify's
 state*, and two devices seeing the same like are seeing **one fact twice**,
@@ -191,6 +201,10 @@ A device column is cheap to add while every row came from one device, and
 awkward afterwards. That window is still open today and it is already used.
 Nothing further is owed here, but it is worth knowing that if `like_events`
 ever *does* need per-device provenance, the same window logic applies to it.
+
+**Provenance was not satisfied, though, and that is a different thing** —
+recorded under Part 4 and fixed on 2026-09-21. Knowing a fact's *name* is not
+knowing whether you are entitled to speak for it.
 
 ---
 

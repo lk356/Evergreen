@@ -205,6 +205,7 @@ object BatchImport {
                         applyFact(database, type, json, watermarks, tally)
                     }
                     verifyCounts(preview, tally)
+                    adoptNewestParameters(database)
                     database.scoringDao().dropScoreCache()
                     database.scoringDao().putSyncMs(SyncKeys.SYNC_IMPORT_AT, now)
                 }
@@ -367,6 +368,14 @@ object BatchImport {
                     .getOrDefault(SegmentSource.CAPTURE),
                 sourceEndReason = fact.sourceEndReason,
                 originRowId = fact.originRowId,
+                // An unrecognised value becomes null -- "not observed" -- and
+                // so scores normally. That is the right fallback for a name
+                // this build has not heard of, and it is safe only because a
+                // batch that could be hiding *unmarked* phantoms is refused by
+                // its formatVersion long before it reaches here.
+                playbackType = fact.playbackType
+                    ?.let { name -> runCatching { PlaybackType.valueOf(name) }.getOrNull() },
+                utcOffsetMinutes = fact.utcOffsetMinutes,
             ),
         )
         if (inserted == -1L) tally.segmentsAlreadyHeld++ else tally.segmentsAdded++
@@ -429,9 +438,37 @@ object BatchImport {
             ),
         )
         if (added) tally.parametersAdded++
-        if (fact.current) {
-            database.scoringDao().putSyncText(SyncKeys.SCORING_PARAMETERS, fact.parametersJson)
-        }
+        // `fact.current` is deliberately *not* acted on here. Until Phase 5c
+        // the producer's current settings were simply adopted, which was right
+        // while facts flowed one way: a mirror should score under the writer's
+        // settings. With both devices producing changes it is wrong, and
+        // silently so -- a batch taken before this device's own change would
+        // roll that change back on import. Which settings are in force is now
+        // derived from the merged log once every fact has landed; see
+        // [adoptNewestParameters].
+    }
+
+    /**
+     * Picks the settings in force from the merged parameter log: **the latest
+     * `changedAt` wins.**
+     *
+     * Run once, after every fact in the batch has been applied and inside the
+     * same transaction, rather than per `params` line. Deriving it from the
+     * log rather than believing whichever file arrived last is what makes the
+     * answer independent of import order -- the property `docs/SYNC_FORMAT.md`
+     * section 5 claims for the whole format, and which the old per-line
+     * behaviour quietly did not have.
+     *
+     * `parameter_history` is append-only and both devices' entries survive
+     * regardless, so this only decides which one is *in force*. That matters
+     * for the failure mode: if clock skew ever picks the wrong one, the log
+     * still holds both, the settings screen shows the wrong value plainly, and
+     * changing it again fixes it. Visible and recoverable, which is not true
+     * of much else that could go wrong here.
+     */
+    private suspend fun adoptNewestParameters(database: EvergreenDatabase) {
+        val newest = database.syncDao().newestParameterEntry() ?: return
+        database.scoringDao().putSyncText(SyncKeys.SCORING_PARAMETERS, newest.parametersJson)
     }
 
     private suspend fun applyMember(

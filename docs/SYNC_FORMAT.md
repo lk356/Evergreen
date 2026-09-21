@@ -1,8 +1,13 @@
-# The Evergreen fact batch — wire format v1
+# The Evergreen fact batch — wire format v2
 
-Written 2026-09-20 for Phase 5b. Companion to `docs/SYNC_FOUNDATION.md`, which
-argues *why* this exists; this document says *what it is*, precisely enough to
-be implemented from scratch.
+Written 2026-09-20 for Phase 5b, **version 2 on 2026-09-21 for Phase 5c**.
+Companion to `docs/SYNC_FOUNDATION.md`, which argues *why* this exists; this
+document says *what it is*, precisely enough to be implemented from scratch.
+
+**What changed in v2**, and nothing else did: a `seg` line gains two optional
+fields, `playbackType` and `utcOffsetMinutes`, both described in §4.2. Every
+other line type, the header, the identity rules and the whole of §5 are
+unchanged from v1.
 
 **A batch is: these facts, from this device, after this watermark.** Nothing
 else. It is not a database, not a diff, and not a set of instructions — it is a
@@ -70,8 +75,8 @@ Exactly one, and it is the first line.
 {
   "t": "header",
   "format": "evergreen-batch",
-  "formatVersion": 1,
-  "schemaVersion": 7,
+  "formatVersion": 2,
+  "schemaVersion": 8,
   "producerName": "NW-A307",
   "takenAtMs": 1789603200000,
   "origins": [
@@ -88,8 +93,8 @@ Exactly one, and it is the first line.
 | field | meaning |
 |---|---|
 | `format` | always the literal `"evergreen-batch"`. A reader refuses anything else rather than trying. |
-| `formatVersion` | this document is version **1**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know. |
-| `schemaVersion` | the producer's database schema, **7** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
+| `formatVersion` | this document is version **2**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know — and for v1 specifically, for a second reason given below. |
+| `schemaVersion` | the producer's database schema, **8** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
 | `producerName` | a model name such as `NW-A307`, for saying whose batch it is on a screen. Every unit of that model reports the same string, so it identifies a *kind* of device, not one. **Never used as identity.** |
 | `takenAtMs` | when the batch was produced, epoch milliseconds. |
 | `origins` | one entry per **originating device** whose segments the batch carries. See below. |
@@ -122,8 +127,25 @@ origin producer — a Linux agent, say — writes a list of one.
 **A producer ships only facts it originated.** In database terms that is
 `originRowId IS NULL` — rows this database assigned the ids of, rather than
 rows that arrived in someone else's batch. Passing on another device's facts
-would mean two paths by which the same fact could arrive, which is a merge
-question and belongs to Phase 5c.
+would mean two paths by which the same fact could arrive, and the rule against
+it stands in v2: **a device still speaks only for itself.**
+
+> **Corrected 2026-09-21, and it was a real hole.** `originRowId IS NULL` was a
+> sound proxy for "I originated this" only as long as a device's rows came from
+> its own capture or its own export import. A **whole-file mirror import** is a
+> copy of another device's database, ids and all, and every row in it landed
+> with `originRowId` NULL — so the receiving device believed it had originated
+> the lot. Harmless in Phase 5b, where a mirror never exported; not harmless in
+> 5c, where both devices do. Measured on the real Pixel database before the
+> fix: it would have shipped **77,816 rows it did not originate** against the
+> 56 it had actually recorded. The mirror import now stamps `originRowId = id`
+> on every row it brings in, which states the provenance rather than leaving it
+> to be inferred, and leaves the §5.3 watermark returning the same number.
+
+**A producer always names its own device as an origin**, even before it has
+captured anything, so that a device holding only received rows can still send
+its likes and parameter changes. Such an origin carries no segments and writes
+`throughOriginId: null`.
 
 A producer with no memory of a previous export writes `afterOriginId: 0` for
 every origin and ships everything it has. That is a valid batch and the
@@ -231,7 +253,8 @@ roughly one per song played.
  "forwardSeekCount":0,"seekedForwardMs":0,
  "endReason":"TRACK_CHANGE","endJumpFromMs":null,"endJumpToMs":null,
  "lastSampleAgeMs":420,"createdAt":1789600180500,
- "source":"CAPTURE","sourceEndReason":null}
+ "source":"CAPTURE","sourceEndReason":null,
+ "playbackType":"LOCAL","utcOffsetMinutes":60}
 ```
 
 | field | notes |
@@ -250,6 +273,31 @@ roughly one per song played.
 | `createdAt` | when the producer wrote the row. |
 | `source` | `CAPTURE` or `IMPORT_SPOTIFY_HISTORY`. Provenance is a fact, which is why it is allowed here. |
 | `sourceEndReason` | the streaming-history export's own code (`trackdone`, `fwdbtn`, `endplay`, …) for an imported row; null on captured rows. |
+| `playbackType` | **v2.** `LOCAL`, `REMOTE`, or null. What the media session said about *whose volume it was controlling* — not about location. A producer that cannot tell writes null. See below. |
+| `utcOffsetMinutes` | **v2.** The producer's UTC offset in minutes when the segment **ended**: `60` for UTC+1, `-300` for UTC−5, `330` for UTC+5:30. Minutes and not hours, because India is UTC+5:30 and Nepal UTC+5:45. Null means the producer did not record one, and the receiver then buckets the row by its own zone. |
+
+**`playbackType`, and why a receiver must not read a missing one as `LOCAL`.**
+With Spotify Connect, a device showing a session for music playing somewhere
+else records a **phantom**: a faithful duplicate of a listen it is not
+producing. Measured in both directions on 2026-09-21 — five tracks played on
+one device produced five segments on the other, claiming 403.3 s against the
+real 403.5 s, with every fraction agreeing to 0.01. Merging two devices'
+captures without marking these double-counts every such listen and inherits
+spurious zero-length rows that score as *rejections of songs played in full*.
+
+The producer **records the observation and never acts on it**; excluding a
+remote segment is a scoring decision and belongs to the receiver, which is the
+same rule that keeps the replay threshold out of capture. It also means a
+listen genuinely cast from a phone to a speaker, a TV, a car or a desktop is
+still carried, rather than being dropped at source and lost silently.
+
+Null therefore means "not observed", and a not-observed row **scores
+normally**. That is correct for a producer that cannot tell — a Linux agent
+reading MPRIS, say — and it is exactly why **a v1 batch is refused outright**
+rather than read with both fields absent. A v1 batch is by definition one
+produced before its writer could distinguish a phantom, so reading it as "all
+local" would let the phantoms this field exists to exclude in through the side
+door. Refusing costs one re-export; accepting costs the guarantee.
 
 **There is no outcome field, now or ever** (invariant 1b). No `COMPLETED`, no
 `SKIPPED`. Those are conclusions, they depend on thresholds that are still
@@ -397,11 +445,17 @@ In order, and the order is the whole of the safety argument.
     WHERE deviceId = :deviceId
    ```
 
-   `COALESCE` and not plain `id`, because rows that arrived in a **whole-file**
-   mirror import carry the producer's own ids in `id` with `originRowId` null,
-   while rows that arrived in a batch carry the producer's id in `originRowId`
-   and a local one in `id`. The expression gives the right answer for both, and
-   that single fact is what lets 5a's transport and 5b's coexist.
+   `COALESCE` and not plain `id`, because a **locally captured** row carries
+   its originating id in `id` with `originRowId` null, while a row that arrived
+   in a batch carries the producer's id in `originRowId` and a local one in
+   `id`. The expression gives the right answer for both, and that single fact
+   is what lets 5a's transport and 5b's coexist.
+
+   A row that arrived in a **whole-file** mirror import carries the producer's
+   id in *both* since 2026-09-21 — the import stamps `originRowId = id`, for
+   the reason in §2 — so `COALESCE` returns the same number for it as it always
+   did. Before that stamp those rows had `originRowId` null and the expression
+   still worked, which is why the change is invisible here and decisive in §2.
 
    If `afterOriginId > watermark`, refuse: the batch begins after what is held
    and the segments in between would be lost silently. Say what is missing —
@@ -492,12 +546,14 @@ was read.
 - **No merge.** A batch says what one device observed. Deciding what to do when
   two devices observed overlapping things is Phase 5c, and it is gated on the
   phantom fix in `capture/`.
-- **No timezone.** A segment carries wall-clock milliseconds and no zone. The
-  daily cap buckets listening by *local* calendar day, so two devices in
-  different places could cap the same listening differently — a real hazard,
-  recorded rather than fixed, and a Phase 5c decision because it only bites
-  when two devices both produce facts. Adding a zone later is a new optional
-  field, which a version 1 reader will ignore exactly as §1 requires.
+- ~~**No timezone.**~~ **Added in v2** as `utcOffsetMinutes`, exactly as this
+  section predicted it would be. The reasoning it recorded stands and is worth
+  keeping: a segment used to carry wall-clock milliseconds and no zone, and
+  because the daily cap buckets listening by *local* calendar day, two devices
+  in different places could cap the same listening differently. It only bites
+  when two devices both produce facts, which is why it waited for Phase 5c.
+  **An offset and not a zone id**: the offset is what the cap actually needs,
+  it is two bytes, and it cannot go stale when a zone's rules are revised.
 - **No compression.** A batch of a few hundred segments is a few hundred
   kilobytes. If it ever matters, gzip is a property of the file and not of the
   format.

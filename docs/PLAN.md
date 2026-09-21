@@ -3121,6 +3121,128 @@ One practical note for whoever does pick it up: **the units are not
 consistent.** Of the 1,577 offline rows, 1,562 carry seconds and 15 carry
 milliseconds. Anything that reads the field has to detect which.
 
+### Phase 5c step 4 — two-way sync, and two things 5b got away with
+
+The prompt said the per-origin watermarks from 5b "should already make this
+work" and asked where they do not. **They do not in two places, and both were
+invisible while facts flowed one way.**
+
+#### The provenance hole — a mirror believed it had recorded everything
+
+`BatchExport` selects `originRowId IS NULL` to mean *"this database originated
+this row"*. That was a sound proxy while a device's rows came from its own
+capture or its own streaming-history import. A **whole-file mirror import** is
+a copy of another device's database, ids and all, and every row in it lands
+with `originRowId` null — so the receiving device believes it recorded the lot.
+
+Harmless in 5b, where a mirror never exports. Decisive in 5c, where both
+devices do. **Measured on the real Pixel database before the fix:**
+
+| | |
+|---|---|
+| Rows the Pixel had actually recorded | **56** |
+| Rows it would have offered for export | **77,816** |
+| — of those, the imported Spotify history | 77,364 |
+| — of those, the Walkman's own captures | 396 |
+
+That is the entire point of the delta — 497 KiB against 21.0 MiB — thrown away
+on every export, and it is exactly the *"two paths by which the same fact could
+arrive"* that `docs/SYNC_FORMAT.md` §2 names and defers to this phase.
+
+**The fix is one statement in the mirror import's `neutralise`:**
+`UPDATE listening_segments SET originRowId = id WHERE originRowId IS NULL`.
+It states the provenance rather than leaving it to be inferred, and because
+those rows already carry the producer's ids in `id`, the receiver-side
+watermark `MAX(COALESCE(originRowId, id))` returns exactly the same number as
+before — so §5.3 is untouched. Nothing is deleted; rows are labelled.
+
+**A consequence that needed handling.** After the stamp, a fresh mirror
+originates nothing, so `originatingDeviceIds()` is empty — and a header with no
+origins is not a valid batch. A device holding only received rows would have
+been unable to export its own likes and settings. **A producer now always names
+its own device as an origin**, carrying no segments and writing
+`throughOriginId: null`, which §2 already provided for.
+
+#### The settings hole — an older change rolled back a newer one
+
+`applyParams` adopted the producer's `current` parameters unconditionally.
+Right when facts flow one way: a mirror *should* score under the writer's
+settings. Wrong the moment both devices produce changes — a batch taken before
+this device's own change would silently roll that change back on import.
+
+**The rule is now "the latest `changedAt` wins", derived from the merged log**
+rather than from whichever file arrived last, once every fact has landed and
+inside the same transaction. That also buys a property the old behaviour
+quietly lacked: **which setting wins no longer depends on import order**, which
+is what `docs/SYNC_FORMAT.md` §5 claims for the format as a whole. Ties are
+broken on `parametersHash`, which is arbitrary but *deterministic* — two
+databases holding the same facts must not end up with different settings.
+
+#### Clock skew, and whether it matters
+
+Measured 2026-09-21: **the Pixel is ~1020 ms behind the Walkman** (660 ms the
+day before, so roughly 360 ms of drift a day).
+
+**How it could bite.** "Latest `changedAt` wins" compares timestamps written by
+two clocks. If a setting is changed on the Walkman and a *different* one on the
+Pixel less than a second later, the Pixel's change carries the earlier stamp
+despite happening second, and the Walkman's wins.
+
+**It does not matter at the measured size.** The window is about one second,
+and a settings change is a deliberate act on one device at a time — hitting it
+means putting one device down and picking the other up inside a second.
+
+**What makes it tolerable even if skew grows**, which it could, since the
+Walkman is often offline and may not be correcting its clock: the failure mode
+is benign and visible. `parameter_history` is append-only, so both entries
+survive; only which one is *in force* could be wrong; the settings screen shows
+the wrong value in plain numbers; and changing it again fixes it. Nothing is
+lost and nothing is silent. That is not true of the two holes above, which is
+why they were worth fixing and this is worth only recording.
+
+#### The Pixel's device id is its own — and it could not have been otherwise
+
+The prompt asked to confirm this before the Pixel records its first play.
+Checked three ways:
+
+- **Structurally.** `DeviceId` lives in **SharedPreferences**, not in the
+  database. A mirror import replaces `databases/evergreen.db` and nothing else,
+  so no import path can reach a device's own id. The rows the Pixel held under
+  the Walkman's id were rows *labelled* with it, which is correct — they were
+  recorded there.
+- **Empirically, before the wipe.** The Pixel's database held captured rows
+  under **two** ids: the Walkman's, from the mirror, and its own, distinct one
+  for its 56 local rows. It never adopted the Walkman's id even while holding
+  a full copy of its database.
+- **Empirically, now.** The instrumented run uninstalled the app, so the Pixel
+  has no id at all: `shared_prefs/` is empty. The next one it generates is a
+  fresh random UUID.
+
+#### Also fixed: a mirror kept calling itself by the wrong name
+
+Found in step 1 and fixed here. A copy arrives stamped with the *source*
+device's `device_name` and kept it — observed on the real Pixel on 2026-09-21,
+still calling itself `NW-A300Series` a day after the import. It self-heals at
+the next backup, which restamps, but until then every screen naming this device
+names the wrong one — and step 8 adds a screen saying which device holds the
+writer role. `neutralise` now restamps `Build.MODEL`. Whose copy it *was* is
+not lost; that is `MIRROR_SOURCE`, which is where the screens read it from.
+
+#### Format version 2
+
+`docs/SYNC_FORMAT.md` is at **v2**: a `seg` line gains `playbackType` and
+`utcOffsetMinutes`, and nothing else changes. Without it a phantom exported
+from one device would arrive on the other unmarked and score as real
+listening — the harm this phase exists to remove, arriving by a different door.
+
+**A v1 batch is refused rather than read**, and that is deliberate. The
+format's own rule is that an unrecognised *field* is ignored, so a v2 reader
+could read a v1 batch with both fields absent — but null `playbackType` means
+"not observed", and a not-observed row scores normally. A v1 batch is by
+definition one produced before its writer could tell a phantom from a real
+listen. Refusing costs one re-export; accepting costs the guarantee. The user
+agreed on 2026-09-21, noting that losing development-era data is not a concern.
+
 ### Still unknown — carried into Phase 6
 
 

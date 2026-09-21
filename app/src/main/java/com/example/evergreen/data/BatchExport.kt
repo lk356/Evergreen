@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import com.example.evergreen.capture.DeviceId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
@@ -98,10 +99,23 @@ object BatchExport {
         fromTheBeginning: Boolean = false,
         database: EvergreenDatabase = EvergreenDatabase.get(context.applicationContext),
     ): Plan = withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
         val sync = database.syncDao()
         val scoring = database.scoringDao()
 
-        val origins = sync.originatingDeviceIds().map { deviceId ->
+        // This device's own id is always an origin, even before it has
+        // captured anything.
+        //
+        // `originatingDeviceIds()` lists the origins this database holds rows
+        // for, and on a device that has only ever received -- a fresh mirror,
+        // or a new install that has imported a batch -- that list can be
+        // empty. A header with no origins is not a valid batch (§2), so the
+        // export would fail on a device that still has perfectly good likes
+        // and parameter changes to send. Including this device's own id gives
+        // the header something true to say: an origin carrying no segments,
+        // which §2 provides for with `throughOriginId: null`.
+        val ownDeviceId = DeviceId.get(appContext)
+        val origins = (sync.originatingDeviceIds() + ownDeviceId).distinct().sorted().map { deviceId ->
             val after = if (fromTheBeginning) {
                 0L
             } else {
@@ -234,6 +248,8 @@ object BatchExport {
                         createdAt = row.createdAt,
                         source = row.source,
                         sourceEndReason = row.sourceEndReason,
+                        playbackType = row.playbackType,
+                        utcOffsetMinutes = row.utcOffsetMinutes,
                     ),
                 )
             }

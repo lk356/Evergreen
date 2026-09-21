@@ -5,11 +5,13 @@ import androidx.core.net.toUri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.scoring.ScoreService
 import com.example.evergreen.scoring.ScoringParameters
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -97,6 +99,8 @@ class BatchSyncTest {
         listenedMs: Long = 180_000,
         durationMs: Long = 200_000,
         deviceId: String = walkman,
+        playbackType: PlaybackType? = null,
+        utcOffsetMinutes: Int? = null,
     ) {
         val title = "Track $index"
         writer.dao().recordSegment(
@@ -125,6 +129,8 @@ class BatchSyncTest {
                 endJumpToMs = null,
                 lastSampleAgeMs = 100,
                 createdAt = at + listenedMs,
+                playbackType = playbackType,
+                utcOffsetMinutes = utcOffsetMinutes,
             ),
         )
     }
@@ -232,10 +238,21 @@ class BatchSyncTest {
 
         val plan = BatchExport.plan(context, fromTheBeginning = true, database = writer)
 
-        assertEquals(
-            "both the device's own facts and the imported ones",
-            setOf(walkman, "spotify-history-import"),
-            plan.origins.map { it.deviceId }.toSet(),
+        val origins = plan.origins.map { it.deviceId }.toSet()
+        assertTrue(
+            "both the device's own facts and the imported ones: $origins",
+            origins.containsAll(setOf(walkman, "spotify-history-import")),
+        )
+        // Since Phase 5c this device's own install id is always an origin too,
+        // even when it has recorded nothing under it -- otherwise a device
+        // holding only received rows could not export its likes at all. It
+        // carries no segments here, because this fixture records everything
+        // under `walkman`.
+        val own = DeviceId.get(context)
+        assertTrue("this device names itself: $origins", own in origins)
+        assertNull(
+            "and it offers no segments, having recorded none",
+            plan.origins.single { it.deviceId == own }.throughOriginId,
         )
         assertTrue(plan.segments > 0)
     }
@@ -611,6 +628,135 @@ class BatchSyncTest {
      * are fingerprinted by their global name and their listened time, which is
      * what a duplicate would disturb.
      */
+    // --- Settings merging both ways, Phase 5c step 4 -------------------------
+
+    @Test
+    fun anOlderSettingChangeDoesNotRollBackANewerOne() = runBlocking {
+        // The two-way case the one-way import got wrong. The mirror changes a
+        // setting AFTER the writer took its batch. Importing that batch must
+        // not quietly undo the change -- which is exactly what adopting the
+        // producer's `current` flag used to do.
+        buildBaseline()
+        copyWholeDatabase(mirror)
+
+        val writerChange = ScoringParameters().copy(halfLifeDays = 10.0)
+        writer.scoringDao().putScoringParameters(writerChange, t0 + 30 * day)
+        val delta = tempFile("batch-params-older.jsonl")
+        exportTo(delta, fromTheBeginning = true)
+
+        // ...and only now does the other device change something, later.
+        val mirrorChange = ScoringParameters().copy(halfLifeDays = 90.0)
+        mirror.scoringDao().putScoringParameters(mirrorChange, t0 + 31 * day)
+
+        importInto(mirror, delta)
+
+        assertEquals(
+            "the later change is the one in force",
+            mirrorChange.toJson(),
+            mirror.scoringDao().syncStateText(SyncKeys.SCORING_PARAMETERS),
+        )
+        assertEquals(
+            "and the earlier one is still in the log, not lost",
+            2,
+            mirror.syncDao().countParameterHistory(),
+        )
+    }
+
+    @Test
+    fun whichSettingWinsDoesNotDependOnImportOrder() = runBlocking {
+        // The property the old per-line behaviour did not have: two batches
+        // applied in either order leave the same settings in force.
+        buildBaseline()
+        copyWholeDatabase(mirror)
+
+        val early = ScoringParameters().copy(halfLifeDays = 10.0)
+        val late = ScoringParameters().copy(halfLifeDays = 90.0)
+
+        writer.scoringDao().putScoringParameters(early, t0 + 30 * day)
+        val first = tempFile("batch-order-a.jsonl")
+        exportTo(first, fromTheBeginning = true)
+
+        writer.scoringDao().putScoringParameters(late, t0 + 31 * day)
+        val second = tempFile("batch-order-b.jsonl")
+        exportTo(second, fromTheBeginning = true)
+
+        // Newest first, then oldest -- the order a folder sync can deliver.
+        importInto(mirror, second)
+        importInto(mirror, first)
+
+        assertEquals(
+            "the later change still wins, whichever file arrived last",
+            late.toJson(),
+            mirror.scoringDao().syncStateText(SyncKeys.SCORING_PARAMETERS),
+        )
+    }
+
+    // --- Format v2: the two schema v8 columns cross ---------------------------
+
+    @Test
+    fun aRemoteSegmentIsStillRemoteAfterCrossing() = runBlocking {
+        // The whole reason for the formatVersion bump. If the playback type did
+        // not cross, a phantom recorded on one device would arrive on the other
+        // with nothing marking it and would score as real listening -- which is
+        // exactly the harm the phase set out to remove, arriving by a different
+        // door.
+        like(1, t0)
+        play(1, t0 + day, playbackType = PlaybackType.LOCAL, utcOffsetMinutes = 60)
+        play(1, t0 + 2 * day, playbackType = PlaybackType.REMOTE, utcOffsetMinutes = 60)
+        play(1, t0 + 3 * day, playbackType = null, utcOffsetMinutes = -300)
+        writer.scoringDao().putScoringParameters(ScoringParameters(), t0)
+
+        val file = tempFile("batch-v2.jsonl")
+        exportTo(file, fromTheBeginning = true)
+        importInto(mirror, file)
+
+        val crossed = mirror.syncDao()
+            .segmentsToExport(walkman, 0, 100)
+            .ifEmpty { null }
+        assertNull("a received row is never re-exported as this device's own", crossed)
+
+        val rows = mirror.query(
+            "SELECT playbackType, utcOffsetMinutes FROM listening_segments " +
+                "ORDER BY startedAtMs",
+            emptyArray(),
+        )
+        rows.use { c ->
+            assertEquals(3, c.count)
+            assertTrue(c.moveToNext())
+            assertEquals("LOCAL", c.getString(0))
+            assertEquals(60, c.getInt(1))
+            assertTrue(c.moveToNext())
+            assertEquals("REMOTE", c.getString(0))
+            assertEquals(60, c.getInt(1))
+            assertTrue(c.moveToNext())
+            assertTrue("null stays null -- not observed, not LOCAL", c.isNull(0))
+            assertEquals(-300, c.getInt(1))
+        }
+    }
+
+    @Test
+    fun aRemoteSegmentDoesNotCountTowardsTheRankingOnEitherDevice() = runBlocking {
+        // The property that matters more than the column surviving: both
+        // devices reach the same conclusion about it.
+        like(1, t0)
+        like(2, t0)
+        repeat(3) { n -> play(1, t0 + n * day, playbackType = PlaybackType.LOCAL) }
+        repeat(3) { n -> play(2, t0 + n * day, playbackType = PlaybackType.LOCAL) }
+        // Track 2 additionally picks up six phantoms, which must buy it nothing.
+        repeat(6) { n -> play(2, t0 + (n + 4) * day, playbackType = PlaybackType.REMOTE) }
+        writer.scoringDao().putScoringParameters(ScoringParameters(), t0)
+
+        val file = tempFile("batch-v2-ranking.jsonl")
+        exportTo(file, fromTheBeginning = true)
+        importInto(mirror, file)
+
+        assertEquals(
+            "the same facts give the same ranking on both devices",
+            ranking(writer),
+            ranking(mirror),
+        )
+    }
+
     private suspend fun fingerprint(database: EvergreenDatabase): String {
         val segments = database.dao().segmentPage(limit = 100_000, offset = 0)
             .map { "${it.segment.deviceId}/${it.segment.originRowId ?: it.segment.id}" +

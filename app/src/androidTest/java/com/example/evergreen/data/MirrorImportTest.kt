@@ -66,7 +66,11 @@ class MirrorImportTest {
      * Evergreen database at the current schema version, written through Room
      * and then vacuumed into a standalone file.
      */
-    private fun writeIncomingBackup(deviceName: String? = "NW-A307", likes: Int = 3): Unit =
+    private fun writeIncomingBackup(
+        deviceName: String? = "NW-A307",
+        likes: Int = 3,
+        segments: Int = 0,
+    ): Unit =
         runBlocking {
             val source = Room.databaseBuilder(
                 context,
@@ -81,6 +85,10 @@ class MirrorImportTest {
                 source.scoringDao().putSyncMs(SyncKeys.EVERGREEN_WRITE_CONFIRMED_AT, at)
                 source.scoringDao().putSyncText(SyncKeys.EVERGREEN_PLAYLIST_ID, "pl_walkman")
                 repeat(likes) { index -> likeOne(source, index) }
+                // Segments recorded on the *source*, so they arrive the way a
+                // whole-file copy delivers them: the producer's ids in `id`,
+                // and originRowId null.
+                repeat(segments) { index -> playOne(source, index) }
                 source.scoringDao().replaceScores(
                     (0 until likes).map { index ->
                         ScoreEntity(
@@ -102,6 +110,39 @@ class MirrorImportTest {
                 }
             }
         }
+
+    /** One segment on [db], as the device that recorded it would write it. */
+    private suspend fun playOne(db: EvergreenDatabase, index: Int) {
+        val title = "Track $index"
+        db.dao().recordSegment(
+            trackKey = trackKeyOf(title, "Artist", "Album"),
+            title = title,
+            artist = "Artist",
+            album = "Album",
+            durationMs = 200_000,
+            service = SERVICE_SPOTIFY,
+            serviceTrackId = "spotify:track:t$index",
+            segment = ListeningSegmentEntity(
+                trackId = 0,
+                serviceTrackRowId = null,
+                appPackage = "com.spotify.music",
+                deviceId = "device-walkman",
+                startedAtMs = at + index * 1_000L,
+                endedAtMs = at + index * 1_000L + 180_000,
+                startPositionMs = 0,
+                endPositionMs = 180_000,
+                listenedMs = 180_000,
+                trackDurationMs = 200_000,
+                forwardSeekCount = 0,
+                seekedForwardMs = 0,
+                endReason = EndReason.TRACK_CHANGE,
+                endJumpFromMs = null,
+                endJumpToMs = null,
+                lastSampleAgeMs = 100,
+                createdAt = at,
+            ),
+        )
+    }
 
     private suspend fun likeOne(db: EvergreenDatabase, index: Int) {
         val title = "Track $index"
@@ -247,6 +288,67 @@ class MirrorImportTest {
                 "pl_walkman",
                 staged.scoringDao().syncStateText(SyncKeys.EVERGREEN_PLAYLIST_ID),
             )
+        } finally {
+            staged.close()
+        }
+    }
+
+    /**
+     * **A mirror must not later claim to have originated what it received.**
+     *
+     * `BatchExport` selects `originRowId IS NULL` to mean "this database
+     * originated this row". A whole-file copy arrives with every row's
+     * `originRowId` null — the producer's own ids sit in `id` — so without this
+     * stamp the receiving device believes it recorded the lot.
+     *
+     * It did not matter in Phase 5b, where a mirror never exported. It decides
+     * everything in 5c, where both devices do. Measured on the real Pixel
+     * database before the fix: it would have offered **77,816 rows it did not
+     * originate** against the 56 it had actually recorded — the entire delta
+     * benefit thrown away, and two paths by which one fact could arrive.
+     */
+    @Test
+    fun aMirrorDoesNotOfferToExportWhatItReceived() = runBlocking {
+        writeIncomingBackup(likes = 3, segments = 5)
+        val preview = stage()
+
+        val staged = Room.databaseBuilder(
+            context,
+            EvergreenDatabase::class.java,
+            staging.absolutePath,
+        ).build()
+        try {
+            // As it arrives, every row looks locally originated.
+            assertEquals(
+                "a whole-file copy arrives with nothing marking its provenance",
+                listOf("device-walkman"),
+                staged.syncDao().originatingDeviceIds(),
+            )
+            assertEquals(5, staged.syncDao().segmentsToExport("device-walkman", 0, 100).size)
+
+            MirrorImport.neutralise(staged, preview, at)
+
+            assertEquals(
+                "after neutralising it speaks for no origin at all",
+                emptyList<String>(),
+                staged.syncDao().originatingDeviceIds(),
+            )
+            assertEquals(
+                "and offers none of the received rows for export",
+                0,
+                staged.syncDao().segmentsToExport("device-walkman", 0, 100).size,
+            )
+
+            // The rows are all still there, and still name the device that
+            // really recorded them -- nothing was deleted, only labelled.
+            staged.query(
+                "SELECT COUNT(*) FROM listening_segments " +
+                    "WHERE deviceId = 'device-walkman' AND originRowId = id",
+                emptyArray(),
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("every row keeps its originating id", 5, c.getInt(0))
+            }
         } finally {
             staged.close()
         }

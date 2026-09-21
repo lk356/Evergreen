@@ -147,6 +147,9 @@ abstract class SyncDao {
         val createdAt: Long,
         val source: String,
         val sourceEndReason: String?,
+        /** Schema v8. Null on every row captured before it existed. */
+        val playbackType: String?,
+        val utcOffsetMinutes: Int?,
         val trackKey: String,
         val title: String?,
         val artist: String?,
@@ -177,6 +180,7 @@ abstract class SyncDao {
                s.endJumpToMs AS endJumpToMs, s.lastSampleAgeMs AS lastSampleAgeMs,
                s.createdAt AS createdAt, s.source AS source,
                s.sourceEndReason AS sourceEndReason,
+               s.playbackType AS playbackType, s.utcOffsetMinutes AS utcOffsetMinutes,
                t.trackKey AS trackKey, t.title AS title, t.artist AS artist,
                t.album AS album, t.durationMs AS trackDuration,
                st.service AS service, st.serviceTrackId AS serviceTrackId, st.isrc AS isrc
@@ -585,6 +589,26 @@ abstract class SyncDao {
         insertParameterEntry(entry)
         return true
     }
+
+    /**
+     * The newest entry in the merged parameter log, or null if it is empty.
+     *
+     * `changedAt DESC, parametersHash DESC` and not `changedAt` alone: two
+     * devices *could* record a change in the same millisecond, and a rule that
+     * left the winner to SQLite's row order would give two databases holding
+     * the same facts two different sets of settings -- and therefore two
+     * different rankings, which is the one outcome this whole design exists to
+     * rule out. The hash is an arbitrary tie-break, but it is a *deterministic*
+     * one, which is the property that matters.
+     */
+    @Query(
+        """
+        SELECT * FROM parameter_history
+         ORDER BY changedAt DESC, parametersHash DESC
+         LIMIT 1
+        """,
+    )
+    abstract suspend fun newestParameterEntry(): ParameterHistoryEntity?
 
     @Query(
         "SELECT id FROM evergreen_membership WHERE trackId = :trackId AND joinedAt = :joinedAt",
