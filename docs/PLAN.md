@@ -202,8 +202,9 @@ _Update at the end of each task: what was done, what's next, any blockers._
   reverse phantom is real and symmetric and the fix catches it both ways;
   capture records the playback type and scoring excludes it; the database is
   at **schema v8** and every segment carries its own UTC offset.
-- **305 unit tests pass**, up from 278. The instrumented suite has not been
-  run this phase — it needs the Walkman unplugged.
+- **305 unit tests and 252 instrumented tests pass**, up from 278 and 251.
+  The instrumented run was on the Pixel with the Walkman unplugged,
+  2026-09-21, and includes the v8 migration against a real SQLite database.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
@@ -3040,7 +3041,52 @@ deliberately broken backfill (today's offset stamped on every row) and fails
 there, so it is not passing vacuously; and the fixture caps over 300 listens, so
 the daily cap is genuinely exercised.
 
-**305 unit tests pass**, up from 278 at the start of the phase.
+**305 unit tests and 252 instrumented tests pass**, up from 278 and 251 at
+the start of the phase. The instrumented suite ran on the Pixel with the
+Walkman unplugged on 2026-09-21 and includes `migrate7To8` against a real
+SQLite database — 0 failures.
+
+#### The `offline` flag, checked because the user asked — 2026-09-21
+
+A separate question from `offline_timestamp`'s staleness, and the answer
+corrects the impression the staleness figures gave.
+
+**Spotify's own definitions**, from `ReadMeFirst_ExtendedStreamingHistory.pdf`
+inside the export: `ts` is *"a timestamp indicating when the track stopped
+playing in UTC"*; `offline` is *"whether the track was played in offline mode"*;
+`offline_timestamp` is *"a timestamp of when offline mode was used"*.
+
+**`offline_timestamp` is the start of the play, and `ts` is the end.** The
+139-second median gap is a track length, not staleness. Testing
+`ts − offline_timestamp − ms_played` over all 1,577 offline rows:
+
+| | |
+|---|---|
+| median | **+0.6 s** |
+| within 2 s of the play start | 1,215 rows (**77.0%**) |
+| within 60 s | 1,345 (85.3%) |
+| within 1 hour | 1,508 (95.6%) |
+
+So for three-quarters of offline rows the two fields agree to within two
+seconds and there is no staleness at all. Only the 4.4% tail genuinely
+disagrees. Stated honestly: this shows the two timestamps are *internally
+consistent*, not that either is absolutely right — both would move together if
+Spotify assigned them at upload. The ±1–3 s jitter argues against that, but the
+export cannot settle it, and it does not change the conclusion.
+
+**None of this touches Evergreen, which is the part worth recording.**
+`offline` and `offline_timestamp` exist only inside the export file; they are
+not columns in this database and `HistoryParser` does not read them. **Capture
+involves no network at all** — it reads media sessions on the device and stamps
+`System.currentTimeMillis()` plus the device's UTC offset when the listen ends.
+So offline listening on the Walkman is captured with a correct timestamp and a
+correct offset as it happens, and a local-file player in Phase 6 would be
+captured the same way and would never appear in a Spotify export at all.
+
+**For offline listening, Evergreen's own capture is strictly better than the
+export**, because it observes the play rather than reconstructing it from a
+client that reported later. The schema v8 offset is unaffected by being
+offline.
 
 #### `offline_timestamp` — measured, and it stays parked
 
