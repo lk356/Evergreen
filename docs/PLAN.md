@@ -75,13 +75,17 @@ anything that moves facts between devices.
         throughout**: mirror mode, capture off, every Spotify write refused.
         No merge, no second capturing device. **Started 2026-09-20** on
         `phase5b-delta`.
-  - [ ] **5c — the merge.** Both devices capturing, facts flowing both ways,
+  - [~] **5c — the merge.** Both devices capturing, facts flowing both ways,
         segments deduplicated, writer arbitration. **Opens with the phantom
         fix in `capture/`, which is its hard prerequisite** per
-        `docs/SYNC_FOUNDATION.md` 5.1. Gated on check 0b — what fraction of
+        `docs/SYNC_FOUNDATION.md` 5.1. ~~Gated on check 0b — what fraction of
         listening actually happens on the Pixel — which may say the merge is
-        not worth building at all. Its design questions are open in
-        `docs/PHASE5_QUESTIONS.md`.
+        not worth building at all.~~ **Check 0b stopped being a gate on
+        2026-09-21**: the user wants the merge whatever the fraction turns
+        out to be, so it is now a number to record rather than a decision to
+        make. **Started 2026-09-21** on `phase5c-merge`; the prompt is
+        `docs/PHASE5C_PROMPT.md` and the decisions behind it are under
+        Status.
 
   **Why 5b is a deliverable and not the first half of one.** The fact batch
   is needed by the merge, by the Linux agent in Phase 7 (which cannot produce
@@ -172,11 +176,14 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-- Current phase: **Phase 5b — delta sync. Built and device-verified on
-  2026-09-20**, on branch `phase5b-delta`. Every build step of
-  `docs/PHASE5B_PROMPT.md` is done except step 2, which is a measurement for
-  Phase 5c rather than a build, and every item on the verification checklist
-  passed on both devices.
+- Current phase: **Phase 5c — the merge. Started 2026-09-21** on branch
+  `phase5c-merge`, from `main`. The prompt is `docs/PHASE5C_PROMPT.md`; the
+  decisions that opened it are in the block below.
+- **Phase 5b is done**: built and device-verified on 2026-09-20 on branch
+  `phase5b-delta`, merged to `main` as pull request #4. Every build step of
+  `docs/PHASE5B_PROMPT.md` is done except step 2, which was a measurement for
+  Phase 5c rather than a build and which was then run on the same day, and
+  every item on the verification checklist passed on both devices.
 - **278 unit tests and 251 instrumented tests pass** (up from 275 and 225),
   the instrumented ones on the Pixel with the Walkman unplugged.
 - **The number the phase exists for: a delta is 497 KiB against 21.0 MiB for
@@ -189,17 +196,63 @@ _Update at the end of each task: what was done, what's next, any blockers._
   rows left to measure. **The Pixel does not truncate a listen; it fragments
   it**, and the fragments score as rejections of songs played in full. Full
   figures under Phase 5c in "Open questions".
-- **Next:** nothing is in progress. 5c is specified well enough to start —
-  its fix is settled and one of its merge rules has been ruled out — but it
-  is gated on check 0b, which the Spotify export can answer from a file
-  already on disk.
+- **Next:** Phase 5c step 1, the measurements that have to happen before the
+  phantom fix lands. ~~5c is gated on check 0b.~~ **It is not, since
+  2026-09-21** — see below.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
   writer to mirror, with the Pixel staying read-only — and **5c, the merge**,
   which is where both devices capture and where the phantom fix in `capture/`
   sits as the hard prerequisite. The reasoning is under the roadmap.
-- Last update: 2026-09-20.
+- Last update: 2026-09-21.
+
+**Phase 5c is started, and what it is has changed — decided by the user
+2026-09-21.** 5c was written as "both devices capture and the facts merge",
+gated on a check that might have cancelled it. It is now larger and
+ungated. The decisions, in the user's own framing:
+
+- **The Pixel can do everything the Walkman can.** Capture, view, change
+  settings, and write to Spotify. It stops being a mirror and becomes a
+  peer. Mirror mode stays in the code as an option — a read-only device is
+  still a reasonable thing to be — but the Pixel stops being one.
+- **Everything syncs both ways.** Each device's listening, likes and setting
+  changes reach the other.
+- **Moving files by hand is fine.** No network code, no new host, no
+  automatic sync — that is Phase 7. The transport stays the file, over the
+  same document pickers as today.
+- **Connecting the Pixel to Spotify is fine.** That answers Part 4 question
+  4 of `docs/PHASE5_QUESTIONS.md`, which had asked whether the Pixel needs
+  Spotify at all, with "yes, deliberately".
+- **Check 0b is no longer a gate.** The merge is wanted whatever fraction of
+  listening happens on the Pixel. It is still worth counting, as a number
+  rather than as a decision, and it is step 1c of the phase.
+- **Edge cases are wanted, including rare ones, but each is measured before
+  it is designed for.** This is the user's own rule and it comes from
+  experience on this project: check 0a expected truncation and found
+  fragmentation, so the fix that would have been designed from the
+  expectation would have missed the real harm. Steps 1 and 7 of the prompt
+  are measurements with a stop-and-show before any design follows.
+
+**The design 5c builds towards: one writer role, handed over, never
+shared.** Both devices can do everything, but only the device holding the
+**writer role** writes the Evergreen playlist, takes the monthly snapshot,
+and exports a month to Spotify. Reading from Spotify — the likes sync — is
+allowed on every device. The rule that makes it safe is that **the current
+writer releases the role and the other device claims it only on importing
+that release**, so there can briefly be no writer, which is harmless, but
+never two, which is not. A forced take-over exists behind a loud
+confirmation for when the writer device is lost. The role is tied to a
+**device id**, not to "an Android device", because a self-hosted server
+holding it is a real possibility in Phase 7 — which is a reason not to make
+it impossible, and not a reason to build for it.
+
+**Two things are pre-approved for 5c and nothing else is.** Schema v8 —
+one nullable column on `listening_segments` holding the UTC offset in
+minutes at the moment of capture, as a hand-written migration in the style
+of v7 — and a `formatVersion` bump in `docs/SYNC_FORMAT.md` to carry that
+column and the writer role. Anything else touching the schema, the batch
+format or `capture/` stops and asks.
 
 **Phase 5b is built: a mirror update is a small text file rather than a
 21 MiB database.** "Export changes" on the writer and "Import changes" on the

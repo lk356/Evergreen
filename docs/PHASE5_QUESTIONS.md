@@ -130,10 +130,16 @@ That is a separate question from phantoms and belongs to 5c's merge rules.
 
 ### Check 0b. How much listening actually happens on the Pixel?
 
-This decides whether the **merge** (now Phase 5c) is worth building at all,
-or whether a mirror the writer keeps up to date is the whole feature. What
-fraction of listening happens on the Pixel rather than the Walkman? If it is
-small, question 1 below almost answers itself.
+**No longer a gate, decided by the user 2026-09-21.** It was written as the
+check that decides whether the **merge** is worth building at all. The user
+wants the merge whatever the answer turns out to be, so the question stays —
+it is worth knowing — but as **a number to record, not a decision to make**.
+It is step 1c of `docs/PHASE5C_PROMPT.md` and it no longer blocks anything.
+
+The question as originally asked: what fraction of listening happens on the
+Pixel rather than the Walkman? If it is small, question 1 below almost
+answers itself — which is the reasoning that made it a gate, and which the
+user has now overruled deliberately rather than by oversight.
 
 **The original method is impossible, corrected 2026-09-20.** It said: *"over
 the day-to-day use period before Phase 5 starts, keep a rough count."* Mirror
@@ -303,18 +309,28 @@ which is what a mirror means, and revisit for 5b.
 
 ## Part 4 — Questions only the user can answer
 
-1. **View, or manage?** Is the Pixel for reading stats, or do you also want to
-   trigger a sync, edit parameters, and confirm playlist writes from it?
-   Managing from the Pixel is a much bigger ask, because it means the Pixel's
-   changes have to flow back.
+1. ~~**View, or manage?**~~ **Answered 2026-09-21: manage.** The question was
+   whether the Pixel is for reading stats, or whether the user also wants to
+   trigger a sync, edit parameters and confirm playlist writes from it — and
+   it warned that managing is a much bigger ask, because the Pixel's changes
+   have to flow back. The answer is that the Pixel becomes a full peer: it
+   captures, views, changes settings and can write to Spotify when it holds
+   the writer role. The "changes have to flow back" cost is real and is
+   exactly what steps 4 and 5 of `docs/PHASE5C_PROMPT.md` pay.
 2. **How stale can the mirror be?** A manual "export now / import now" pair is
    the least code. Automatic implies the network transport in 3d.
 3. **Is it acceptable that running instrumented tests wipes the mirror?**
    They destroy the database of the device they run on, and the Pixel is the
    test device. Re-importing is cheap, but it will happen.
-4. **Does the Pixel need Spotify connected at all?** If facts cross and the
-   Pixel never writes, it does not. Not connecting it is one less place a
-   refresh token lives.
+4. ~~**Does the Pixel need Spotify connected at all?**~~ **Answered
+   2026-09-21: yes, and deliberately.** The reasoning was that if facts cross
+   and the Pixel never writes, it does not, and that not connecting it is one
+   less place a refresh token lives. The user has chosen the other side: the
+   Pixel becomes a peer that can do everything the Walkman can, so it
+   connects to Spotify. The token cost is real and accepted; what limits the
+   damage instead is the **writer role** (`docs/PHASE5C_PROMPT.md` step 5),
+   which means a connected Pixel still refuses every playlist write unless it
+   holds the role.
 
 ---
 
