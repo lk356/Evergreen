@@ -74,6 +74,58 @@ enum class SegmentSource {
 }
 
 /**
+ * Whether the media session's volume was this device's own or another device's.
+ *
+ * Read from `MediaController.PlaybackInfo.getPlaybackType()`, which returns
+ * `PLAYBACK_TYPE_LOCAL` or `PLAYBACK_TYPE_REMOTE`. **Schema v8.**
+ *
+ * This is an observation, not a conclusion, which is why it is allowed here
+ * under the rule that segments store facts (invariant 1b). It says what the
+ * session reported; it does not say "this was a phantom". Deciding that a
+ * remote segment should not be scored is a judgement, it belongs to scoring,
+ * and [com.example.evergreen.scoring.TrackScorer] is where it is made — the
+ * same arrangement as DJ commentary, which is stored at capture and filtered
+ * at read time by URI prefix.
+ *
+ * **Why the value is stored rather than acted on at capture.** With Spotify
+ * Connect, a device showing a session for music playing somewhere else records
+ * a **phantom**: a faithful duplicate of a listen it is not producing. Phase
+ * 5c step 1 measured it in both directions — five tracks played on the Pixel
+ * produced five segments on the Walkman claiming 403.3 s against the Pixel's
+ * real 403.5 s — so a merge that trusted both devices would double-count, and
+ * would also inherit spurious zero-length rejections of songs played in full.
+ *
+ * Dropping such a segment at capture would have been one `if` and no column.
+ * It was rejected on 2026-09-21 because it is **silently lossy**: a phone
+ * casting to a speaker, a TV, a car or a desktop also reports [REMOTE] while
+ * no device of the user's is playing locally, so dropping would discard a real
+ * listen that nothing else records and leave no trace that it had happened.
+ * Storing the fact and excluding it at read time keeps that decision
+ * reversible, which is the same rule that keeps the replay threshold out of
+ * capture and keeps a merge from ever deleting.
+ *
+ * **Null means "not observed"**, which every row written before v8 is, and
+ * which is different from [LOCAL]. Null scores exactly as it always did, so
+ * the column changes nothing about existing history.
+ */
+enum class PlaybackType {
+    /** The session's volume is this device's own stream volume. */
+    LOCAL,
+
+    /**
+     * The session's volume belongs to another device.
+     *
+     * Strictly a statement about *volume*, not about location — it is what a
+     * session sets through `MediaSession.setPlaybackToRemote()`. Nothing
+     * compels an app routing audio elsewhere to set it. Spotify does: measured
+     * on both devices, with `volumeControlId` naming its own Connect
+     * media-route provider as a second, independent signal, while every other
+     * session on the same device read [LOCAL] at the same moment.
+     */
+    REMOTE,
+}
+
+/**
  * One **play segment**: a continuous stretch of listening to a single track.
  *
  * Not one row per callback. The media session fires several callbacks a second
@@ -287,4 +339,38 @@ data class ListeningSegmentEntity(
      * that ask, and leaves capture untouched.
      */
     val originRowId: Long? = null,
+
+    /**
+     * What the media session said about whose volume it was. **Schema v8.**
+     *
+     * Null on every row written before v8, and on any row whose session never
+     * reported a playback type. See [PlaybackType] for why this is stored
+     * rather than acted on at capture, and
+     * [com.example.evergreen.scoring.TrackScorer] for where it is acted on.
+     */
+    val playbackType: PlaybackType? = null,
+
+    /**
+     * The device's UTC offset in minutes at the moment this segment was
+     * captured — `+60` for UTC+1, `-300` for UTC−5. **Schema v8.**
+     *
+     * **Why a segment has to carry its own offset.** The daily cap buckets
+     * listening by *local* calendar day, because "in one night" is what the cap
+     * is about and a UTC day would cut an evening in half for anyone east of
+     * Greenwich. That was unambiguous while one device produced every fact. It
+     * stops being unambiguous the moment two do: a device reading the history
+     * in a different zone from the one that recorded it would bucket the same
+     * plays on different days, and cap them differently, so the same facts and
+     * the same parameters would give two different rankings — which is the one
+     * outcome cross-device sync exists to rule out.
+     *
+     * Stamped on **every** row rather than only when the offset changes. There
+     * is no timezone-history table to keep and no interpolation to get wrong,
+     * for about two bytes a row.
+     *
+     * **Null means "not observed"**, and scoring falls back to the reading
+     * device's current zone — which is exactly what it did before v8, so a row
+     * that never got an offset behaves as it always has.
+     */
+    val utcOffsetMinutes: Int? = null,
 )

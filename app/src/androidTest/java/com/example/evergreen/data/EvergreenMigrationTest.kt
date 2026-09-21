@@ -953,6 +953,134 @@ class EvergreenMigrationTest {
         migrated.close()
     }
 
+    /**
+     * v8 adds two nullable columns to a populated v7 database and must change
+     * nothing else.
+     *
+     * The assertion that matters is the **last** one: every pre-existing row
+     * comes out with both new columns NULL. Null means "not observed" for both
+     * of them, and both readers fall back to exactly what they did before v8 —
+     * scoring the segment normally, and bucketing it by the reading device's
+     * current zone — so NULL everywhere is what makes the migration incapable
+     * of moving a single score. The user's stated test for the phase is that
+     * the Walkman's ranking is identical before and after; this is that test's
+     * foundation, at the row level.
+     */
+    @Test
+    fun migrate7To8_addsTheTwoColumnsAsNullAndDisturbsNothing() {
+        helper.createDatabase(TEST_DB, 7).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO tracks
+                    (id, trackKey, title, artist, album, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 'electro swingity|willix|electro swingity', 'Electro Swingity',
+                        'Willix', 'Electro Swingity', $SEEKED_DURATION, 1000, 2000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO service_tracks
+                    (id, trackId, service, serviceTrackId, isrc, isrcLookupAt,
+                     isrcLookupAttempts, isrcLookupError, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 1, 'spotify', 'spotify:track:aaa', 'GBAAA0000001', 1000, 1, NULL,
+                        $SEEKED_DURATION, 1000, 2000)
+                """.trimIndent(),
+            )
+            // A locally captured row (originRowId NULL) and one that arrived in
+            // a delta batch (originRowId set), so both sides of v7's unique
+            // index are present while v8 runs.
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs,
+                     endedAtMs, startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason, originRowId)
+                VALUES (10, 1, 1, 'com.spotify.music', 'device-a', 1700000000000,
+                        1700000100000, 0, $SEEKED_END_POSITION, $SEEKED_LISTENED,
+                        $SEEKED_DURATION, 1, 200000, 'TRACK_CHANGE', NULL, NULL, 500,
+                        1700000000000, 'CAPTURE', NULL, NULL)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs,
+                     endedAtMs, startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason, originRowId)
+                VALUES (11, 1, 1, 'com.spotify.music', 'device-b', 1700000200000,
+                        1700000300000, NULL, NULL, 31250, $SEEKED_DURATION,
+                        NULL, NULL, 'IMPORTED', NULL, NULL, NULL,
+                        1700000200000, 'IMPORT_SPOTIFY_HISTORY', 'fwdbtn', 4242)
+                """.trimIndent(),
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 8, true, MIGRATION_7_8)
+
+        migrated.query("SELECT COUNT(*) FROM listening_segments").use { c ->
+            c.moveToFirst()
+            assertEquals("both segments must survive", 2, c.getInt(0))
+        }
+
+        // The two columns that disagree most still disagree in the same
+        // direction, and the v7 column is untouched.
+        migrated.query(
+            "SELECT endPositionMs, listenedMs, deviceId, originRowId " +
+                "FROM listening_segments WHERE id = 10",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(SEEKED_END_POSITION, c.getLong(0))
+            assertEquals(SEEKED_LISTENED, c.getLong(1))
+            assertEquals("device-a", c.getString(2))
+            assertTrue("a locally captured row still has no origin id", c.isNull(3))
+        }
+        migrated.query(
+            "SELECT originRowId, source, sourceEndReason " +
+                "FROM listening_segments WHERE id = 11",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(4242L, c.getLong(0))
+            assertEquals("IMPORT_SPOTIFY_HISTORY", c.getString(1))
+            assertEquals("fwdbtn", c.getString(2))
+        }
+
+        // The assertion the phase rests on: nothing acquired a value, so
+        // nothing can score differently.
+        migrated.query(
+            "SELECT COUNT(*) FROM listening_segments " +
+                "WHERE playbackType IS NULL AND utcOffsetMinutes IS NULL",
+        ).use { c ->
+            c.moveToFirst()
+            assertEquals("every migrated row is 'not observed' on both", 2, c.getInt(0))
+        }
+
+        // And a row written after the migration can carry both.
+        migrated.execSQL(
+            """
+            INSERT INTO listening_segments
+                (trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs, endedAtMs,
+                 startPositionMs, endPositionMs, listenedMs, trackDurationMs, forwardSeekCount,
+                 seekedForwardMs, endReason, endJumpFromMs, endJumpToMs, lastSampleAgeMs,
+                 createdAt, source, sourceEndReason, originRowId, playbackType, utcOffsetMinutes)
+            VALUES (1, 1, 'com.spotify.music', 'device-a', 1700000400000, 1700000500000,
+                    0, 1000, 1000, $SEEKED_DURATION, 0, 0, 'TRACK_CHANGE', NULL, NULL, 100,
+                    1700000400000, 'CAPTURE', NULL, NULL, 'REMOTE', -300)
+            """.trimIndent(),
+        )
+        migrated.query(
+            "SELECT playbackType, utcOffsetMinutes FROM listening_segments " +
+                "WHERE playbackType IS NOT NULL",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("REMOTE", c.getString(0))
+            assertEquals(-300, c.getInt(1))
+            assertEquals("exactly one row carries a playback type", 1, c.count)
+        }
+        migrated.close()
+    }
+
     private fun freshV2Database(): EvergreenDatabase {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return Room.inMemoryDatabaseBuilder(context, EvergreenDatabase::class.java)

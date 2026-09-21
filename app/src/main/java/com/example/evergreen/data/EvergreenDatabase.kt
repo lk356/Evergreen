@@ -40,6 +40,19 @@ class Converters {
     @TypeConverter
     fun fromSegmentSource(source: SegmentSource?): String? = source?.name
 
+    /**
+     * Same discipline again: an unrecognised name becomes null, i.e. "not
+     * observed", rather than throwing. A null playback type scores exactly as
+     * a row written before v8 does, so the worst a future value can do here is
+     * lose the exclusion for that row -- never stop the table being read.
+     */
+    @TypeConverter
+    fun toPlaybackType(value: String?): PlaybackType? =
+        value?.let { name -> runCatching { PlaybackType.valueOf(name) }.getOrNull() }
+
+    @TypeConverter
+    fun fromPlaybackType(type: PlaybackType?): String? = type?.name
+
     @TypeConverter
     fun toMembershipReason(value: String?): MembershipReason? =
         value?.let { name -> runCatching { MembershipReason.valueOf(name) }.getOrNull() }
@@ -57,7 +70,7 @@ class Converters {
  * backup taken under a different schema by comparing against this number
  * rather than a literal written out a second time somewhere else.
  */
-const val EVERGREEN_SCHEMA_VERSION = 7
+const val EVERGREEN_SCHEMA_VERSION = 8
 
 /**
  * v6 to v7: `listening_segments.originRowId`, and the unique index over
@@ -107,6 +120,53 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         connection.execSQL(
             "CREATE UNIQUE INDEX IF NOT EXISTS `index_listening_segments_deviceId_originRowId` " +
                 "ON `listening_segments` (`deviceId`, `originRowId`)",
+        )
+    }
+}
+
+/**
+ * v7 to v8: `listening_segments.playbackType` and
+ * `listening_segments.utcOffsetMinutes`.
+ *
+ * **Hand-written for the same reason v7 was, and the reason is still 77,518
+ * rows.** Both are nullable columns with no index and no constraint, which is
+ * the one shape SQLite changes for free:
+ *
+ * ```
+ * ALTER TABLE listening_segments ADD COLUMN playbackType TEXT DEFAULT NULL
+ * ALTER TABLE listening_segments ADD COLUMN utcOffsetMinutes INTEGER DEFAULT NULL
+ * ```
+ *
+ * Two statements, no row read, no index rebuilt. Room's generator would be
+ * entitled to produce exactly this — the v5 and v6 auto-migrations do, because
+ * they only add tables — but it is not worth the risk of finding out on the
+ * NW-A307 that something about the pair pushed it into the "complex change"
+ * bucket that v2 and v4 fell into. See [MIGRATION_6_7] for the full argument;
+ * it has not changed.
+ *
+ * **Two columns in one version, deliberately.** v5 was split from v4 so that
+ * each migration would be one idea with one test, and the instinct here would
+ * be to split again. It is the wrong call for this pair: they are added in the
+ * same phase, for the same reason — two devices both producing facts — and
+ * neither is readable without the other having been considered. Splitting them
+ * would mean two schema versions, two migration tests and two rounds of
+ * validation to save nothing, since neither statement touches a row.
+ *
+ * **Neither column can fail on the existing data.** Both are nullable with a
+ * NULL default and no index, so every existing row simply gains two NULLs.
+ * Null means "not observed" in both cases and both readers fall back to what
+ * they did before v8 — scoring a segment normally, and bucketing it by the
+ * reading device's current zone — so the migration cannot change a single
+ * score. `EvergreenMigrationTest` pins exactly that against a populated v7
+ * database.
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            "ALTER TABLE `listening_segments` ADD COLUMN `playbackType` TEXT DEFAULT NULL",
+        )
+        connection.execSQL(
+            "ALTER TABLE `listening_segments` ADD COLUMN `utcOffsetMinutes` INTEGER DEFAULT NULL",
         )
     }
 }
@@ -175,8 +235,11 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         // cache. `scores` can be dropped and rebuilt; a parameter change that
         // was never recorded is gone. See ParameterHistoryEntity.
         AutoMigration(from = 5, to = 6),
-        // v7 is deliberately NOT here. It is the one hand-written migration in
-        // the project, and MIGRATION_6_7 below says why.
+        // v7 and v8 are deliberately NOT here. They are the hand-written
+        // migrations in this project, and MIGRATION_6_7 and MIGRATION_7_8
+        // above say why: both add nullable columns to a 77,000-row table,
+        // which SQLite does for free, and neither needs the table rebuild a
+        // generated migration might reach for.
     ],
 )
 @TypeConverters(Converters::class)
@@ -217,7 +280,7 @@ abstract class EvergreenDatabase : RoomDatabase() {
                 // the capture service writes, instead of the two blocking each
                 // other. Room enables foreign-key enforcement on its own.
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_6_7)
+                .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
                 .build()
 
         /** Where the database file lives, for the one operation that replaces it. */
