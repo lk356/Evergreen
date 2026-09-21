@@ -88,6 +88,16 @@ data class ScoreContribution(
     val note: ContributionNote,
     /** The stored rows behind this contribution, so a number can be traced to a row. */
     val segmentIds: List<Long> = emptyList(),
+    /**
+     * The UTC offset in force where and when this happened, or null if the row
+     * did not record one.
+     *
+     * Only the daily cap reads it, and only to decide which local day a listen
+     * falls in. Null means the reading device's own zone is used instead, which
+     * is what every row written before schema v8 gets and is exactly what the
+     * scorer did before the column existed.
+     */
+    val utcOffsetMinutes: Int? = null,
 )
 
 /**

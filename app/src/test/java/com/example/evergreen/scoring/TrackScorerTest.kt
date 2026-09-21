@@ -39,6 +39,7 @@ class TrackScorerTest {
         jumpToMs: Long? = null,
         source: SegmentSource = SegmentSource.CAPTURE,
         playbackType: PlaybackType? = null,
+        utcOffsetMinutes: Int? = null,
     ) = ListeningSegmentEntity(
         id = nextId++,
         trackId = TRACK_ID,
@@ -60,6 +61,7 @@ class TrackScorerTest {
         createdAt = endedAtMs,
         source = source,
         playbackType = playbackType,
+        utcOffsetMinutes = utcOffsetMinutes,
     )
 
     private fun input(
@@ -498,6 +500,197 @@ class TrackScorerTest {
         assertEquals(1, scoreOf(rows).listens.size)
         // At 3s it is a deliberate replay, so they are two.
         assertEquals(2, scoreOf(rows, parameters = defaults.copy(replayJumpThresholdMs = 3_000)).listens.size)
+    }
+
+    // --- The daily cap and the timezone, Phase 5c step 3 --------------------
+    //
+    // The cap is 2.0 play-equivalents a day and a full play is worth 1.0, so
+    // three full plays on one local day produce exactly one DAILY_CAP note and
+    // two spread over two days produce none. Counting those notes is therefore
+    // a direct read of which day each listen was filed under.
+
+    /** 2026-09-10T00:00:00+01:00 — midnight in London, 23:00Z on the 9th. */
+    private val midnightLondon = 1_788_994_800_000L
+
+    @Test
+    fun `a row with no offset falls back to the reading device's zone`() {
+        // Every row written before schema v8 is null here, and the scorer is
+        // constructed with Europe/London. Null must therefore behave exactly
+        // like an explicit London offset -- which is what makes the migration
+        // incapable of moving the Walkman's ranking.
+        val instants = listOf(
+            midnightLondon - 60_000,
+            midnightLondon + 60_000,
+            midnightLondon + 120_000,
+        )
+
+        val unstamped = scoreOf(instants.map { segment(it, duration, utcOffsetMinutes = null) })
+        val stamped = scoreOf(instants.map { segment(it, duration, utcOffsetMinutes = 60) })
+
+        assertEquals(stamped.score, unstamped.score, TOLERANCE)
+        assertEquals(stamped.listens.map { it.note }, unstamped.listens.map { it.note })
+    }
+
+    @Test
+    fun `two devices in different zones cap on their own local days`() {
+        // The hazard schema v8 exists for. The same three plays at the same
+        // three instants, recorded either side of midnight in London. London
+        // files one on the 9th and two on the 10th, and nothing is capped. Five
+        // hours west it is still early evening on the 9th, all three land
+        // together, and the third is capped away.
+        val instants = listOf(
+            midnightLondon - 60_000,
+            midnightLondon + 60_000,
+            midnightLondon + 120_000,
+        )
+
+        val london = scoreOf(instants.map { segment(it, duration, utcOffsetMinutes = 60) })
+        val newYork = scoreOf(instants.map { segment(it, duration, utcOffsetMinutes = -240) })
+
+        assertEquals(
+            "London: one play on the 9th, two on the 10th, nothing capped",
+            0,
+            london.listens.count { it.note == ContributionNote.DAILY_CAP },
+        )
+        assertEquals(
+            "New York: all three on the 9th, so the third is capped",
+            1,
+            newYork.listens.count { it.note == ContributionNote.DAILY_CAP },
+        )
+        // Play-equivalents rather than the score, so the assertion is exact:
+        // both sides decay from the same instants, and decay is not what is
+        // being tested here.
+        assertEquals(3.0, london.listens.sumOf { it.playEquivalents }, TOLERANCE)
+        assertEquals(2.0, newYork.listens.sumOf { it.playEquivalents }, TOLERANCE)
+        assertTrue("and the zone really does change the score", london.score > newYork.score)
+    }
+
+    @Test
+    fun `a row's own offset beats the reading device's zone`() {
+        // The property that makes one ranking out of two devices: which day a
+        // listen falls in is a fact about the listening, not about whoever is
+        // doing the arithmetic. Same rows, two scorers half a world apart.
+        val rows = listOf(
+            segment(midnightLondon - 60_000, duration, utcOffsetMinutes = 60),
+            segment(midnightLondon + 60_000, duration, utcOffsetMinutes = 60),
+            segment(midnightLondon + 120_000, duration, utcOffsetMinutes = 60),
+        )
+
+        val readInLondon = TrackScorer(ZoneId.of("Europe/London")).score(input(rows), defaults, now)
+        val readInTokyo = TrackScorer(ZoneId.of("Asia/Tokyo")).score(input(rows), defaults, now)
+
+        assertEquals(readInLondon.score, readInTokyo.score, TOLERANCE)
+        assertEquals(readInLondon.listens.map { it.note }, readInTokyo.listens.map { it.note })
+    }
+
+    @Test
+    fun `a half-hour offset buckets on the half hour`() {
+        // India is UTC+5:30, so its day boundary is at 18:30Z. Four plays
+        // straddling it: one before, three after, so exactly one is capped.
+        // An offset held in whole hours would put the boundary at 19:00Z,
+        // land all four on the same day, and cap two.
+        val midnightKolkata = 1_788_978_600_000L // 2026-09-10T00:00:00+05:30
+        val breakdown = scoreOf(
+            listOf(
+                segment(midnightKolkata - 60_000, duration, utcOffsetMinutes = 330),
+                segment(midnightKolkata + 60_000, duration, utcOffsetMinutes = 330),
+                segment(midnightKolkata + 120_000, duration, utcOffsetMinutes = 330),
+                segment(midnightKolkata + 180_000, duration, utcOffsetMinutes = 330),
+            ),
+        )
+
+        assertEquals(
+            "one play on the 9th and three on the 10th",
+            1,
+            breakdown.listens.count { it.note == ContributionNote.DAILY_CAP },
+        )
+    }
+
+    @Test
+    fun `a listen before the epoch gets its own day`() {
+        // floorDiv, not `/`. For any instant before 1970 the shifted value is
+        // negative, and `/` truncates towards zero -- so the last day of 1969
+        // and the first of 1970 would collapse into one bucket. Four plays
+        // straddling the epoch: one before, three after, one capped. Truncating
+        // division would put all four together and cap two.
+        val scorer = TrackScorer(ZoneId.of("UTC"))
+        val breakdown = scorer.score(
+            input(
+                listOf(
+                    segment(-3_600_000, duration, utcOffsetMinutes = 0),
+                    segment(3_600_000, duration, utcOffsetMinutes = 0),
+                    segment(3_660_000, duration, utcOffsetMinutes = 0),
+                    segment(3_720_000, duration, utcOffsetMinutes = 0),
+                ),
+            ),
+            defaults,
+            nowMs = now,
+        )
+
+        assertEquals(
+            "1969-12-31 and 1970-01-01 are different days",
+            1,
+            breakdown.listens.count { it.note == ContributionNote.DAILY_CAP },
+        )
+    }
+
+    @Test
+    fun `backfilling the offsets does not move a single score`() {
+        // **The test the user asked for**, at the score level: the Walkman's
+        // ranking must be identical before and after the v8 migration.
+        //
+        // "Before" is every row with a null offset, scored by a device in
+        // Europe/London. "After" is the same rows carrying the offsets the
+        // backfill computes -- London's zone history evaluated at each row's
+        // own timestamp, which is precisely what the null path was looking up
+        // anyway. So the two must agree, and they must agree across daylight
+        // saving in both directions, which is where an offset stamped from
+        // "today" rather than from the row's own instant would diverge.
+        val zone = ZoneId.of("Europe/London")
+        val scorer = TrackScorer(zone)
+
+        // A year of listening, three plays a day, deliberately spanning both
+        // 2021 transitions -- and clustered within half an hour of midnight, so
+        // every play sits where an hour's error in the offset moves it to the
+        // other day. Three a day against a cap of 2.0 guarantees the cap
+        // actually bites, which is what stops this test passing vacuously:
+        // if nothing were ever capped, the offset could not change a score.
+        val start = java.time.Instant.parse("2021-01-01T00:00:00Z").toEpochMilli()
+        val instants = (0 until 365).flatMap { dayIndex ->
+            val dayStart = start + dayIndex * 24L * 60 * 60 * 1000
+            listOf(
+                dayStart + 23L * 60 * 60 * 1000 + 30 * 60 * 1000,
+                dayStart + 23L * 60 * 60 * 1000 + 45 * 60 * 1000,
+                dayStart + 30L * 60 * 1000,
+            )
+        }
+
+        val before = instants.map { segment(it, duration, utcOffsetMinutes = null) }
+        val after = instants.map {
+            segment(it, duration, utcOffsetMinutes = zone.rules.getOffset(java.time.Instant.ofEpochMilli(it)).totalSeconds / 60)
+        }
+
+        val scoredBefore = scorer.score(input(before), defaults, now)
+        val scoredAfter = scorer.score(input(after), defaults, now)
+
+        assertTrue(
+            "the fixture must actually exercise the cap, or this proves nothing",
+            scoredBefore.listens.count { it.note == ContributionNote.DAILY_CAP } > 300,
+        )
+        assertEquals(
+            "1,095 plays over a year, across both daylight-saving changes",
+            scoredBefore.score,
+            scoredAfter.score,
+            TOLERANCE,
+        )
+        assertEquals(
+            scoredBefore.listens.map { it.note },
+            scoredAfter.listens.map { it.note },
+        )
+        assertEquals(
+            scoredBefore.listens.map { it.playEquivalents },
+            scoredAfter.listens.map { it.playEquivalents },
+        )
     }
 
     // --- Phantoms, Phase 5c step 2 ------------------------------------------

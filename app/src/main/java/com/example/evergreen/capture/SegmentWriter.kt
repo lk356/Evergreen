@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Persists finished play segments.
@@ -109,4 +111,21 @@ fun ClosedSegment.toEntity(deviceId: String): ListeningSegmentEntity = Listening
     lastSampleAgeMs = lastSampleAgeMs,
     createdAt = System.currentTimeMillis(),
     playbackType = playbackType,
+    utcOffsetMinutes = utcOffsetMinutesAt(endedAtMs),
 )
+
+/**
+ * This device's UTC offset at a given instant, in minutes.
+ *
+ * Read at the instant the segment **ended**, not at the moment the row is
+ * written, so a listen that finished a few seconds before a daylight-saving
+ * change gets the offset it actually happened under.
+ *
+ * The zone is looked up rather than cached, because a device can change zone
+ * while the capture service is alive — which is exactly the case the column
+ * exists for.
+ */
+internal fun utcOffsetMinutesAt(
+    epochMs: Long,
+    zone: ZoneId = ZoneId.systemDefault(),
+): Int = zone.rules.getOffset(Instant.ofEpochMilli(epochMs)).totalSeconds / 60

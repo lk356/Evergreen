@@ -196,10 +196,14 @@ _Update at the end of each task: what was done, what's next, any blockers._
   rows left to measure. **The Pixel does not truncate a listen; it fragments
   it**, and the fragments score as rejections of songs played in full. Full
   figures under Phase 5c in "Open questions".
-- **Next:** Phase 5c step 2, the phantom fix. Step 1's measurements are
-  **done, 2026-09-21** — the reverse phantom is real and symmetric, and
-  `PLAYBACK_TYPE_REMOTE` catches it in both directions. ~~5c is gated on
-  check 0b.~~ **It is not, since 2026-09-21** — see below.
+- **Next:** Phase 5c step 4, two-way sync — and before it, the batch format
+  has to carry the two new columns, or a phantom exported from one device
+  would score on the other. Steps 1, 2 and 3 are **done, 2026-09-21**: the
+  reverse phantom is real and symmetric and the fix catches it both ways;
+  capture records the playback type and scoring excludes it; the database is
+  at **schema v8** and every segment carries its own UTC offset.
+- **305 unit tests pass**, up from 278. The instrumented suite has not been
+  run this phase — it needs the Walkman unplugged.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
@@ -263,7 +267,11 @@ delta with no baseline and one that would leave a gap, and applying the same
 batch twice changes nothing. `capture/` is untouched and the Pixel stays
 read-only throughout.
 
-**The database is at schema v7.** One nullable column, `originRowId`, and a
+**The database is at schema v8** since 2026-09-21: `playbackType` and
+`utcOffsetMinutes`, both nullable, in the phase's one hand-written migration.
+See the Phase 5c step 2 and 3 results.
+
+**The database was at schema v7.** One nullable column, `originRowId`, and a
 unique index over `(deviceId, originRowId)`. It is the one hand-written
 migration in the project: Room's generated one would have rebuilt the table
 and copied all 77,518 rows for a change that needs no rebuild at all. Full
@@ -2013,7 +2021,9 @@ back on costs no trip through the system settings.
 | `now` — recomputed 9 hours later | identical order, every score smaller |
 | `now` — recomputed a fortnight later | identical order |
 | The default locale | identical, and the parameters hash too |
-| **The device's timezone** | **can differ** |
+| ~~**The device's timezone**~~ | ~~**can differ**~~ — **fixed in Phase 5c step 3, schema v8** |
+| The device's timezone, with `utcOffsetMinutes` on the row | **identical** |
+| The device's timezone, with no offset on the row | can differ — which is why v8 backfills |
 
 The `now` result is the one that matters and the reason is not obvious. A
 decay weight is `2^(-(now - at)/halfLife)`, so shifting `now` multiplies
@@ -2021,6 +2031,13 @@ decay weight is `2^(-(now - at)/halfLife)`, so shifting `now` multiplies
 order is untouched. That holds only because the daily cap is applied *before*
 decay, which was a Phase 3 ordering decision made for other reasons and turns
 out to be what makes cross-device recomputation sound.
+
+**The timezone was a real hazard. Fixed 2026-09-21 in Phase 5c step 3**, by
+schema v8's `utcOffsetMinutes`; the paragraph below is kept as the statement of
+the problem it solves. `CrossDeviceRankingTest` now pins both halves — a
+stamped row gives the same ranking in London and Auckland, and an unstamped one
+still follows the reading device, which is exactly why the migration backfills
+every existing row.
 
 **The timezone is a real hazard, recorded rather than fixed.** The daily cap
 buckets listening by *local* calendar day — a deliberate Phase 3 choice,
@@ -2911,6 +2928,152 @@ same window is 86 of 476 (**18%**), which is what real skipping looks like.
    they are captured rows under the Pixel's own device id and the batch
    exporter will ship them. The step-2 fix stops new ones and does nothing
    about these. To be decided in step 4, not slipped in.
+
+### Phase 5c steps 2 and 3 — the phantom fix and the timezone column
+
+#### Step 2 — the phantom fix, and the case the plan did not mention
+
+The plan said: drop segments whose media session reads
+`PLAYBACK_TYPE_REMOTE`, one field and one `if`, in `capture/`. **It was not
+built that way, and the user decided so on 2026-09-21.**
+
+**The case that changed it.** If a phone casts to a speaker, a TV, a car or a
+desktop over Spotify Connect, *that phone's* session reads `REMOTE` while **no
+device of the user's is playing locally**. Dropping at source would discard a
+real listen that nothing else records, and would leave no trace it had
+happened. The general form is worse than the speaker: the export says **54.7
+hours of 2026 listening was on Windows**, and a rule that drops every remote
+session makes every one of those invisible.
+
+**The decision: record it as a fact, exclude it at scoring time.** The user's
+own framing settled it — *"the docs say to not decide or throw anything out
+during recording, as that's an after thing."* That is the same rule that keeps
+the replay threshold out of capture, that keeps DJ commentary stored and
+filtered at read time by URI prefix, and that stops a merge ever deleting. The
+failure modes are also asymmetric: if we record and the exclusion is right, we
+have paid some rows; if we drop and the exclusion is wrong, we have destroyed
+data silently and cannot know.
+
+| | Drop at source | **Record and exclude** |
+|---|---|---|
+| Cost | one `if`, no column | a column, ~2× captured row growth |
+| Cast to a speaker | lost, silently | stored, not counted, recoverable |
+| Reversible | no | yes |
+| Phantom can ever score | impossible | only if the exclusion is forgotten |
+
+**What "recoverable" is worth, stated honestly.** It preserves the raw
+material for a later decision; it does not make that decision easy. If two
+devices both phantom a third device's playback there are two rows for one
+listen, so actually *counting* remote segments one day would need the
+wall-clock overlap rule that check 0a ruled out.
+
+**What was built.** 120 lines added to `capture/`, none removed and none
+changed — nothing about how a segment is recognised, cut, timed or written is
+touched. `SessionWatcher` overrides `onAudioInfoChanged`, a callback it already
+inherited and never used; `SegmentTracker` carries the reading on the open
+segment; `SegmentWriter` stores it and names it in the live log, so "is the fix
+working" is answerable on the device itself. `TrackScorer` partitions `REMOTE`
+rows out **before the replay fold** and keeps them visible as zero-valued
+contributions noted `REMOTE_SESSION`, exactly as commentary already is.
+
+Three judgement calls, each with a test:
+
+- **Remote is sticky within a segment.** Playback transferring away mid-track
+  leaves a segment that is partly this device's and partly not; one field
+  cannot say "half", and marking the row is the direction that does not quietly
+  score somebody else's listening. Cutting a fresh segment at the change would
+  preserve more and would change how capture *segments*, which is past what
+  this step should touch.
+- **Stickiness resets at the next segment**, so one Connect session does not
+  poison every later listen.
+- **A null reading never erases a known one.** "The session did not say this
+  time" is not evidence that playback became local.
+
+**The value is read live, and step 1 is why.** A `dumpsys` reading taken
+minutes after playback stopped says `LOCAL`, because the Connect session has
+torn down — which would have argued the fix does not work at all. Polled
+properly the flag holds `REMOTE` **through the pause and for at least 108
+seconds after it**, so reading it at segment close, 2.5 s after the last
+callback, is comfortably safe.
+
+**The harm the fix is really for**, and the test that pins it: a real full play
+plus the zero-length phantom tail step 1 measured now scores identically to the
+full play alone. That tail is a 0.00 fraction, below the 0.20 lower breakpoint,
+and would otherwise read as an emphatic rejection of a song played to the end —
+a harm no amount of deduplication downstream could have caught, because a
+zero-length rejection of a real play is indistinguishable from a real one.
+
+#### Step 3 — schema v8 and the UTC offset
+
+`listening_segments` gains **`playbackType`** (step 2) and
+**`utcOffsetMinutes`**, both nullable, in one hand-written migration for the
+same reason v7 was hand-written: two `ALTER TABLE ADD COLUMN` statements on
+nullable, unindexed columns, which SQLite does without reading a row, against a
+table holding 77,518 of them on the slowest device in the project.
+
+**Minutes, not hours.** India is UTC+5:30 and Nepal UTC+5:45; a column of hours
+could not hold either, and a test pins the half-hour case.
+
+**The backfill is one statement, not one per period.** The obvious shape is a
+loop of `UPDATE ... WHERE endedAtMs BETWEEN ? AND ?`, one per daylight-saving
+period — about a dozen over six years. There is **no index on `endedAtMs`**, so
+each one is a full scan of 77,518 rows, and a dozen scans is a dozen times the
+work for a migration the user is waiting through. A single `CASE` is one scan
+whatever the number of periods. `WHERE utcOffsetMinutes IS NULL` makes it
+idempotent and stops a guessed offset ever overwriting a real one carried in
+from another device.
+
+**Daylight saving comes out right for free.** A `ZoneRules` object knows the
+*history* of its zone, so asking it for the offset at a 2021 instant gives
+2021's daylight-saving state rather than today's. What it cannot recover is a
+genuine move between zones, and the user has accepted that.
+
+**`playbackType` is deliberately not backfilled.** There is nothing to fill it
+from, and inventing `LOCAL` for every old row would be the database claiming to
+have observed something it did not.
+
+**The test the user asked for passes.** 1,095 plays over a year, three a day
+clustered within half an hour of midnight and spanning both 2021 daylight-saving
+transitions, score **identically** before and after the backfill — same total,
+same per-listen notes, same play-equivalents. It was checked against a
+deliberately broken backfill (today's offset stamped on every row) and fails
+there, so it is not passing vacuously; and the fixture caps over 300 listens, so
+the daily cap is genuinely exercised.
+
+**305 unit tests pass**, up from 278 at the start of the phase.
+
+#### `offline_timestamp` — measured, and it stays parked
+
+The prompt asked whether 5c has to decide it before building anything for it.
+**No, and the reason recorded under Phase 5a results was wrong.**
+
+That reason was: *"it stays parked for the same reason as the timezone: both
+only bite when two devices produce facts."* That does not hold.
+`offline_timestamp` belongs to **imported** rows, and every imported row carries
+the single origin `spotify-history-import`. A second capturing device does not
+multiply it: both devices import the same export and get identically dated rows,
+which is consistent, and consistency is all cross-device sync requires.
+
+**The right reason is that it is 2 rows.** Measured over the whole export on
+2026-09-21:
+
+| | |
+|---|---|
+| Rows total | 77,396 |
+| Rows flagged `offline` | 1,577 (2.04%) |
+| Median `ts − offline_timestamp` | **139 s** |
+| More than 1 hour out | 69 rows (0.089% of all) |
+| More than 1 day out | **2 rows** (0.003% of all) |
+| More than 1 week out | 0 |
+
+Two rows in six years can move neither a score nor a ranking. Using the field
+would also mean adding an eighth key to `HistoryParser`'s **field allowlist** —
+the same allowlist that keeps the IP address on every row from ever reaching a
+variable — which is a privacy-relevant change for a two-row benefit.
+
+One practical note for whoever does pick it up: **the units are not
+consistent.** Of the 1,577 offline rows, 1,562 carry seconds and 15 carry
+milliseconds. Anything that reads the field has to detect which.
 
 ### Still unknown — carried into Phase 6
 

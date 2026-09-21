@@ -11,6 +11,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 import java.io.File
+import java.time.ZoneId
 
 /** Stores [EndReason] as its name rather than its position in the enum. */
 class Converters {
@@ -159,6 +160,22 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
  * reading device's current zone — so the migration cannot change a single
  * score. `EvergreenMigrationTest` pins exactly that against a populated v7
  * database.
+ *
+ * **And then the offsets are backfilled**, which is the third statement and the
+ * only one that touches a row. It fills `utcOffsetMinutes` from this device's
+ * zone *history*, evaluated at each row's own timestamp, so six years of
+ * daylight saving comes out right without a stored transition anywhere. The
+ * ranking must not move as a result, and it does not: the offsets written are
+ * the ones the reading device was already falling back to, so every listen
+ * lands on the day it already landed on. See [OffsetBackfill] for why it is one
+ * statement rather than one per daylight-saving period, and
+ * `EvergreenMigrationTest` for the pin.
+ *
+ * `playbackType` is deliberately **not** backfilled. There is nothing to
+ * backfill it from — no existing row recorded whose volume the session was
+ * using — and inventing `LOCAL` for all of them would be the database claiming
+ * to have observed something it did not. They stay null, which is the truth,
+ * and they keep scoring exactly as they always have.
  */
 val MIGRATION_7_8 = object : Migration(7, 8) {
     override fun migrate(connection: SQLiteConnection) {
@@ -168,6 +185,28 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
         connection.execSQL(
             "ALTER TABLE `listening_segments` ADD COLUMN `utcOffsetMinutes` INTEGER DEFAULT NULL",
         )
+
+        // The span of the data, so no time goes into enumerating daylight-saving
+        // transitions from years the table has no rows in. Both null means the
+        // table is empty and there is nothing to backfill.
+        var fromMs: Long? = null
+        var toMs: Long? = null
+        connection.prepare(
+            "SELECT MIN(`endedAtMs`), MAX(`endedAtMs`) FROM `listening_segments`",
+        ).use { statement ->
+            if (statement.step() && !statement.isNull(0)) {
+                fromMs = statement.getLong(0)
+                toMs = statement.getLong(1)
+            }
+        }
+
+        val first = fromMs
+        val last = toMs
+        if (first != null && last != null) {
+            connection.execSQL(
+                OffsetBackfill.statement(ZoneId.systemDefault().rules, first, last),
+            )
+        }
     }
 }
 

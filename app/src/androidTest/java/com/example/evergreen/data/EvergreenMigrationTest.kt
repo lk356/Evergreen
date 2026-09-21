@@ -8,7 +8,10 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
+import java.time.Instant
+import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -957,17 +960,24 @@ class EvergreenMigrationTest {
      * v8 adds two nullable columns to a populated v7 database and must change
      * nothing else.
      *
-     * The assertion that matters is the **last** one: every pre-existing row
-     * comes out with both new columns NULL. Null means "not observed" for both
-     * of them, and both readers fall back to exactly what they did before v8 —
-     * scoring the segment normally, and bucketing it by the reading device's
-     * current zone — so NULL everywhere is what makes the migration incapable
-     * of moving a single score. The user's stated test for the phase is that
-     * the Walkman's ranking is identical before and after; this is that test's
-     * foundation, at the row level.
+     * The assertions that matter are the last two, and they differ by column.
+     *
+     * `playbackType` comes out NULL on every pre-existing row, because there is
+     * nothing to fill it from: no row written before v8 recorded whose volume
+     * the session was using, and inventing LOCAL for all of them would be the
+     * database claiming to have observed something it did not. NULL scores
+     * exactly as it always did.
+     *
+     * `utcOffsetMinutes` comes out **filled**, from this device's zone history
+     * evaluated at each row's own timestamp. The value written is the one the
+     * scorer was already falling back to, so every listen keeps the local day
+     * it already had — which is why filling it cannot move a ranking. The
+     * user's stated test for the phase is that the Walkman's ranking is
+     * identical before and after; this is that test at the row level, and
+     * `TrackScorerTest` has it at the score level.
      */
     @Test
-    fun migrate7To8_addsTheTwoColumnsAsNullAndDisturbsNothing() {
+    fun migrate7To8_addsBothColumnsAndBackfillsTheOffsets() {
         helper.createDatabase(TEST_DB, 7).use { db ->
             db.execSQL(
                 """
@@ -1046,14 +1056,32 @@ class EvergreenMigrationTest {
             assertEquals("fwdbtn", c.getString(2))
         }
 
-        // The assertion the phase rests on: nothing acquired a value, so
-        // nothing can score differently.
+        // Nothing to fill playbackType from, so it stays honest about that.
         migrated.query(
-            "SELECT COUNT(*) FROM listening_segments " +
-                "WHERE playbackType IS NULL AND utcOffsetMinutes IS NULL",
+            "SELECT COUNT(*) FROM listening_segments WHERE playbackType IS NULL",
         ).use { c ->
             c.moveToFirst()
-            assertEquals("every migrated row is 'not observed' on both", 2, c.getInt(0))
+            assertEquals("no pre-v8 row observed a playback type", 2, c.getInt(0))
+        }
+
+        // The offsets, by contrast, are filled -- and with exactly the values
+        // the scorer was already falling back to, which is what makes filling
+        // them incapable of moving a score.
+        val rules = ZoneId.systemDefault().rules
+        migrated.query(
+            "SELECT endedAtMs, utcOffsetMinutes FROM listening_segments ORDER BY id",
+        ).use { c ->
+            assertEquals(2, c.count)
+            while (c.moveToNext()) {
+                val endedAtMs = c.getLong(0)
+                assertFalse("every row is backfilled", c.isNull(1))
+                val expected = rules.getOffset(Instant.ofEpochMilli(endedAtMs)).totalSeconds / 60
+                assertEquals(
+                    "the offset this device's own zone had at that instant",
+                    expected,
+                    c.getInt(1),
+                )
+            }
         }
 
         // And a row written after the migration can carry both.
@@ -1075,7 +1103,12 @@ class EvergreenMigrationTest {
         ).use { c ->
             assertTrue(c.moveToFirst())
             assertEquals("REMOTE", c.getString(0))
-            assertEquals(-300, c.getInt(1))
+            assertEquals(
+                "a row that arrived with its own offset keeps it, whatever this " +
+                    "device's zone is",
+                -300,
+                c.getInt(1),
+            )
             assertEquals("exactly one row carries a playback type", 1, c.count)
         }
         migrated.close()

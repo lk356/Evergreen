@@ -195,6 +195,7 @@ class TrackScorer(
             decayedValue = 0.0,
             note = note,
             segmentIds = listen.rows.map { it.id },
+            utcOffsetMinutes = listen.utcOffsetMinutes,
         )
     }
 
@@ -248,7 +249,7 @@ class TrackScorer(
             var note = contribution.note
 
             if (value > 0.0) {
-                val day = localDayOf(contribution.atMs)
+                val day = localDayOf(contribution.atMs, contribution.utcOffsetMinutes)
                 val used = usedPerDay.getOrDefault(day, 0.0)
                 val allowed = (parameters.dailyCapPlays - used).coerceAtLeast(0.0)
                 if (value > allowed) {
@@ -269,14 +270,30 @@ class TrackScorer(
     }
 
     /**
-     * The calendar day a moment falls in, in the device's own timezone.
+     * The calendar day a moment falls in, **where it happened**.
      *
      * Local rather than UTC because "in one night" is what the cap is about, and
      * a UTC day would cut an evening's listening in half for anyone east of
-     * Greenwich.
+     * Greenwich. That was unambiguous while one device produced every fact.
+     *
+     * **Schema v8 makes it unambiguous again with two.** A segment carries the
+     * offset that was in force when it was captured, so the day it falls in is
+     * a property of the listening rather than of whichever device happens to be
+     * doing the arithmetic. Without that, the same history recomputed in a
+     * different zone would bucket plays on different days and cap them
+     * differently — two devices, same facts, same parameters, different
+     * rankings, which is the one outcome cross-device sync exists to rule out.
+     *
+     * [offsetMinutes] null falls back to this device's current zone, which is
+     * precisely what this function did before v8, so every pre-v8 row keeps the
+     * day it always had.
      */
-    private fun localDayOf(atMs: Long): Long =
-        Instant.ofEpochMilli(atMs).atZone(zone).toLocalDate().toEpochDay()
+    private fun localDayOf(atMs: Long, offsetMinutes: Int?): Long =
+        if (offsetMinutes == null) {
+            Instant.ofEpochMilli(atMs).atZone(zone).toLocalDate().toEpochDay()
+        } else {
+            Math.floorDiv(atMs + offsetMinutes * MS_PER_MINUTE, MS_PER_DAY)
+        }
 
     /**
      * Step 8. A like is a scoring event worth a few plays, decaying like any
@@ -315,5 +332,7 @@ class TrackScorer(
 
     companion object {
         const val SPOTIFY_TRACK_PREFIX = "spotify:track:"
+        private const val MS_PER_MINUTE = 60_000L
+        private const val MS_PER_DAY = 24 * 60 * 60 * 1000L
     }
 }

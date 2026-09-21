@@ -30,8 +30,13 @@ import kotlin.random.Random
  * whatever order SQLite hands them over, and really could be moved into
  * different timezones.
  *
- * The one that does *not* survive is the timezone, and the test that pins it is
- * the most useful one in this file — see [aDifferentTimezoneCanChangeTheRanking].
+ * The timezone used to be the one that did *not* survive. **Schema v8 fixed
+ * it** (Phase 5c step 3): a segment carries the UTC offset that was in force
+ * when it was captured, so which local day a listen falls in is a property of
+ * the listening rather than of whichever device is doing the arithmetic. Both
+ * halves are pinned below — an unstamped row still follows the reading device,
+ * which is exactly why the migration backfills them, and a stamped row does
+ * not.
  */
 class CrossDeviceRankingTest {
 
@@ -42,6 +47,7 @@ class CrossDeviceRankingTest {
 
     private val parameters = ScoringParameters()
     private val london = ZoneId.of("Europe/London")
+    private val utc = ZoneId.of("UTC")
 
     /**
      * Scores a set of facts **as one device would**.
@@ -280,11 +286,15 @@ class CrossDeviceRankingTest {
      * the device that is already working. This test is the note that says which
      * of those two it is.
      */
-    @Test
-    fun `a different timezone can change the ranking`() {
-        // Listening concentrated around local midnight, which is where the
-        // day boundary decides whether two plays share a cap or not.
-        val facts = (1..12).map { trackId ->
+    /**
+     * Listening concentrated around local midnight, which is where the day
+     * boundary decides whether two plays share a cap or not.
+     *
+     * @param utcOffsetMinutes what each row records about where it happened.
+     *   Null is every row written before schema v8.
+     */
+    private fun midnightFacts(utcOffsetMinutes: Int?) =
+        (1..12).map { trackId ->
             val duration = 200_000L
             val serviceRow = trackId * 10L
             val plays = (0 until 6).map { index ->
@@ -308,6 +318,7 @@ class CrossDeviceRankingTest {
                     endJumpToMs = null,
                     lastSampleAgeMs = 100,
                     createdAt = endedAt,
+                    utcOffsetMinutes = utcOffsetMinutes,
                 )
             }
             TrackScoringInput(
@@ -319,19 +330,65 @@ class CrossDeviceRankingTest {
             )
         }
 
+    @Test
+    fun `an unstamped row still follows the reading device's timezone`() {
+        val facts = midnightFacts(utcOffsetMinutes = null)
         val here = rankAsDevice(facts, zone = london)
         val elsewhere = rankAsDevice(facts, zone = ZoneId.of("Pacific/Auckland"))
 
         assertNotEquals(
-            "the daily cap buckets by local day, so the zone reaches the scores",
+            "the daily cap buckets by local day, so with no offset on the row the " +
+                "reading device's zone reaches the scores",
             here.map { it.score },
             elsewhere.map { it.score },
         )
+        assertEquals("and it is still a function of its inputs", rankAsDevice(facts, zone = london), here)
+    }
+
+    // --- What survives, since schema v8 --------------------------------------
+
+    /**
+     * **The hazard above, closed.**
+     *
+     * The same twelve tracks and the same 72 plays at the same instants, with
+     * each row now carrying the offset it was captured under. Ranked by a
+     * device in London and by one in Auckland — twelve hours apart, so every
+     * play around local midnight would fall on a different day if the reading
+     * device's zone still decided.
+     *
+     * Identical, to the last decimal. That is the property two capturing
+     * devices need and the reason the column exists.
+     */
+    @Test
+    fun `a stamped row gives the same ranking in any timezone`() {
+        val facts = midnightFacts(utcOffsetMinutes = 60)
+
+        val here = rankAsDevice(facts, zone = london)
+        val elsewhere = rankAsDevice(facts, zone = ZoneId.of("Pacific/Auckland"))
+
         assertEquals(
-            "both devices are in the same timezone today, which is why this is a note " +
-                "and not a bug",
-            rankAsDevice(facts, zone = london),
+            "the day a listen falls in is a fact about the listening, not about " +
+                "the device reading it",
             here,
+            elsewhere,
         )
+        assertEquals(here.map { it.score }, elsewhere.map { it.score })
+    }
+
+    /**
+     * And the rule that makes a mixed database safe.
+     *
+     * A real database after the v8 migration holds backfilled rows and freshly
+     * captured ones side by side. What must not happen is that the *presence*
+     * of an offset changes a score when the offset agrees with the zone that
+     * was being assumed anyway — otherwise the migration itself would move the
+     * ranking, which is the one thing the user asked it not to do.
+     */
+    @Test
+    fun `stamping a row with the offset it was already assumed to have changes nothing`() {
+        val assumed = rankAsDevice(midnightFacts(utcOffsetMinutes = null), zone = utc)
+        val stamped = rankAsDevice(midnightFacts(utcOffsetMinutes = 0), zone = utc)
+
+        assertEquals(assumed, stamped)
     }
 }

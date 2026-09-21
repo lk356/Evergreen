@@ -31,6 +31,16 @@ data class MergedSegment(
      * no jump fields, so [SegmentGrouping.merge] never joins them to anything.
      */
     val sources: Set<SegmentSource>,
+    /**
+     * The UTC offset in force when this listen **ended**, or null if the row
+     * that ended it never recorded one.
+     *
+     * Taken from the last row rather than the first because [endedAtMs] is, and
+     * the daily cap buckets a listen by when it ended. A replay folded across a
+     * daylight-saving change would take the offset on the far side, which is
+     * the right answer for the one question this value is asked.
+     */
+    val utcOffsetMinutes: Int?,
 ) {
     /** True when more than one stored row was folded together. */
     val isMerged: Boolean get() = rows.size > 1
@@ -134,6 +144,7 @@ object SegmentGrouping {
             seekedForwardMs = rows.mapNotNull { it.seekedForwardMs }.ifEmpty { null }?.sum(),
             endReason = last.endReason,
             sources = rows.mapTo(mutableSetOf()) { it.source },
+            utcOffsetMinutes = last.utcOffsetMinutes,
         )
     }
 }
