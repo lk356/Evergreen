@@ -128,6 +128,24 @@ mid-track and the device slept. A device that joins a listen late records what
 it saw, correctly, and a merge that trusted it would understate that play.
 That is a separate question from phantoms and belongs to 5c's merge rules.
 
+### ~~The reverse phantom~~ **ANSWERED 2026-09-21 — yes, and symmetric.**
+
+Check 0a asked whether the Pixel records phantoms for music playing on the
+Walkman. Phase 5c step 1a asked the reverse, and the answer is the same. Five
+tracks played on the Pixel produced **five phantom segments on the Walkman**,
+claiming 403.3 s against the Pixel's real 403.5 s, with every fraction
+agreeing to 0.01. `volumeType=REMOTE` was read **live** on the Walkman during
+playback, with `volumeControlId` naming Spotify's Connect media-route
+provider, while the Pixel read `LOCAL`. **The one-field fix works in both
+directions.** Full figures in `docs/PLAN.md`.
+
+Two corrections came with it. The flag must be read **live** — a reading
+taken minutes later says `LOCAL` because the Connect session has torn down —
+but it survives the pause and at least 108 s beyond it, so capture reading it
+at segment close is safe. And fragmentation, which check 0a attributed to
+remote sessions, did not happen on the remote device this time: on the
+evidence so far it tracks the Pixel rather than remoteness.
+
 ### Check 0b. How much listening actually happens on the Pixel?
 
 **No longer a gate, decided by the user 2026-09-21.** It was written as the
@@ -150,9 +168,19 @@ its own listening during exactly the period the check wanted counted, and
 turning capture back on to measure it would both defeat mirror mode and, per
 check 0a, fill the Pixel with phantom rows for music playing on the Walkman.
 
-**The alternative answers it exactly, and retroactively.** Spotify's extended
-streaming history export carries a **per-row platform field** — the device or
-client each stream was played on. An export therefore answers 0b as a
+**The alternative does not answer it, corrected 2026-09-21 by measuring it.**
+This section claimed Spotify's extended streaming history export carries a
+per-row platform field naming *the device or client* each stream was played
+on. It does not: across all 77,396 rows the field takes seven values, and
+they are operating systems — `ios`, `android`, `windows`, `osx`, `linux`,
+`unknown`. **The Walkman and the Pixel are both `android`.** The export also
+ends 2026-09-15, before the first captured row, so it could say nothing about
+captured data even if the field were finer. The paragraph as originally
+written follows, because the reasoning is still worth reading and only its
+premise was wrong:
+
+> Spotify's extended streaming history export carries a **per-row platform
+> field** — the device or client each stream was played on. An export therefore answers 0b as a
 straightforward count over rows already written, with no capture running
 anywhere, no measurement period, and no phantoms: it is a record of what
 *Spotify* played, so music played on the Walkman is attributed to the

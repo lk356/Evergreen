@@ -196,9 +196,10 @@ _Update at the end of each task: what was done, what's next, any blockers._
   rows left to measure. **The Pixel does not truncate a listen; it fragments
   it**, and the fragments score as rejections of songs played in full. Full
   figures under Phase 5c in "Open questions".
-- **Next:** Phase 5c step 1, the measurements that have to happen before the
-  phantom fix lands. ~~5c is gated on check 0b.~~ **It is not, since
-  2026-09-21** — see below.
+- **Next:** Phase 5c step 2, the phantom fix. Step 1's measurements are
+  **done, 2026-09-21** — the reverse phantom is real and symmetric, and
+  `PLAYBACK_TYPE_REMOTE` catches it in both directions. ~~5c is gated on
+  check 0b.~~ **It is not, since 2026-09-21** — see below.
 - **Phase 5 is now three parts, not two.** 5a (the read-only mirror, done)
   is unchanged; "5b: full peer sync" has been split into **5b, delta sync**
   — a documented fact batch over the existing file transport, one way,
@@ -2740,6 +2741,176 @@ nothing). The Pixel slept during part of it. The agreement result is strong
 because six of six agree closely; the fragmentation rate — two in seven — is a
 single small sample and should be read as "this happens" rather than as a
 frequency.
+
+### Phase 5c step 1 — the measurements, run 2026-09-21
+
+Run before the phantom fix, deliberately, because once it lands there are no
+new phantoms left to measure. Both devices attached; both backed up by the
+user to `Downloads/Evergreen` first. Nothing in this step wrote to either
+database. Counts and aggregates only; track identity is reduced to an index.
+
+**Serials pinned before anything ran**, per the rule that a bare `adb`
+command is unprotected by the Gradle guard:
+
+| variable | serial | `ro.product.model` |
+|---|---|---|
+| `WALKMAN` | `<serial>` | `NW-A300Series` |
+| `PIXEL` | `<serial>` | `Pixel 10 Pro` |
+
+**Clock skew, measured five times before the window.** The Walkman reads
+**+2182 ms** against the Linux host and the Pixel **+1162 ms**, so **the Pixel
+is ~1020 ms behind the Walkman**, ±75 ms against 56–150 ms round trips. Same
+direction as 5b's 660 ms, drifted by ~360 ms in a day. Every cross-device
+comparison below is corrected for it.
+
+#### 1a. The reverse phantom — **yes, and the fix catches it**
+
+Five tracks played on the Pixel, locally, with Spotify open and untouched on
+the Walkman: two to the end and three skipped. The Walkman recorded **five
+segments for music it was not playing**.
+
+| track | Walkman listened | Pixel listened | W frac | P frac | start diff | overlap |
+|---|---|---|---|---|---|---|
+| #6 | 218,878 ms | 218,574 ms | 0.99 | 0.99 | +22.0 s | 230.7 s |
+| #8 | 155,889 ms | 156,462 ms | 0.99 | 0.99 | −0.6 s | 157.4 s |
+| #9 | 8,945 ms | 9,142 ms | 0.04 | 0.04 | −0.9 s | 8.3 s |
+| #10 | 13,422 ms | 13,362 ms | 0.07 | 0.07 | −0.8 s | 12.8 s |
+| #11 | 6,129 ms | 6,004 ms | 0.06 | 0.05 | −0.8 s | 5.5 s |
+
+**The Walkman claimed 403.3 s against the Pixel's real 403.5 s** — the two
+devices disagree by 0.2 seconds across five tracks, and every fraction agrees
+to 0.01. The two full plays and the three skips are all there. This is the
+mirror image of check 0a and it confirms what that measurement implied: the
+phantom is a *faithful* duplicate, and the direction does not matter.
+
+**`PLAYBACK_TYPE_REMOTE` is set on the Walkman, read live during playback:**
+
+```
+package=com.spotify.music   state=PLAYING(3)
+volumeType=REMOTE  controlType=FIXED  max=24  current=24
+volumeControlId=com.spotify.music/com.spotify.connect.
+                mediarouteproviderapi.SpotifyMediaRouteProviderService:0cd56deb…
+```
+
+while the Pixel — the device actually playing — read `volumeType=LOCAL` with
+`volumeControlId=null` at the same moment. So **the one-field fix works in
+both directions** and nothing further is needed for this case.
+
+**Two things this measurement caught that would not have been guessed.**
+
+- **The flag must be read live, and it is safe to do so.** A first reading
+  taken minutes after playback stopped said `LOCAL`, which would have argued
+  the fix does not work in this direction — it was simply the Connect session
+  having torn down. Polled properly, the flag **stays `REMOTE` through the
+  pause and for at least 108 seconds after it**, so reading it at segment
+  close — 2.5 s after the last callback — is comfortably safe. It is *not*
+  safe to read it long after the fact, which is a reason to store it on the
+  row rather than consult it later.
+- **The Walkman did not fragment.** It recorded exactly one row per track,
+  five for five, while the Pixel produced six rows for the same five tracks
+  (a 1 ms tail). Check 0a found fragmentation on the *remote* device and
+  read it as a property of remote sessions; here the remote device is the
+  clean one. On this evidence fragmentation tracks **the Pixel**, not
+  remoteness. One small sample each way, so this is a correction to a guess
+  and not yet a finding.
+
+**A handoff turned up by accident, and it is step 7a's case.** Track #6 starts
+**22.0 s earlier on the Walkman than on the Pixel**, because it was genuinely
+playing on the Walkman when playback moved across. Both devices then recorded
+it as a ~0.99 full play, and both rows end at the same position (219,805 ms).
+So a handoff mid-track does produce two rows that each look complete. Step 7a
+should measure this deliberately rather than resting on one accidental
+sample.
+
+#### 1b. Old phantoms already in the Walkman's data — **dropped, at the user's direction**
+
+The proposed method does not work, for two independent reasons, and the
+question turned out not to be worth pursuing.
+
+- **`platform` records an operating system, not a device.** Across all 77,396
+  export rows there are seven distinct values: `ios`, `android`, `windows`,
+  `osx`, `OS X 10.13.6 [x86 8]`, `linux`, `unknown`. The Walkman and the Pixel
+  are both `android` and cannot be told apart.
+- **The export and the captured rows do not overlap by one second.** The
+  export ends 2026-09-15 23:46; the Walkman's earliest captured row is
+  2026-09-18 05:06.
+
+**And the backlog is negligible.** The Walkman holds 77,903 segments, of
+which **77,364 are the imported history and 539 are captured** — four days.
+The user's decision on 2026-09-21: skip it, it diverges from the goal, and
+trivial past data is not worth a cleanup mechanism. **Nothing is built, and
+nothing is excluded.** That is also the consistent answer: this project
+records facts and excludes at read time, so a retroactive purge would be the
+odd one out.
+
+#### 1c. Check 0b as a number — **the export cannot answer it**
+
+Same root cause as 1b: both devices are `android`. What the export *can* say,
+in listening hours:
+
+| year | ios | android | windows | osx |
+|---|---|---|---|---|
+| 2023 | 50.0 | — | 9.5 | 9.2 |
+| 2024 | 579.0 | 24.6 | 50.5 | — |
+| 2025 | 661.4 | 7.0 | 37.5 | — |
+| 2026 | 0.4 | **293.9** | 54.7 | — |
+
+The move from iOS to Android happened around April 2026, and the 293.9 hours
+since are the Pixel and the Walkman combined. No proxy separates them:
+`offline`, `conn_country`, `shuffle` and the `remote` start/end reasons were
+all checked month by month and none shows a step change where a second device
+would have appeared.
+
+**So `docs/PHASE5_QUESTIONS.md` was wrong to say the export "answers it
+exactly, and retroactively".** It answers a coarser question. Corrected
+there.
+
+**The user's own answer, given 2026-09-21: "barely any of that was on the
+Walkman."** Recorded as the user's statement rather than as a measurement,
+which is the honest status, and it is enough — 0b stopped being a gate the
+same day.
+
+**The real answer arrives for free at step 4.** Once both devices capture
+under their own device ids and the facts merge, 0b is a one-line query over
+`listening_segments` grouped by `deviceId`, answered continuously instead of
+once. The question outlives this measurement.
+
+#### A free measurement: 18.9 hours where both devices were already capturing
+
+Found while surveying the two databases, and worth more than 1b and 1c
+together. The Pixel had been left out of mirror mode after the check-0a work
+on 2026-09-20 and had been capturing ever since.
+
+| | |
+|---|---|
+| Window where both captured | 2026-09-20 09:20 → 2026-09-21 04:12 (18.9 h) |
+| Walkman rows in it | 127, **296.8 min** listened |
+| Pixel rows in it | 56, **39.4 min** claimed |
+| Pixel rows overlapping a Walkman row, same track | 27 pairs |
+| Pixel rows overlapping a Walkman row, **different** track | 59 pairs |
+| Pixel rows with **no** overlapping Walkman row | 21 |
+| Total listened time of those 21 | **21 ms** — every one is exactly 1 ms |
+
+**In nineteen hours the Pixel recorded 39.4 minutes of listening and none of
+it was real.** The 21 rows with no Walkman counterpart are 1 ms each, from
+`SESSION_END` and `STALE` — an idle session flushing, not listening.
+
+The harm, over a larger sample than check 0a had: of the Pixel's 53 scoreable
+song rows, **36 (68%) fall below the 0.20 breakpoint and score as
+rejections**, six of them at exactly 0.00. The Walkman's own rate over the
+same window is 86 of 476 (**18%**), which is what real skipping looks like.
+
+**Three things found on the way, none of them planned for:**
+
+1. **The Pixel is not in mirror mode** — `mirror_source` is absent from its
+   `sync_state` — and has been capturing phantoms since 2026-09-20 09:20.
+2. **The Pixel's `device_name` reads `NW-A300Series`**, inherited through the
+   mirror import and never corrected. Step 8 wants each device to say who
+   holds the writer role; the Pixel would name the wrong device.
+3. **The Pixel's 56 captured rows will flow to the Walkman at step 4**, since
+   they are captured rows under the Pixel's own device id and the batch
+   exporter will ship them. The step-2 fix stops new ones and does nothing
+   about these. To be decided in step 4, not slipped in.
 
 ### Still unknown — carried into Phase 6
 
