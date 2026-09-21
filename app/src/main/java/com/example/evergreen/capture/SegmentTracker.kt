@@ -1,6 +1,7 @@
 package com.example.evergreen.capture
 
 import com.example.evergreen.data.EndReason
+import com.example.evergreen.data.PlaybackType
 import kotlin.math.min
 
 /**
@@ -24,6 +25,19 @@ data class ClosedSegment(
     val endJumpFromMs: Long?,
     val endJumpToMs: Long?,
     val lastSampleAgeMs: Long,
+    /**
+     * What the session said about whose volume it was, while this segment was
+     * open. Null when the session never reported one.
+     *
+     * [PlaybackType.REMOTE] if **any** reading during the segment was remote,
+     * which is the only summary a single field can honestly carry: a listen
+     * that was partly somebody else's playback is not a clean local one, and
+     * the conservative direction is the one that does not quietly score it.
+     * Cutting a new segment when the type changes would preserve more, and it
+     * would be a change to how capture segments — out of scope for the one
+     * field this phase approved.
+     */
+    val playbackType: PlaybackType?,
 )
 
 /**
@@ -54,16 +68,39 @@ class SegmentTracker(
         var startPositionKnown: Boolean,
         /** True when this segment began at a backwards jump, not a track change. */
         val openedByJumpBack: Boolean,
+        /** Whatever the session had most recently reported when this opened. */
+        var playbackType: PlaybackType?,
     ) {
         var listenedMs = 0L
         var lastKnownPositionMs = startPositionMs
         var forwardSeekCount = 0
         var seekedForwardMs = 0L
+
+        /**
+         * Folds one reading in. Remote is sticky: once any part of this segment
+         * was somebody else's playback, the whole row says so.
+         */
+        fun observePlaybackType(type: PlaybackType?) {
+            if (type == null) return
+            if (playbackType != PlaybackType.REMOTE) playbackType = type
+        }
     }
 
     private var open: OpenSegment? = null
     private var lastSample: PositionSample? = null
     private var lastFingerprint: String? = null
+
+    /**
+     * The session's most recent playback type, carried across segments.
+     *
+     * Held here rather than read at close time because the value describes the
+     * *listening*, not the moment the row was written — and because it is not
+     * durable: measured on 2026-09-21, Spotify keeps `REMOTE` set through a
+     * pause and for at least 108 s after it, then clears it when the Connect
+     * session tears down. A reading taken after that says `LOCAL` about a
+     * listen that was not.
+     */
+    private var currentPlaybackType: PlaybackType? = null
 
     /**
      * The most recently closed segment, held back from the database for a
@@ -144,6 +181,23 @@ class SegmentTracker(
         lastSample = null
         openSegment(track, nowWallMs, startPositionMs = 0L, startKnown = false, byJumpBack = false)
         return true
+    }
+
+    /**
+     * The session reported whose volume it is using.
+     *
+     * Arrives from `MediaController.Callback.onAudioInfoChanged`, and is primed
+     * once when the watcher starts so a segment opening immediately still knows.
+     * A null reading is ignored rather than stored: "the session did not say
+     * this time" is not evidence that it became local.
+     *
+     * Recorded, never acted on. Whether a remote segment counts is a judgement
+     * and it belongs to scoring; see [PlaybackType].
+     */
+    fun onPlaybackType(type: PlaybackType?) {
+        if (type == null) return
+        currentPlaybackType = type
+        open?.observePlaybackType(type)
     }
 
     /** A new playback-state reading arrived. */
@@ -317,6 +371,7 @@ class SegmentTracker(
             startPositionMs = startPositionMs,
             startPositionKnown = startKnown,
             openedByJumpBack = byJumpBack,
+            playbackType = currentPlaybackType,
         )
     }
 
@@ -348,6 +403,7 @@ class SegmentTracker(
             endJumpFromMs = jumpFromMs,
             endJumpToMs = jumpToMs,
             lastSampleAgeMs = sampleAge,
+            playbackType = segment.playbackType,
         )
 
         flushPending()

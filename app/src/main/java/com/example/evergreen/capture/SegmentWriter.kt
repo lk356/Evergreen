@@ -73,6 +73,10 @@ class SegmentWriter(
                         append(" jumpBack=").append(formatMs(from))
                         append("->").append(formatMs(segment.endJumpToMs ?: 0))
                     }
+                    // Named on every row, so "is the phantom fix working" is a
+                    // question the live log answers on the device itself.
+                    append(" playback=")
+                    append(segment.playbackType?.name?.lowercase() ?: "unknown")
                 },
                 packageName = segment.appPackage,
             )
@@ -104,4 +108,5 @@ fun ClosedSegment.toEntity(deviceId: String): ListeningSegmentEntity = Listening
     endJumpToMs = endJumpToMs,
     lastSampleAgeMs = lastSampleAgeMs,
     createdAt = System.currentTimeMillis(),
+    playbackType = playbackType,
 )

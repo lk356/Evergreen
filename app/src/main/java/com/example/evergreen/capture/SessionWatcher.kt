@@ -3,9 +3,11 @@ package com.example.evergreen.capture
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import com.example.evergreen.data.PlaybackType
 
 /**
  * Watches one allowlisted media session and turns its callbacks into play
@@ -70,6 +72,13 @@ class SessionWatcher(
         // Prime with whatever the session already holds, so we do not have to
         // wait for the next change to know what is playing. Metadata first: the
         // tracker cannot attribute a position reading until it knows the track.
+        //
+        // The playback type comes first of all, because a session that is
+        // already playing opens a segment on the very next line and that
+        // segment has to know whose volume it is using. `onAudioInfoChanged`
+        // only fires on a *change*, so without this priming a session that was
+        // remote before the listener bound would look local for its whole life.
+        controller.playbackInfo?.let { onAudioInfoChanged(it) }
         controller.metadata?.let { onMetadataChanged(it) }
         controller.playbackState?.let { onPlaybackStateChanged(it) }
 
@@ -163,6 +172,56 @@ class SessionWatcher(
             packageName = packageName,
         )
     }
+
+    /**
+     * The session changed which volume it controls.
+     *
+     * This is the phantom signal. With Spotify Connect, a device showing a
+     * session for music playing elsewhere reports
+     * [MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE] while the device
+     * actually playing reports local — measured in both directions on
+     * 2026-09-21, with `volumeControlId` naming Spotify's own Connect
+     * media-route provider as a second signal.
+     *
+     * A class this file already extended and never overrode. Nothing here
+     * decides anything: the reading is handed to the tracker, stored on the
+     * row, and judged by scoring. See [PlaybackType] for why it is not simply
+     * dropped here, which was the cheaper option and the wrong one.
+     */
+    override fun onAudioInfoChanged(info: MediaController.PlaybackInfo) {
+        val type = when (info.playbackType) {
+            MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL -> PlaybackType.LOCAL
+            MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE -> PlaybackType.REMOTE
+            else -> null
+        }
+        tracker.onPlaybackType(type)
+
+        CaptureLog.add(
+            source = EventSource.SESSION,
+            summary = "playback is ${type?.name?.lowercase() ?: "of an unknown kind"}",
+            detail = "controlId=" + (controlIdOf(info) ?: "(none)"),
+            packageName = packageName,
+        )
+    }
+
+    /**
+     * The volume control a remote session is using, for the live log only.
+     *
+     * A second, independent signal that a `REMOTE` reading is a Connect session
+     * rather than, say, a volume-fixed dock: on both devices it reads as
+     * Spotify's own media-route provider component plus an opaque session id.
+     * No device name and nothing about the user, so it is safe to show.
+     *
+     * `getVolumeControlId` is API 34 and `minSdk` is 31, so older devices
+     * simply get no second signal. Nothing depends on it — the playback type
+     * alone is what capture stores.
+     */
+    private fun controlIdOf(info: MediaController.PlaybackInfo): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            info.volumeControlId
+        } else {
+            null
+        }
 
     override fun onSessionDestroyed() {
         CaptureLog.add(EventSource.SESSION, "session destroyed", packageName = packageName)

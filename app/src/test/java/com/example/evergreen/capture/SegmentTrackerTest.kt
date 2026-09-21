@@ -1,6 +1,7 @@
 package com.example.evergreen.capture
 
 import com.example.evergreen.data.EndReason
+import com.example.evergreen.data.PlaybackType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -472,6 +473,105 @@ class SegmentTrackerTest {
         // of them essentially complete — not one row saying "skipped at 3%".
         assertEquals(3, segments.count { it.track.title == "Metadata" })
         assertNotNull(segments.firstOrNull { it.endPositionMs > 107_000 })
+    }
+
+    // --- The playback type, Phase 5c step 2 ---------------------------------
+
+    @Test
+    fun `a segment with no reading carries no playback type`() {
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+
+        val segment = finish(at = 60_000).single()
+        assertNull(
+            "null means 'not observed', which is what every row before v8 is",
+            segment.playbackType,
+        )
+    }
+
+    @Test
+    fun `a local session stamps every segment local`() {
+        tracker.onPlaybackType(PlaybackType.LOCAL)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+        metadata("B", at = 60_000)
+        state(0, at = 60_000)
+        state(30_000, at = 90_000)
+
+        val segments = finish(at = 90_000)
+        assertEquals(2, segments.size)
+        assertTrue(segments.all { it.playbackType == PlaybackType.LOCAL })
+    }
+
+    @Test
+    fun `a remote session stamps the phantom, and capture still records it`() {
+        // The whole point of the decision taken on 2026-09-21: the row is
+        // written, not dropped. Scoring decides what it is worth.
+        tracker.onPlaybackType(PlaybackType.REMOTE)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(179_000, at = 179_000)
+
+        val segment = finish(at = 179_000).single()
+        assertEquals(PlaybackType.REMOTE, segment.playbackType)
+        assertTrue("the listen is still recorded in full", segment.listenedMs > 170_000)
+    }
+
+    @Test
+    fun `remote is sticky within a segment`() {
+        // Playback transfers away mid-track: this device was genuinely playing
+        // for part of it. One field cannot say "half", and marking the row is
+        // the direction that does not quietly score somebody else's listening.
+        tracker.onPlaybackType(PlaybackType.LOCAL)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(30_000, at = 30_000)
+        tracker.onPlaybackType(PlaybackType.REMOTE)
+        state(60_000, at = 60_000)
+        tracker.onPlaybackType(PlaybackType.LOCAL)
+        state(90_000, at = 90_000)
+
+        val segment = finish(at = 90_000).single()
+        assertEquals(
+            "one remote reading marks the whole segment",
+            PlaybackType.REMOTE,
+            segment.playbackType,
+        )
+    }
+
+    @Test
+    fun `the next segment starts clean after a remote one ends`() {
+        // Stickiness is per segment, not for the life of the session --
+        // otherwise a single Connect session would poison every later listen.
+        tracker.onPlaybackType(PlaybackType.REMOTE)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+
+        tracker.onPlaybackType(PlaybackType.LOCAL)
+        metadata("B", at = 60_000)
+        state(0, at = 60_000)
+        state(30_000, at = 90_000)
+
+        val segments = finish(at = 90_000)
+        assertEquals(2, segments.size)
+        assertEquals(PlaybackType.REMOTE, segments[0].playbackType)
+        assertEquals(PlaybackType.LOCAL, segments[1].playbackType)
+    }
+
+    @Test
+    fun `a null reading does not erase what is already known`() {
+        // "the session did not say this time" is not evidence that playback
+        // became local, and treating it as such is how a phantom would escape.
+        tracker.onPlaybackType(PlaybackType.REMOTE)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        tracker.onPlaybackType(null)
+        state(60_000, at = 60_000)
+
+        assertEquals(PlaybackType.REMOTE, finish(at = 60_000).single().playbackType)
     }
 
     private companion object {
