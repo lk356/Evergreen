@@ -239,6 +239,7 @@ internal fun noteColour(note: ContributionNote) = when (note) {
     ContributionNote.DAILY_CAP -> MaterialTheme.colorScheme.tertiary
     ContributionNote.DJ_SUPPRESSED -> MaterialTheme.colorScheme.primary
     ContributionNote.COMMENTARY,
+    ContributionNote.REMOTE_SESSION,
     ContributionNote.UNKNOWN_DURATION,
     ContributionNote.UNLIKE_IGNORED,
     -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -248,6 +249,7 @@ internal fun describe(kind: ContributionKind, note: ContributionNote): String = 
     ContributionNote.LIKE -> "liked"
     ContributionNote.UNLIKE_IGNORED -> "unliked (does not affect the score)"
     ContributionNote.COMMENTARY -> "DJ commentary — not a song"
+    ContributionNote.REMOTE_SESSION -> "another device was playing — not counted"
     ContributionNote.UNKNOWN_DURATION -> "played, but no track length known"
     ContributionNote.DJ_SUPPRESSED -> "skipped during a DJ session — not counted against it"
     ContributionNote.DAILY_CAP -> "played, trimmed by the daily cap"

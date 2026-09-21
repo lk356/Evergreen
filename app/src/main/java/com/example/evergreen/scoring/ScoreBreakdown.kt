@@ -21,6 +21,27 @@ enum class ContributionNote {
     COMMENTARY,
 
     /**
+     * Recorded from a media session that was controlling **another device's**
+     * volume, so this device was almost certainly not the one playing.
+     * Contributes nothing.
+     *
+     * With Spotify Connect, a device showing a session for music playing
+     * somewhere else records a faithful duplicate of a listen it is not
+     * producing — a **phantom**. Measured in both directions on 2026-09-21:
+     * five tracks played on one device produced five segments on the other,
+     * claiming 403.3 s against the real 403.5 s, with every fraction agreeing
+     * to 0.01. Merging two devices' captures without this exclusion would
+     * double-count every such listen, and would also inherit spurious
+     * zero-length rows that score as *rejections* of songs played in full.
+     *
+     * **Excluded here rather than dropped at capture**, so that a listen cast
+     * from a phone to a speaker, a TV, a car or a desktop is still recorded
+     * and the decision stays reversible. See
+     * [com.example.evergreen.data.PlaybackType].
+     */
+    REMOTE_SESSION,
+
+    /**
      * A rejection that was forgiven because it happened during a DJ session.
      * Skipping through songs you did not choose is browsing, not rejection.
      */

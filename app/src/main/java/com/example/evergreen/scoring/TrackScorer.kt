@@ -3,6 +3,7 @@ package com.example.evergreen.scoring
 import com.example.evergreen.data.ListeningSegmentEntity
 import com.example.evergreen.data.LikeEventType
 import com.example.evergreen.data.MergedSegment
+import com.example.evergreen.data.PlaybackType
 import com.example.evergreen.data.SegmentGrouping
 import java.time.Instant
 import java.time.ZoneId
@@ -84,13 +85,38 @@ class TrackScorer(
             )
         }
 
+        // 1b. Drop phantoms: rows recorded from a session that was controlling
+        //     another device's volume, which means this device was almost
+        //     certainly not the one playing. Kept visible for the same reason
+        //     commentary is -- a track whose rows are all phantoms should
+        //     explain itself rather than look like a scoring failure.
+        //
+        //     Before the fold, deliberately. A phantom and a real listen of the
+        //     same track can sit next to each other in time, and folding them
+        //     together would produce one listen that is partly somebody else's.
+        val (remote, local) = songs.partition { it.playbackType == PlaybackType.REMOTE }
+        remote.forEach { segment ->
+            contributions += ScoreContribution(
+                kind = ContributionKind.LISTEN,
+                atMs = segment.endedAtMs,
+                fractionHeard = null,
+                listenedMs = segment.listenedMs,
+                rawPlayEquivalents = 0.0,
+                playEquivalents = 0.0,
+                decayWeight = 0.0,
+                decayedValue = 0.0,
+                note = ContributionNote.REMOTE_SESSION,
+                segmentIds = listOf(segment.id),
+            )
+        }
+
         // 2. Fold replays. Capture cuts a new segment at every backwards jump
         //    over 1000 ms because cutting finely is reversible; this is the
         //    reverse operation, applying the replay threshold that was
         //    deliberately never stored. Imported rows carry no jump fields and
         //    so are never folded into anything.
         val listens = SegmentGrouping
-            .merge(songs.sortedByDescending { it.endedAtMs }, parameters.replayJumpThresholdMs)
+            .merge(local.sortedByDescending { it.endedAtMs }, parameters.replayJumpThresholdMs)
             .sortedBy { it.endedAtMs }
 
         // 3-5. Fraction heard, the curve, DJ suppression.

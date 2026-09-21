@@ -3,6 +3,7 @@ package com.example.evergreen.scoring
 import com.example.evergreen.data.EndReason
 import com.example.evergreen.data.LikeEventType
 import com.example.evergreen.data.ListeningSegmentEntity
+import com.example.evergreen.data.PlaybackType
 import com.example.evergreen.data.SegmentSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -37,6 +38,7 @@ class TrackScorerTest {
         jumpFromMs: Long? = null,
         jumpToMs: Long? = null,
         source: SegmentSource = SegmentSource.CAPTURE,
+        playbackType: PlaybackType? = null,
     ) = ListeningSegmentEntity(
         id = nextId++,
         trackId = TRACK_ID,
@@ -57,6 +59,7 @@ class TrackScorerTest {
         lastSampleAgeMs = if (source == SegmentSource.CAPTURE) 100L else null,
         createdAt = endedAtMs,
         source = source,
+        playbackType = playbackType,
     )
 
     private fun input(
@@ -495,6 +498,116 @@ class TrackScorerTest {
         assertEquals(1, scoreOf(rows).listens.size)
         // At 3s it is a deliberate replay, so they are two.
         assertEquals(2, scoreOf(rows, parameters = defaults.copy(replayJumpThresholdMs = 3_000)).listens.size)
+    }
+
+    // --- Phantoms, Phase 5c step 2 ------------------------------------------
+
+    @Test
+    fun `a remote segment contributes nothing`() {
+        val breakdown = scoreOf(
+            listOf(
+                segment(
+                    endedAtMs = now - day,
+                    listenedMs = duration,
+                    playbackType = PlaybackType.REMOTE,
+                ),
+            ),
+        )
+
+        assertEquals(0.0, breakdown.score, TOLERANCE)
+        assertEquals(
+            ContributionNote.REMOTE_SESSION,
+            breakdown.listens.single().note,
+        )
+    }
+
+    @Test
+    fun `a remote segment stays visible with its listened time`() {
+        // Visible for the same reason commentary is: a track whose rows are all
+        // phantoms has to explain itself rather than look like a scoring bug.
+        val breakdown = scoreOf(
+            listOf(
+                segment(
+                    endedAtMs = now - day,
+                    listenedMs = 123_456,
+                    playbackType = PlaybackType.REMOTE,
+                ),
+            ),
+        )
+
+        val listen = breakdown.listens.single()
+        assertEquals(123_456L, listen.listenedMs)
+        assertEquals(0.0, listen.decayedValue, TOLERANCE)
+        assertEquals("it never reached the curve", 0.0, listen.rawPlayEquivalents, TOLERANCE)
+        assertEquals("and it is not counted as a scored listen", 0, breakdown.scoredListenCount)
+    }
+
+    @Test
+    fun `a local segment and a null one both score as before`() {
+        // Null is every row written before schema v8. The phase's stated test
+        // is that the Walkman's ranking does not move, and this is that test at
+        // the level of one track.
+        val nullRow = scoreOf(listOf(segment(now - day, duration, playbackType = null)))
+        val localRow = scoreOf(
+            listOf(segment(now - day, duration, playbackType = PlaybackType.LOCAL)),
+        )
+
+        assertTrue("a full play still scores", nullRow.score > 0.9)
+        assertEquals(nullRow.score, localRow.score, TOLERANCE)
+        assertEquals(ContributionNote.SCORED, nullRow.listens.single().note)
+    }
+
+    @Test
+    fun `the phantom of a full play cannot be mistaken for a rejection`() {
+        // The harm the fix is really for. Step 1 measured a device recording a
+        // zero-length trailing row for a track the other device played to 0.97;
+        // a 0.00 fraction is below the lower breakpoint and scores as an
+        // emphatic rejection of a song that was in fact enjoyed.
+        val withPhantom = scoreOf(
+            listOf(
+                segment(now - day, duration, playbackType = PlaybackType.LOCAL),
+                segment(now - day + 1000, listenedMs = 0, playbackType = PlaybackType.REMOTE),
+            ),
+        )
+        val withoutPhantom = scoreOf(
+            listOf(segment(now - day, duration, playbackType = PlaybackType.LOCAL)),
+        )
+
+        assertEquals(
+            "the phantom must not drag the real play down",
+            withoutPhantom.score,
+            withPhantom.score,
+            TOLERANCE,
+        )
+        assertTrue(withPhantom.score > 0.9)
+    }
+
+    @Test
+    fun `a remote row is never folded into a real listen`() {
+        // Excluded before the replay fold, deliberately. A phantom sitting next
+        // to a real listen of the same track would otherwise be merged into it,
+        // producing one listen that is partly somebody else's -- and the merged
+        // row's listenedMs would be inflated rather than ignored.
+        val real = segment(
+            endedAtMs = now - day,
+            listenedMs = 100_000,
+            endReason = EndReason.POSITION_JUMP_BACK,
+            jumpFromMs = 100_000,
+            jumpToMs = 0,
+            playbackType = PlaybackType.LOCAL,
+        )
+        val phantom = segment(
+            endedAtMs = now - day + 5_000,
+            listenedMs = 100_000,
+            playbackType = PlaybackType.REMOTE,
+        )
+
+        val breakdown = scoreOf(listOf(real, phantom))
+        val scored = breakdown.listens.filter { it.note != ContributionNote.REMOTE_SESSION }
+
+        assertEquals("one real listen, un-merged", 1, scored.size)
+        assertEquals(100_000L, scored.single().listenedMs)
+        assertEquals(1, breakdown.listens.count { it.note == ContributionNote.REMOTE_SESSION })
     }
 
     private companion object {
