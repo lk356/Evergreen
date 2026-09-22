@@ -196,12 +196,18 @@ _Update at the end of each task: what was done, what's next, any blockers._
   rows left to measure. **The Pixel does not truncate a listen; it fragments
   it**, and the fragments score as rejections of songs played in full. Full
   figures under Phase 5c in "Open questions".
-- **Next:** Phase 5c step 4, two-way sync — and before it, the batch format
+- **Next:** the phantom fix has to be **rebuilt** before anything else.
+  `docs/PHASE5C_STEP7_FINDINGS.md` is the handoff: what was measured, what
+  turned out not to be true, and what to build. **`phase5c-merge` must not
+  merge to `main` until it is done** — `docs/SYNC_FOUNDATION.md` §5.1 makes the
+  phantom fix the merge's one hard prerequisite, and as built it catches 32% of
+  phantoms while discarding some real listening.
+- ~~**Next:** Phase 5c step 4, two-way sync — and before it, the batch format
   has to carry the two new columns, or a phantom exported from one device
   would score on the other. Steps 1, 2 and 3 are **done, 2026-09-21**: the
   reverse phantom is real and symmetric and the fix catches it both ways;
   capture records the playback type and scoring excludes it; the database is
-  at **schema v8** and every segment carries its own UTC offset.
+  at **schema v8** and every segment carries its own UTC offset.~~
 - **305 unit tests and 252 instrumented tests pass**, up from 278 and 251.
   The instrumented run was on the Pixel with the Walkman unplugged,
   2026-09-21, and includes the v8 migration against a real SQLite database.
@@ -3514,10 +3520,27 @@ API 37, this is reachable from an ordinary app:
 
 An app cannot see *which* app owns a configuration, and does not need to: if an
 allowlisted session claims `PLAYING` while this device produces **no media
-audio at all**, that is a phantom. **Unverified and load-bearing:** a
-non-privileged app may receive *redacted* configurations, so the in-app view
-may differ from `dumpsys`. To be settled on both devices before anything is
-built on it.
+audio at all**, that is a phantom.
+
+**Verified on the Pixel, 2026-09-22**, by an instrumented probe
+(`ActivePlaybackVisibilityTest`) run twice against real playback:
+
+| scenario | its own session | its audio output | **what the app sees** |
+|---|---|---|---|
+| Walkman playing — a phantom | `PLAYING`, `vol=LOCAL` | 0 players | **0 configurations** |
+| Pixel playing — real | `PLAYING`, `vol=LOCAL` | 1 player | **1**, `usage=USAGE_MEDIA`, `content=MUSIC` |
+
+**The list is not redacted**, so the signal is available to this app. Note that
+`volumeType` reads `LOCAL` in *both* rows and cannot tell them apart at all —
+which is the whole finding in two lines.
+
+**One thing is redacted, and it costs something.**
+`AudioPlaybackConfiguration.getAudioDeviceInfo()` returned **null** for both
+type and name to the unprivileged caller. So the app can know *that* it is
+producing media audio but not *where the sound is going*. The user's question
+about whether Bluetooth or wired output is what perturbs the session therefore
+**cannot be answered as a recorded fact this way, and stays open.** The core
+signal is unaffected.
 
 **The user's proposed rule, which is better than what was built:** exclude a
 segment only when another device has a concurrent, better-evidenced segment for
