@@ -38,6 +38,7 @@ class HomeStatusTest {
     /** A device where everything is working, as the Walkman is meant to be. */
     private fun healthy(
         accessGranted: Boolean = true,
+        captureEnabled: Boolean = true,
         configured: Boolean = true,
         connection: SpotifyConnectionState? = connected,
         lastCapturedAtMs: Long? = now - 2 * TimeUnit.HOURS.toMillis(1),
@@ -49,9 +50,12 @@ class HomeStatusTest {
         latestSnapshotMonthKey: String? = "2026-08",
         mirror: MirrorState? = null,
         newestFactAtMs: Long? = null,
+        otherDeviceNewestFactAtMs: Long? = null,
+        anotherDeviceIsKnown: Boolean = false,
     ) = buildStatus(
         nowMs = now,
         accessGranted = accessGranted,
+        captureEnabled = captureEnabled,
         mirror = mirror,
         configured = configured,
         connection = connection,
@@ -61,6 +65,8 @@ class HomeStatusTest {
         lastWrittenAtMs = lastWrittenAtMs,
         writeConfirmed = writeConfirmed,
         isWriter = isWriter,
+        otherDeviceNewestFactAtMs = otherDeviceNewestFactAtMs,
+        anotherDeviceIsKnown = anotherDeviceIsKnown,
         backoffUntilMs = backoffUntilMs,
         latestSnapshotMonthKey = latestSnapshotMonthKey,
         zone = utc,
@@ -95,6 +101,115 @@ class HomeStatusTest {
         val problems = healthy(lastCapturedAtMs = now - 8 * day)
         val quiet = problems.single { it.headline == "Capture has gone quiet" }
         assertEquals(StatusProblem.Severity.BROKEN, quiet.severity)
+    }
+
+    /**
+     * **The bug Phase 5b left, fixed in 5c step 8.**
+     *
+     * Turning recording off disables the listener component, which leaves
+     * notification access granted and nothing recorded. The status line fell
+     * through to "Capture has gone quiet" and offered to check notification
+     * access — which is in perfect order. That sends the user to a system
+     * settings screen where everything looks right, with no hint of the switch
+     * that actually did it.
+     */
+    @Test
+    fun recordingSwitchedOffSaysSoRatherThanBlamingNotificationAccess() {
+        val problems = healthy(captureEnabled = false, lastCapturedAtMs = now - 8 * day)
+        val first = problems.first()
+
+        assertEquals(StatusProblem.Severity.BROKEN, first.severity)
+        assertTrue("it names the real cause", first.headline.contains("switched off"))
+        assertEquals(
+            "and does not send the user to notification access, which is fine",
+            StatusProblem.Action.SETTINGS,
+            first.action,
+        )
+        assertTrue(
+            "the misleading entry is gone",
+            problems.none { it.headline == "Capture has gone quiet" },
+        )
+    }
+
+    @Test
+    fun noAccessAtAllStillOutranksTheSwitch() {
+        // Both wrong at once: granting access is the thing to do first, because
+        // the switch cannot record without it.
+        val problems = healthy(accessGranted = false, captureEnabled = false)
+
+        assertTrue(problems.first().headline.contains("Nothing is being recorded"))
+        assertEquals(StatusProblem.Action.NOTIFICATION_ACCESS, problems.first().action)
+    }
+
+    @Test
+    fun recordingOffIsStillReportedEvenBeforeAnySilence() {
+        // It does not wait a week. Nothing is being recorded right now, and the
+        // week-long threshold exists for capture failing silently, not for a
+        // switch whose state is known.
+        val problems = healthy(captureEnabled = false, lastCapturedAtMs = now - 60_000)
+
+        assertTrue(problems.any { it.headline.contains("switched off") })
+    }
+
+    // --- Writing without the other device, Phase 5c step 8 -------------------
+
+    @Test
+    fun theWriterSaysSoWhenItHasNotHeardFromTheOtherDevice() {
+        // The ranking about to be published is missing plays. It is not corrupt
+        // -- it looks exactly like a correct one, which is what makes saying so
+        // worth a line on the screen.
+        val problems = healthy(
+            anotherDeviceIsKnown = true,
+            otherDeviceNewestFactAtMs = now - 5 * day,
+        )
+        val stale = problems.single { it.headline.contains("without the other device") }
+
+        assertEquals(StatusProblem.Severity.WARNING, stale.severity)
+        assertTrue("it says how stale", stale.detail.contains("old"))
+    }
+
+    @Test
+    fun aRecentlySyncedPeerSaysNothing() {
+        assertTrue(
+            "two days is an ordinary gap between moving files by hand",
+            healthy(
+                anotherDeviceIsKnown = true,
+                otherDeviceNewestFactAtMs = now - 2 * day,
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun aDeviceThatHasNeverHadAPeerSaysNothingAboutOne() {
+        // The check that stops this appearing on a single-device install, which
+        // is what every install is until the first import.
+        assertTrue(
+            healthy(anotherDeviceIsKnown = false, otherDeviceNewestFactAtMs = null).isEmpty(),
+        )
+    }
+
+    @Test
+    fun aKnownPeerThatHasNeverSentAPlayIsSaidDifferently() {
+        val problems = healthy(
+            anotherDeviceIsKnown = true,
+            otherDeviceNewestFactAtMs = null,
+        )
+        val stale = problems.single { it.headline.contains("without the other device") }
+
+        assertTrue("never, rather than an age", stale.detail.contains("never received"))
+    }
+
+    @Test
+    fun aDeviceThatDoesNotWriteIsNotToldToSync() {
+        // The warning is about publishing a ranking. A device that publishes
+        // nothing has nothing to get wrong.
+        assertTrue(
+            healthy(
+                isWriter = false,
+                anotherDeviceIsKnown = true,
+                otherDeviceNewestFactAtMs = now - 30 * day,
+            ).none { it.headline.contains("without the other device") },
+        )
     }
 
     @Test

@@ -91,6 +91,10 @@ class SnapshotTest {
             .allowMainThreadQueries()
             .build()
         clock = lastDayOfAugust
+        // Since Phase 5c only the device holding the writer role keeps the
+        // archive, so every test here needs to hold it. The one that checks the
+        // refusal takes it away again.
+        runBlocking { db.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device") }
     }
 
     @After
@@ -367,6 +371,40 @@ class SnapshotTest {
      * playlist on the account. The Walkman holds the same snapshot and can
      * export it itself.
      */
+    /**
+     * Only the writer keeps the archive. **Phase 5c step 5.**
+     *
+     * Two devices each taking August's snapshot would produce two records of
+     * one moment that could differ -- by exactly the listening in flight, if
+     * one had imported the other's plays and the other had not.
+     */
+    @Test
+    fun aDeviceWithoutTheRoleTakesNoSnapshot() = runBlocking {
+        buildLibrary(count = 5, inPlaylist = 3)
+        db.importDao().clearWriterRole()
+
+        val result = snapshots().takeIfDue(force = true)
+
+        assertTrue("refused, and says who to do it on", result is SnapshotResult.NotTheWriter)
+        assertNull("and nothing was written", db.scoringDao().snapshotForMonth("2026-08"))
+    }
+
+    @Test
+    fun aDeviceWithoutTheRoleRefusesToExportAMonth() = runBlocking {
+        buildLibrary(count = 5, inPlaylist = 3)
+        snapshots().takeIfDue()
+        val snapshot = db.scoringDao().snapshotForMonth("2026-08")!!
+        db.importDao().putWriterRole(WriterRole("some-other-device", 2L), "NW-A300Series")
+
+        val result = snapshots().export(snapshot.id, api)
+
+        assertTrue(result is SnapshotExport.Refused)
+        assertTrue(
+            "it names the device to do it on",
+            (result as SnapshotExport.Refused).reason.contains("NW-A300Series"),
+        )
+    }
+
     @Test
     fun aMirrorRefusesToExportAndSaysWhy() = runBlocking {
         buildLibrary(count = 5, inPlaylist = 3)

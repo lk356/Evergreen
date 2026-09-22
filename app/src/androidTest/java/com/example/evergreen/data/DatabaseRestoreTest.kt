@@ -136,6 +136,9 @@ class DatabaseRestoreTest {
         live = live,
         thisDevice = device,
         captureEnabled = captureEnabled,
+        // The same install id the tests store the role under, so the preview's
+        // "does this device stay the writer" is asked about the right device.
+        thisDeviceId = TEST_DEVICE_ID,
     )
 
     /** Opens the staged copy the way `apply` does, for asserting against it. */

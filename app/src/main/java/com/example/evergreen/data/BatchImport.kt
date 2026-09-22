@@ -103,6 +103,16 @@ object BatchImport {
         val membershipAdded: Int,
         val snapshotsWritten: Int,
         val unknownLinesSkipped: Int,
+        /**
+         * Segments from two devices overlapping in wall-clock time on one
+         * track, counted after the import. **A tripwire, not a merge rule.**
+         *
+         * Zero in normal use, because one person cannot listen to two things at
+         * once. Rows capture already marked as remote are not counted, so this
+         * going non-zero means the phantom fix has stopped working rather than
+         * that it is doing its job. See `SyncDao.countCrossDeviceOverlaps`.
+         */
+        val crossDeviceOverlaps: Int,
         val tookMs: Long,
     ) {
         /** True when the batch was entirely made of things already here. */
@@ -226,14 +236,21 @@ object BatchImport {
             throw Refused("That file could not be read. Nothing has been changed.")
         }
 
+        // Counted after the transaction, deliberately. It is a report about the
+        // database as it now stands rather than about this file, and running it
+        // outside keeps a read-only tripwire off the path that has to either
+        // commit whole or not at all.
+        val overlaps = database.syncDao().countCrossDeviceOverlaps()
+
         Log.i(
             TAG,
             "delta applied: ${tally.segmentsAdded} new segments, " +
-                "${tally.segmentsAlreadyHeld} already held",
+                "${tally.segmentsAlreadyHeld} already held, $overlaps overlapping",
         )
 
         Applied(
             preview = preview,
+            crossDeviceOverlaps = overlaps,
             segmentsAdded = tally.segmentsAdded,
             segmentsAlreadyHeld = tally.segmentsAlreadyHeld,
             likeEventsAdded = tally.likeEventsAdded,

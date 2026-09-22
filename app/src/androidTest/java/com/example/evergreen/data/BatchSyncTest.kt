@@ -138,6 +138,40 @@ class BatchSyncTest {
         )
     }
 
+    /** One row as the streaming-history import writes them. */
+    private suspend fun playImported(index: Int, at: Long) {
+        val title = "Track $index"
+        writer.dao().recordSegment(
+            trackKey = trackKeyOf(title, "Artist", "Album"),
+            title = title,
+            artist = "Artist",
+            album = "Album",
+            durationMs = 200_000,
+            service = SERVICE_SPOTIFY,
+            serviceTrackId = "spotify:track:t$index",
+            segment = ListeningSegmentEntity(
+                trackId = 0,
+                serviceTrackRowId = null,
+                appPackage = "com.spotify.music",
+                deviceId = "spotify-history-import",
+                startedAtMs = at,
+                endedAtMs = at + 180_000,
+                startPositionMs = null,
+                endPositionMs = null,
+                listenedMs = 180_000,
+                trackDurationMs = 200_000,
+                forwardSeekCount = null,
+                seekedForwardMs = null,
+                endReason = EndReason.IMPORTED,
+                endJumpFromMs = null,
+                endJumpToMs = null,
+                lastSampleAgeMs = null,
+                createdAt = at,
+                source = SegmentSource.IMPORT_SPOTIFY_HISTORY,
+            ),
+        )
+    }
+
     private suspend fun like(index: Int, at: Long) {
         val title = "Track $index"
         val rowId = writer.spotifyDao().resolveServiceTrack(
@@ -631,6 +665,82 @@ class BatchSyncTest {
      * are fingerprinted by their global name and their listened time, which is
      * what a duplicate would disturb.
      */
+    // --- The overlap tripwire, Phase 5c step 6 -------------------------------
+
+    @Test
+    fun normalListeningOnTwoDevicesOverlapsNotAtAll() = runBlocking {
+        // The baseline the tripwire is calibrated against: two devices that
+        // took turns, which is what really happens.
+        like(1, t0)
+        like(2, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        play(2, t0 + 2 * day, deviceId = "device-b", playbackType = PlaybackType.LOCAL)
+
+        assertEquals(0, writer.syncDao().countCrossDeviceOverlaps())
+    }
+
+    @Test
+    fun twoDevicesPlayingOneTrackAtOnceIsCounted() = runBlocking {
+        // One person cannot listen to two things at once, so this is the
+        // signal: the phantom fix has stopped working somewhere.
+        like(1, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        play(1, t0 + day, deviceId = "device-b", playbackType = PlaybackType.LOCAL)
+
+        assertEquals(1, writer.syncDao().countCrossDeviceOverlaps())
+    }
+
+    @Test
+    fun aPhantomTheFixAlreadyCaughtIsNotCounted() = runBlocking {
+        // What makes the number mean something. Counting correctly-marked
+        // phantoms would leave the tripwire permanently tripped, and a warning
+        // that is always on is a warning nobody reads.
+        like(1, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        play(1, t0 + day, deviceId = "device-b", playbackType = PlaybackType.REMOTE)
+
+        assertEquals(0, writer.syncDao().countCrossDeviceOverlaps())
+    }
+
+    @Test
+    fun oneDeviceReplayingATrackIsNotAnOverlap() = runBlocking {
+        // Same device, same track, overlapping rows -- which capture can
+        // produce around a replay. Not a cross-device signal, so not counted.
+        like(1, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+
+        assertEquals(0, writer.syncDao().countCrossDeviceOverlaps())
+    }
+
+    @Test
+    fun importedHistoryIsNeverAnOverlap() = runBlocking {
+        // Every imported row carries the fixed origin spotify-history-import,
+        // so it is "a different device" from every captured row. Counting it
+        // would report an overlap for a play that was simply both imported and
+        // captured.
+        like(1, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        playImported(1, t0 + day)
+
+        assertEquals(0, writer.syncDao().countCrossDeviceOverlaps())
+    }
+
+    @Test
+    fun theImportReportsTheCount() = runBlocking {
+        // What the screen shows, end to end.
+        like(1, t0)
+        play(1, t0 + day, deviceId = "device-a", playbackType = PlaybackType.LOCAL)
+        play(1, t0 + day, deviceId = "device-b", playbackType = PlaybackType.LOCAL)
+        writer.scoringDao().putScoringParameters(ScoringParameters(), t0)
+
+        val file = tempFile("batch-overlap.jsonl")
+        exportTo(file, fromTheBeginning = true)
+        val applied = importInto(mirror, file)
+
+        assertEquals(1, applied.crossDeviceOverlaps)
+    }
+
     // --- The writer role, Phase 5c step 5 ------------------------------------
 
     @Test

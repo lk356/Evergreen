@@ -3243,6 +3243,182 @@ definition one produced before its writer could tell a phantom from a real
 listen. Refusing costs one re-export; accepting costs the guarantee. The user
 agreed on 2026-09-21, noting that losing development-era data is not a concern.
 
+### Phase 5c step 5 — the writer role
+
+**One writer, handed over, never shared.** Every device captures, scores and
+reads likes; only the holder writes the Evergreen playlist, takes the monthly
+snapshot and exports a month.
+
+**The safety comes from the direction of the hand-over.** The current writer
+**releases** the role, naming where it goes, and stands down *immediately*. The
+named device **claims** it only when that release actually reaches it. So there
+is briefly **no** writer — harmless, Evergreen simply is not written that day —
+and never **two**, which is not harmless: two devices writing one playlist from
+two rankings would undo each other daily against a quota neither can see.
+
+The reverse design is the trap. A device announcing *"I am the writer now"*
+leaves both holding the role for exactly the same interval, and that interval is
+the dangerous one rather than the safe one.
+
+**No schema change.** `sync_state.evergreen_writer_device` changes meaning:
+`valueText` is the holder's install id rather than `"true"`/`"false"`, and it
+crosses as a `role` fact exactly as the scoring parameters cross as `params`
+(`docs/SYNC_FORMAT.md` §3). A hand-over *log* — a table like
+`parameter_history` — was considered and not built: it would be a schema change
+and buys nothing for correctness, since only the latest decision decides
+anything. Worth revisiting if a hand-over ever goes wrong in a way that needs
+explaining afterwards.
+
+**Reading the pre-5c values honestly** mattered more than expected:
+
+- `"true"` is a claim by whoever reads it, dated by the row.
+- **`"false"` becomes no decision at all.** It only ever meant "not me" and
+  never said who. On the real devices it would otherwise have won: the Pixel's
+  `"false"` was written on 2026-09-20, two days *after* the Walkman's `"true"`,
+  so treating it as a decision would have had a row naming nobody beat a real
+  claim.
+
+**The release is by name, not a broadcast.** The batch header now carries
+`producerDeviceId`, so importing a file teaches a device that the other exists
+and what it is called; the hand-over button then reads "Hand the role to the
+Pixel 10 Pro". A release to "whoever imports this next" would be fine with two
+devices and wrong with three — and Phase 7's Linux agent is a third producer.
+
+**The playlist id rides on the role line**, so a device taking up the role
+continues the same Evergreen playlist instead of creating a second one. Adopted
+only when the receiver holds none: quietly repointing an id it already has is
+the one way the app could come to write a playlist it did not create.
+
+#### The forced take-over, and its failure modes
+
+It exists because without it a lost writer means that playlist can never be
+written again — the release it would have sent can never arrive. It is behind a
+confirmation that names what can go wrong:
+
+1. **Two writers, undetectably.** If the old holder is still running and still
+   believes it holds the role, both write the same playlist from two rankings,
+   each undoing the other daily, against a quota neither can see. **Nothing in
+   the app can detect this**; it shows up as a playlist that keeps changing
+   back.
+2. **It does not move the listening.** Whatever the lost device recorded and
+   never exported stays there. Taking the role recovers no history.
+3. **It is not sticky.** If the old device turns out to be alive and later hands
+   the role on, that later decision wins — correct, but it means a forced
+   take-over is not a permanent claim.
+
+It produces an ordinary `role` line, later than what came before. Nothing in the
+format marks it, because nothing downstream should treat it differently; the
+danger is handled where it arises.
+
+#### What a hand-over mid-month does to `SYNC_FORMAT.md` §5
+
+The prompt asked. **`member` needs nothing; `snap` needed a change.**
+
+`member` is safe because the release/claim discipline means membership is never
+written by two devices at once. A row opened by one and closed by the other
+merges correctly on `(trackId, joinedAt)`, because the second device is updating
+a row it *received* rather than inventing a parallel one.
+
+**`snap` was order-dependent, and it is the one record here that cannot be
+recomputed from facts.** The rule said "replace whatever is stored for that
+month" — right while only one device takes snapshots. After a mid-month
+hand-over the new writer can take August's snapshot *before* importing the old
+writer's August snapshot, and then two exist for one month and whichever file
+was imported last won. **The two devices could hold different Augusts.** The
+rule is now "keep the later `takenAt`", tie-broken on `parametersJson`, with the
+losing snapshot's entries skipped too.
+
+### Phase 5c step 6 — the overlap report
+
+**A tripwire, not a merge rule.** After every import the app counts segments
+from two different devices that overlap in wall-clock time on the same track,
+and reports the number. It excludes nothing and changes nothing.
+
+**One person cannot listen to two things at once**, so in normal use it is zero.
+A number that stops being zero says the phantom fix has stopped working —
+Spotify no longer marking a Connect session remote, or a music app that never
+did.
+
+Three exclusions, each of which is what makes the number mean anything:
+
+- **Rows already marked `REMOTE` are not counted.** A phantom capture correctly
+  recognised is the mechanism working. Counting it would leave the tripwire
+  permanently tripped, and a warning that is always on is one nobody reads.
+- **Imported history is not counted.** Its rows carry the fixed origin
+  `spotify-history-import`, so every one is "a different device" from every
+  captured row; a play that was both imported and captured would read as an
+  overlap with nothing wrong.
+- **Same-device overlaps are not counted.** Capture can produce them around a
+  replay, and they say nothing about two devices.
+
+**A genuine hand-off does show up here, and should** — a track started on one
+device and finished on the other is exactly the case step 7 exists to measure,
+and a count that hid it would be hiding the evidence.
+
+**Shown only when it is not zero.** A line reading "0 overlapping plays" after
+every import is noise that teaches you to stop reading it, and this is a line
+worth reading on the day it appears.
+
+Cheap despite being a self-join: `trackId` is indexed, and the source filter
+cuts 77,000 imported rows down to the few hundred captured ones.
+
+### Phase 5c step 8 — what the screens say
+
+#### The "capture has gone quiet" message was blaming the wrong thing
+
+**The bug 5b left, and the prompt asked for it to be fixed here.** Turning
+recording off disables the listener component, which leaves **notification
+access granted** and nothing recorded. The status line had no idea the switch
+existed, so it fell through to *"Capture has gone quiet"* and offered a **Check
+access** button — pointing at a system settings screen where everything is in
+perfect order, with no hint of the switch that actually did it.
+
+The status builder now takes `captureEnabled` separately from `accessGranted`,
+and conflating the two was the whole of the bug: **access is what the system has
+granted; the switch is what the app is doing with it.** With recording off it
+says *"Recording is switched off"* and points at the app's own settings.
+
+Three tests, and the third is the one worth naming: it does **not** wait a week
+first. The week-long threshold exists for capture failing *silently*; a switch
+whose state is known needs no patience.
+
+#### A second thing the role change broke, found while here
+
+`HomeScreen` decided whether this device writes Evergreen with
+`isWriterRow?.valueText == "true"`. Since step 5 that row holds the *device id*
+of the holder, so the comparison silently read **false on the device that
+actually holds the role** — the home screen would have stopped showing anything
+about Evergreen writes on the Walkman. It compiled, and no test caught it,
+because a string comparison against a changed encoding is exactly the kind of
+change a type system does not see. Now read through `WriterRole`.
+
+#### The writer warns before publishing an incomplete ranking
+
+The writer is about to publish a ranking built from what it holds. If the other
+device has been listening and this one has not heard, that ranking is **wrong —
+and it looks exactly like a correct one**, which is what makes it worth a line
+on the screen.
+
+"When did I last hear from the other device" is answered **from the facts**, not
+from when a file was imported, and the two differ in the way that matters:
+importing an empty batch is recent and tells you nothing, while it is the
+*listening* being out of date that makes a ranking wrong.
+
+**Three days**, against the week used for capture silence, and the difference is
+deliberate. A week is right for *this* device going quiet, where a holiday
+explains it and a false alarm is merely annoying. This is a ranking published
+daily from incomplete facts: the cost of saying nothing is a wrong Evergreen,
+and the cost of saying something is one line the user can act on in a minute. A
+weekend still passes without a word.
+
+**It warns rather than refusing.** A stale peer is a reason to go and sync, not
+a reason to stop writing Evergreen for a week.
+
+It is shown only on the device holding the role — a device that publishes
+nothing has nothing to get wrong — and only once another device is actually
+known, which is a different question from "has it sent anything lately" and
+keeps the warning off every single-device install.
+
 ### Still unknown — carried into Phase 6
 
 

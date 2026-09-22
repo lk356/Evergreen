@@ -35,6 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MembershipChangeRow
+import com.example.evergreen.capture.CaptureSwitch
+import com.example.evergreen.capture.DeviceId
+import com.example.evergreen.data.WriterRole
 import com.example.evergreen.data.MirrorState
 import com.example.evergreen.data.RankedTrackRow
 import com.example.evergreen.data.SyncKeys
@@ -116,15 +119,39 @@ fun HomeScreen(
         connection = auth.connectionState()
     }
 
-    val isWriter = isWriterRow?.valueText == "true"
+    // Not `== "true"` any more. Since Phase 5c the row names the device that
+    // holds the role, so comparing it to a boolean silently read false on the
+    // device that actually holds it.
+    val thisDeviceId = remember(context) { DeviceId.get(context) }
+    val isWriter = WriterRole
+        .fromStored(isWriterRow?.valueText, isWriterRow?.valueMs, thisDeviceId)
+        ?.isHeldBy(thisDeviceId) == true
+
+    val syncDao = remember(context) { EvergreenDatabase.get(context).syncDao() }
+    val otherDeviceNewestFact by syncDao
+        .newestFactFromAnotherDeviceFlow(thisDeviceId)
+        .collectAsState(initial = null)
+    // "Is there another device at all" is a different question from "has it
+    // sent anything lately", and answering only the second would put a warning
+    // about a peer on a device that has never had one.
+    var anotherDeviceIsKnown by remember { mutableStateOf(false) }
+    LaunchedEffect(thisDeviceId, otherDeviceNewestFact) {
+        anotherDeviceIsKnown = EvergreenDatabase.get(context).importDao()
+            .knownDevices(exceptDeviceId = thisDeviceId)
+            .isNotEmpty()
+    }
+    val captureEnabled = CaptureSwitch.isEnabled(context)
     val problems = remember(
-        accessGranted, connection, configured, lastCaptured, lastLikeSync,
+        accessGranted, captureEnabled, connection, configured, lastCaptured, lastLikeSync,
         lastWritten, writeConfirmed, isWriter, backoffUntil, snapshots, mirror, nowMs,
-        newestFact,
+        newestFact, otherDeviceNewestFact, anotherDeviceIsKnown,
     ) {
         buildStatus(
             nowMs = nowMs,
             accessGranted = accessGranted,
+            captureEnabled = captureEnabled,
+            otherDeviceNewestFactAtMs = otherDeviceNewestFact,
+            anotherDeviceIsKnown = anotherDeviceIsKnown,
             mirror = mirror,
             configured = configured,
             connection = connection,
@@ -254,6 +281,18 @@ internal data class StatusProblem(
 internal fun buildStatus(
     nowMs: Long,
     accessGranted: Boolean,
+    /**
+     * Whether recording is switched on for this device. **Phase 5c step 8.**
+     *
+     * Distinct from [accessGranted], and conflating them was a real bug: access
+     * is what the *system* has granted, this is what the *app* is doing with
+     * it. Turning capture off disables the listener component, which leaves
+     * access granted and nothing recorded — so the status line fell through to
+     * "Capture has gone quiet" and offered to check notification access, which
+     * is in perfect order. That sends the user to a settings screen where
+     * everything looks right, with no hint of the switch that actually did it.
+     */
+    captureEnabled: Boolean = true,
     /** Set when this database is a copy of another device's. */
     mirror: MirrorState? = null,
     configured: Boolean,
@@ -275,6 +314,13 @@ internal fun buildStatus(
     lastWrittenAtMs: Long?,
     writeConfirmed: Boolean,
     isWriter: Boolean,
+    /**
+     * The newest play this database holds that another device recorded, or null
+     * if no other device has ever contributed one. **Phase 5c step 8.**
+     */
+    otherDeviceNewestFactAtMs: Long? = null,
+    /** True once another device is known to exist at all. **Phase 5c step 8.** */
+    anotherDeviceIsKnown: Boolean = false,
     backoffUntilMs: Long?,
     latestSnapshotMonthKey: String?,
     zone: ZoneId = ZoneId.systemDefault(),
@@ -340,6 +386,18 @@ internal fun buildStatus(
                 severity = StatusProblem.Severity.BROKEN,
                 actionLabel = "Grant access",
                 action = StatusProblem.Action.NOTIFICATION_ACCESS,
+            ),
+        )
+    } else if (!captureEnabled) {
+        add(
+            StatusProblem(
+                headline = "Recording is switched off",
+                detail = "Notification access is granted, but recording is turned off on " +
+                    "this device, so nothing is being captured. Plays that are never " +
+                    "recorded cannot be recovered later.",
+                severity = StatusProblem.Severity.BROKEN,
+                actionLabel = "Settings",
+                action = StatusProblem.Action.SETTINGS,
             ),
         )
     } else if (lastCapturedAtMs == null) {
@@ -462,6 +520,35 @@ internal fun buildStatus(
                     severity = StatusProblem.Severity.WARNING,
                 ),
             )
+        }
+
+        // The writer is about to publish a ranking built from what it holds.
+        // If the other device has been listening and this one has not heard,
+        // that ranking is wrong -- not corrupt, just missing plays, which is
+        // worse in a way: it looks exactly like a correct one. Said here rather
+        // than refused, because a stale peer is a reason to go and sync, not a
+        // reason to stop writing Evergreen for a week.
+        if (anotherDeviceIsKnown) {
+            val heardAge = otherDeviceNewestFactAtMs?.let { nowMs - it }
+            if (heardAge == null || heardAge >= PEER_STALE_MS) {
+                add(
+                    StatusProblem(
+                        headline = "Writing without the other device's listening",
+                        detail = if (otherDeviceNewestFactAtMs == null) {
+                            "This device writes Evergreen, and has never received any " +
+                                "listening from the other device. Import its changes so " +
+                                "the ranking counts both."
+                        } else {
+                            "The newest listening received from the other device is " +
+                                "${describeAge(nowMs - otherDeviceNewestFactAtMs)} old. " +
+                                "Evergreen is being written " +
+                                "from a ranking that misses anything played there since. " +
+                                "Import its changes first."
+                        },
+                        severity = StatusProblem.Severity.WARNING,
+                    ),
+                )
+            }
         }
     }
 
@@ -818,6 +905,19 @@ private val SYNC_STALE_MS = TimeUnit.DAYS.toMillis(2)
  * fortnight behind while looking like live data is not.
  */
 private val MIRROR_STALE_MS = TimeUnit.DAYS.toMillis(7)
+
+/**
+ * How long the writer goes without the other device's listening before it says
+ * so. **Phase 5c step 8.**
+ *
+ * Three days rather than the week used for capture silence, and the difference
+ * is deliberate. A week is right for *this* device going quiet, where a holiday
+ * is a perfectly good explanation and a false alarm is annoying. This is about
+ * a ranking being published daily from incomplete facts, where the cost of
+ * saying nothing is a wrong Evergreen and the cost of saying something is one
+ * line the user can act on in a minute. A weekend still passes without a word.
+ */
+private val PEER_STALE_MS = TimeUnit.DAYS.toMillis(3)
 
 private const val NEAR_MARGIN = 8
 private const val NEAR_LIMIT = 12

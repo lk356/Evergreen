@@ -454,6 +454,22 @@ private fun ImportChangesSection(mirror: MirrorState) {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(top = 4.dp),
             )
+            // Shown only when it is not zero, which is the normal case. A line
+            // reading "0 overlapping plays" after every import would be noise
+            // that teaches you to stop reading it, and this is a line worth
+            // reading on the day it appears.
+            if (applied.crossDeviceOverlaps > 0) {
+                Text(
+                    text = "${applied.crossDeviceOverlaps} play(s) overlap in time with a " +
+                        "play recorded on the other device. Nothing has been excluded or " +
+                        "changed — this is a check, not a rule. One person cannot listen " +
+                        "to two things at once, so this normally reads zero. If it keeps " +
+                        "appearing, one device is recording the other's listening again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
             TextButton(onClick = { BatchImportController.dismiss() }) { Text("Done") }
         }
 

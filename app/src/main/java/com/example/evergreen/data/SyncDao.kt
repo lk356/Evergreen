@@ -83,6 +83,30 @@ abstract class SyncDao {
     @Query("SELECT MAX(endedAtMs) FROM listening_segments")
     abstract fun newestFactAtMsFlow(): Flow<Long?>
 
+    /**
+     * The newest listening this database holds that another device recorded.
+     * **Phase 5c step 8.**
+     *
+     * "When did I last hear from the other device", answered from the facts
+     * rather than from when a file was imported. The two differ in the way
+     * that matters: importing an empty batch is recent and tells you nothing,
+     * and it is the *listening* being out of date that makes a ranking wrong.
+     *
+     * Captured rows only. Imported history carries the fixed origin
+     * `spotify-history-import`, which is not a device and never sends anything.
+     *
+     * Null when no other device has ever contributed a play, which is a
+     * different thing from "a long time ago" and is left for the caller to say
+     * differently.
+     */
+    @Query(
+        """
+        SELECT MAX(endedAtMs) FROM listening_segments
+         WHERE source = 'CAPTURE' AND deviceId <> :thisDeviceId
+        """,
+    )
+    abstract fun newestFactFromAnotherDeviceFlow(thisDeviceId: String): Flow<Long?>
+
     // --- Export: counting before writing -------------------------------------
 
     @Query(
@@ -746,6 +770,52 @@ abstract class SyncDao {
         deleteSnapshotEntries(existing)
         return existing
     }
+
+    /**
+     * Segments from **two different devices** that overlap in wall-clock time
+     * on the same track. **Phase 5c step 6.**
+     *
+     * A tripwire, not a merge rule. Nothing excludes or changes a row on the
+     * strength of it; it is reported and that is all. **One person cannot
+     * listen to two things at once**, so in normal use this is zero, and a
+     * number that stops being zero says the phantom fix has stopped working --
+     * Spotify no longer marking a Connect session remote, or a music app that
+     * never did.
+     *
+     * **Rows already marked `REMOTE` are excluded**, and that is what makes the
+     * count mean something. A phantom that capture correctly recognised is the
+     * mechanism working; counting it would leave the tripwire permanently
+     * tripped and therefore useless.
+     *
+     * **Imported history is excluded** too. Its rows carry the fixed origin
+     * `spotify-history-import`, so every one of them is "a different device"
+     * from every captured row, and a play that was both imported and captured
+     * would read as an overlap without anything being wrong.
+     *
+     * A genuine hand-off -- a track started on one device and finished on the
+     * other -- does show up here, and should: it is the case Phase 5c step 7
+     * exists to measure, and a count that quietly hid it would be hiding the
+     * evidence.
+     *
+     * Cheap despite being a self-join: `trackId` is indexed and the source
+     * filter cuts 77,000 imported rows down to the few hundred captured ones,
+     * so the join runs over a handful of rows per track.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM listening_segments a
+          JOIN listening_segments b
+            ON b.trackId = a.trackId
+           AND b.id > a.id
+           AND b.deviceId <> a.deviceId
+           AND b.startedAtMs < a.endedAtMs
+           AND a.startedAtMs < b.endedAtMs
+         WHERE a.source = 'CAPTURE' AND b.source = 'CAPTURE'
+           AND COALESCE(a.playbackType, '') <> 'REMOTE'
+           AND COALESCE(b.playbackType, '') <> 'REMOTE'
+        """,
+    )
+    abstract suspend fun countCrossDeviceOverlaps(): Int
 
     /** Strictly later, with a deterministic tie-break. See [applySnapshot]. */
     private fun isLater(incoming: SnapshotEntity, stored: SnapshotEntity): Boolean = when {
