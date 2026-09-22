@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.evergreen.data.EndReason
 import com.example.evergreen.data.EvergreenDatabase
+import com.example.evergreen.data.WriterRole
 import com.example.evergreen.data.ListeningSegmentEntity
 import com.example.evergreen.data.MembershipReason
 import com.example.evergreen.data.SERVICE_SPOTIFY
@@ -34,6 +35,9 @@ import java.time.ZoneId
  * JSON and the full ranking; export creates a playlist with the top 100 in
  * order.
  */
+/** A stable install id for these tests, standing in for DeviceId.get(). */
+private const val TEST_DEVICE_ID = "test-device-id"
+
 @RunWith(AndroidJUnit4::class)
 class SnapshotTest {
 
@@ -92,7 +96,7 @@ class SnapshotTest {
     @After
     fun tearDown() = db.close()
 
-    private fun snapshots() = Snapshots(db, zone = zone, now = { clock })
+    private fun snapshots() = Snapshots(db, TEST_DEVICE_ID, zone = zone, now = { clock })
 
     /** Likes [count] tracks and marks the first [inPlaylist] as playlist members. */
     private suspend fun buildLibrary(count: Int, inPlaylist: Int) {

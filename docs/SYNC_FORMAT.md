@@ -4,10 +4,16 @@ Written 2026-09-20 for Phase 5b, **version 2 on 2026-09-21 for Phase 5c**.
 Companion to `docs/SYNC_FOUNDATION.md`, which argues *why* this exists; this
 document says *what it is*, precisely enough to be implemented from scratch.
 
-**What changed in v2**, and nothing else did: a `seg` line gains two optional
-fields, `playbackType` and `utcOffsetMinutes`, both described in §4.2. Every
-other line type, the header, the identity rules and the whole of §5 are
-unchanged from v1.
+**What changed in v2**, and nothing else did:
+
+- a `seg` line gains two optional fields, `playbackType` and
+  `utcOffsetMinutes`, both described in §4.2;
+- a new line type, `role` (§4.8), carries which device writes Evergreen;
+- the header gains `producerDeviceId`, so a receiver learns **who sent the
+  file** rather than only whose facts it carries.
+
+Every other line type, the identity rules and the whole of §5 are unchanged
+from v1.
 
 **A batch is: these facts, from this device, after this watermark.** Nothing
 else. It is not a database, not a diff, and not a set of instructions — it is a
@@ -78,6 +84,7 @@ Exactly one, and it is the first line.
   "formatVersion": 2,
   "schemaVersion": 8,
   "producerName": "NW-A307",
+  "producerDeviceId": "6f1c9a3e-3c2f-4f1e-9a11-2d4e5b6c7d8e",
   "takenAtMs": 1789603200000,
   "origins": [
     {"deviceId": "6f1c9a3e-3c2f-4f1e-9a11-2d4e5b6c7d8e",
@@ -96,6 +103,7 @@ Exactly one, and it is the first line.
 | `formatVersion` | this document is version **2**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know — and for v1 specifically, for a second reason given below. |
 | `schemaVersion` | the producer's database schema, **8** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
 | `producerName` | a model name such as `NW-A307`, for saying whose batch it is on a screen. Every unit of that model reports the same string, so it identifies a *kind* of device, not one. **Never used as identity.** |
+| `producerDeviceId` | **v2.** The install id of the device that wrote the file. Distinct from `origins`, which says whose *facts* it carries and may list several — imported history, an id left by a reinstall. This says who is speaking, so a receiver can learn the other device exists, pair it with `producerName`, and offer to hand it the writer role **by name**. Null from a producer that does not say. |
 | `takenAtMs` | when the batch was produced, epoch milliseconds. |
 | `origins` | one entry per **originating device** whose segments the batch carries. See below. |
 | `counts` | how many of each `t` follow. A reader compares and refuses a truncated file. |
@@ -174,6 +182,7 @@ that assigned it.
 | `member` | `(track identity, joinedAt)` | The writer's record of what its playlist did. Only the writer knows it, so nothing merges it. |
 | `snap` | `monthKey` | One snapshot per month, already unique in the schema. |
 | `snap_entry` | `(monthKey, rank)` | Belongs to the `snap` line above it. |
+| `role` | none — it is **state, not history** | The latest decision about who writes, not a log of hand-overs. A receiver keeps whichever decision is later, so there is nothing to deduplicate. |
 
 **Tracks are content-addressed and are never sent as rows.** There is no
 `tracks` or `service_tracks` fact type. Instead every fact that refers to a
@@ -423,6 +432,62 @@ scores, and a score means nothing without the settings that produced it.
 
 ---
 
+### 4.8 `role` — who writes Evergreen
+
+**Version 2.** At most one per batch, and it may be absent.
+
+```json
+{"t":"role","holderDeviceId":"f642cfc7-...","decidedAtMs":1789600000000,
+ "holderName":"Pixel 10 Pro","playlistId":"37i9dQZF1DX..."}
+```
+
+**One writer, handed over, never shared.** Every device may capture, score and
+read likes from the service; only the holder writes the Evergreen playlist,
+takes the monthly snapshot and exports a month. Two devices writing one
+playlist from two rankings would undo each other daily, against a quota neither
+can see.
+
+**The safety rule is the direction of the hand-over.** The current writer
+**releases** the role, naming the device it is going to, and stands down
+immediately. The named device **claims** it only when this line actually
+reaches it. So between the two there is briefly **no** writer, which is
+harmless, and never **two**, which is not. A design where the new device
+announced "I am the writer now" would have both holding it for exactly the same
+interval — that is the failure this ordering exists to prevent.
+
+| field | meaning |
+|---|---|
+| `holderDeviceId` | the install id of the device that may write. **The identity.** |
+| `decidedAtMs` | when that was decided, on the deciding device's clock. |
+| `holderName` | what to call it on a screen. Cosmetic, never identity, for the same reason as `producerName`. |
+| `playlistId` | the Evergreen playlist the role is about, so a new writer **continues the same playlist** instead of creating a second one called Evergreen. It belongs to the *account* rather than to a device, which is why it rides here rather than crossing as `sync_state`. A receiver adopts it **only when it holds none**, never overwriting one it already has: the app writes solely to the playlist whose id it stored, and quietly repointing that is the one way it could touch a playlist it did not create. |
+
+**A receiver keeps the later `decidedAtMs`**, breaking a tie on
+`holderDeviceId` — arbitrary, but deterministic, because two databases that
+have seen the same decisions must not disagree about who writes. That single
+rule makes applying a batch twice a no-op and makes the result independent of
+which file arrives first, exactly as for every other type.
+
+**Clock skew is the one hazard, and it is bounded.** The comparison is between
+timestamps written by two clocks; measured between the two real devices on
+2026-09-21, the difference was about **one second**. Hitting it needs two role
+decisions on two devices inside that window, and a role decision is a
+deliberate act on one device at a time.
+
+**There is no line for "nobody holds it".** That state is the *absence* of a
+decision this device has heard, not a decision in itself, and a device with no
+role row simply refuses to write. A producer with no role row writes no `role`
+line.
+
+**A forced take-over produces an ordinary `role` line** naming the forcing
+device, later than whatever came before. Nothing in the format marks it,
+because nothing downstream should treat it differently: it is a decision like
+any other, and what makes it dangerous is that the previous holder never agreed
+to it. That danger is handled where it arises — behind a confirmation on the
+device doing it — and not here.
+
+---
+
 ## 5. What a receiver does
 
 In order, and the order is the whole of the safety argument.
@@ -482,8 +547,12 @@ In order, and the order is the whole of the safety argument.
    - `params`: insert unless `(changedAt, parametersHash)` is present. Apply
      the one marked `current` as the settings in force.
    - `member`: upsert on `(trackId, joinedAt)`.
-   - `snap` / `snap_entry`: upsert the snapshot on `monthKey`; replace its
-     entries.
+   - `snap` / `snap_entry`: upsert the snapshot on `monthKey`, **keeping the
+     one with the later `takenAt`** and breaking a tie on `parametersJson`;
+     replace the entries only when the incoming one wins, and skip the entries
+     that follow a losing `snap` line.
+   - `role`: keep the later `decidedAtMs`, breaking a tie on `holderDeviceId`.
+     Adopt `playlistId` only when this device holds none.
 
 5. **Drop the score cache.** Not "update" — drop. The facts underneath it have
    changed, and a cache that survives a change to its inputs is the
@@ -494,6 +563,33 @@ In order, and the order is the whole of the safety argument.
 6. **Do not adopt anything about the producer as a device.** Not its writer
    flag, not its playlist id, not its mirror state. A mirror that has had
    deltas applied is still a mirror.
+
+### What a writer-role hand-over does to the rules above
+
+**Asked and answered in Phase 5c.** A hand-over part-way through a month is the
+one thing that can make two devices produce the same kind of record, so each
+upsert rule was re-examined against it.
+
+**`member` needs nothing.** Only the writer writes membership, and the
+release/claim discipline means the role is never held by two devices at once —
+so two devices cannot both be opening and closing membership rows. The old
+writer stops the moment it releases; the new one starts only on import. A row
+opened by one and closed by the other merges correctly on `(trackId,
+joinedAt)`, because the second device is updating a row it received rather than
+inventing a parallel one.
+
+**`snap` needed a change, and it was order-dependent before.** The rule was
+"replace whatever is stored for that month", which is right while only one
+device ever takes a snapshot. After a mid-month hand-over the new writer can
+take August's snapshot before importing the old writer's August snapshot, and
+then two exist for one month — and whichever file was imported last won. Two
+devices could hold different Augusts. A snapshot is an archive record and the
+one thing here that **cannot be recomputed from facts**, so this mattered more
+than most. The rule is now "keep the later `takenAt`".
+
+**Nothing else is affected.** `seg` is keyed on its origin, `like` and
+`like_event` are observations of the service rather than of a device, and
+`params` was already resolved by "the latest change wins".
 
 ### Why only segments are watermarked
 

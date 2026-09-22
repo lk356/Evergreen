@@ -195,7 +195,14 @@ object MirrorImport {
      * than create a second one.
      */
     internal suspend fun neutralise(database: EvergreenDatabase, preview: Preview, at: Long) {
-        database.importDao().setEvergreenWriter(false)
+        // Not "set this device to non-writer" any more: since Phase 5c the
+        // role names a device id, so a copy arrives already saying the *other*
+        // device holds it, and this one simply is not it. What it cannot be
+        // left holding is the pre-5c `"true"`, which reads as a claim by
+        // whoever reads it -- so the row is cleared outright. This database no
+        // longer knows who writes, which is the truth, and it learns again from
+        // the next batch it imports.
+        database.importDao().clearWriterRole()
         // Every row in this copy came from the other device, so say so on the
         // rows rather than leaving it to be inferred from `originRowId IS
         // NULL` -- which, on a whole-file copy, wrongly reads as "mine". Until

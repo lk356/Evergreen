@@ -36,6 +36,9 @@ import java.io.File
  * full copy and a database built by older copy plus delta have to rank
  * identically, or the phase has not delivered what it claims.
  */
+/** A stable install id for these tests, standing in for DeviceId.get(). */
+private const val TEST_DEVICE_ID = "test-device-id"
+
 @RunWith(AndroidJUnit4::class)
 class BatchSyncTest {
 
@@ -579,7 +582,7 @@ class BatchSyncTest {
         importInto(mirror, whole)
 
         mirror.importDao().markAsMirror("NW-A307", takenAtMs = t0, importedAtMs = t0)
-        mirror.importDao().setEvergreenWriter(false)
+        mirror.importDao().clearWriterRole()
 
         play(1, t0 + 40 * day)
         val delta = tempFile("batch-guard-b.jsonl")
@@ -588,7 +591,7 @@ class BatchSyncTest {
 
         assertNotNull("still a mirror", mirror.importDao().mirrorState())
         assertEquals("NW-A307", mirror.importDao().mirrorState()!!.sourceDevice)
-        assertFalse("and still not the writer", mirror.importDao().isEvergreenWriter())
+        assertFalse("and still not the writer", mirror.importDao().isEvergreenWriter(TEST_DEVICE_ID))
     }
 
     /** The score cache is dropped rather than carried, so the ranking is recomputed. */
@@ -628,6 +631,103 @@ class BatchSyncTest {
      * are fingerprinted by their global name and their listened time, which is
      * what a duplicate would disturb.
      */
+    // --- The writer role, Phase 5c step 5 ------------------------------------
+
+    @Test
+    fun theRoleCrossesAndIsClaimedOnlyOnImport() = runBlocking {
+        buildBaseline()
+        val walkmanId = "device-walkman-install"
+        val pixelId = "device-pixel-install"
+
+        writer.importDao().putWriterRole(WriterRole(walkmanId, t0), "NW-A300Series")
+        copyWholeDatabase(mirror)
+        mirror.importDao().putWriterRole(WriterRole(walkmanId, t0), "NW-A300Series")
+
+        assertTrue("the writer holds it", writer.importDao().isEvergreenWriter(walkmanId))
+        assertFalse("the other does not", mirror.importDao().isEvergreenWriter(pixelId))
+
+        // The writer releases, and stands down immediately.
+        writer.importDao().putWriterRole(WriterRole.release(pixelId, t0 + day), "Pixel 10 Pro")
+        assertFalse(
+            "the releasing device stops writing at once",
+            writer.importDao().isEvergreenWriter(walkmanId),
+        )
+        assertFalse(
+            "and the other has not heard yet -- briefly nobody, never two",
+            mirror.importDao().isEvergreenWriter(pixelId),
+        )
+
+        val file = tempFile("batch-role.jsonl")
+        exportTo(file)
+        importInto(mirror, file)
+
+        assertTrue(
+            "claimed on import, and only then",
+            mirror.importDao().isEvergreenWriter(pixelId),
+        )
+        assertEquals("Pixel 10 Pro", mirror.importDao().writerName())
+    }
+
+    @Test
+    fun importingTheSameHandoverTwiceChangesNothing() = runBlocking {
+        buildBaseline()
+        val pixelId = "device-pixel-install"
+        copyWholeDatabase(mirror)
+
+        writer.importDao().putWriterRole(WriterRole.release(pixelId, t0 + day), "Pixel 10 Pro")
+        val file = tempFile("batch-role-twice.jsonl")
+        exportTo(file, fromTheBeginning = true)
+
+        importInto(mirror, file)
+        val after = mirror.importDao().writerRole(pixelId)
+        importInto(mirror, file)
+        importInto(mirror, file)
+
+        assertEquals("idempotent, like every other fact", after, mirror.importDao().writerRole(pixelId))
+        assertTrue(mirror.importDao().isEvergreenWriter(pixelId))
+    }
+
+    @Test
+    fun aStaleHandoverDoesNotTakeTheRoleBack() = runBlocking {
+        // The order-independence property, for the one piece of state where
+        // getting it wrong means two devices writing one playlist.
+        buildBaseline()
+        val walkmanId = "device-walkman-install"
+        val pixelId = "device-pixel-install"
+        copyWholeDatabase(mirror)
+
+        writer.importDao().putWriterRole(WriterRole(walkmanId, t0), "NW-A300Series")
+        val old = tempFile("batch-role-old.jsonl")
+        exportTo(old, fromTheBeginning = true)
+
+        writer.importDao().putWriterRole(WriterRole.release(pixelId, t0 + day), "Pixel 10 Pro")
+        val fresh = tempFile("batch-role-fresh.jsonl")
+        exportTo(fresh, fromTheBeginning = true)
+
+        // Newest first, then the stale one -- what a re-synced folder can do.
+        importInto(mirror, fresh)
+        importInto(mirror, old)
+
+        assertTrue(
+            "the later decision still stands",
+            mirror.importDao().isEvergreenWriter(pixelId),
+        )
+    }
+
+    @Test
+    fun aBatchTeachesTheReceiverWhoSentIt() = runBlocking {
+        // What makes "hand the role to the Pixel 10 Pro" possible rather than
+        // "hand it to f642cfc7-...".
+        buildBaseline()
+        val file = tempFile("batch-producer.jsonl")
+        exportTo(file, fromTheBeginning = true)
+        importInto(mirror, file)
+
+        val known = mirror.importDao().knownDevices(exceptDeviceId = "somebody-else")
+        assertTrue("the producer is now a device it can hand the role to", known.isNotEmpty())
+        assertTrue(known.all { it.describe().isNotBlank() })
+    }
+
     // --- Settings merging both ways, Phase 5c step 4 -------------------------
 
     @Test

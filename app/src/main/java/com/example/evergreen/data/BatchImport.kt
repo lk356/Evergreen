@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
+import com.example.evergreen.capture.DeviceId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -194,15 +195,24 @@ object BatchImport {
         try {
             openReader(appContext, uri).use { source ->
                 val reader = SyncBatch.Reader(source)
-                reader.readHeader()
+                val header = reader.readHeader()
+                val thisDeviceId = DeviceId.get(appContext)
 
                 // One transaction around the whole file. On the NW-A307 that
                 // also matters for speed: 77,000 individual commits is the
                 // difference between a minute and an afternoon, the same
                 // lesson the streaming-history import learned.
                 database.withTransaction {
+                    // Learn who wrote this file, so the hand-over screen can
+                    // offer the role to it by name rather than by UUID. Before
+                    // the facts, because applyRole falls back to this book when
+                    // a role line carries no name.
+                    header.producerDeviceId?.let { producer ->
+                        database.importDao().rememberDeviceName(producer, header.producerName)
+                    }
+
                     tally.unknown = reader.forEachFact { type, json ->
-                        applyFact(database, type, json, watermarks, tally)
+                        applyFact(database, type, json, watermarks, tally, thisDeviceId)
                     }
                     verifyCounts(preview, tally)
                     adoptNewestParameters(database)
@@ -246,6 +256,13 @@ object BatchImport {
         var likesWritten = 0
         var parametersAdded = 0
         var membershipAdded = 0
+        var roleChanged = false
+
+        /**
+         * The month whose incoming snapshot lost to the one already stored, so
+         * its entries are skipped too. Null the rest of the time.
+         */
+        var skippingSnapshotFor: String? = null
         var snapshotsWritten = 0
         var unknown = 0
 
@@ -272,6 +289,7 @@ object BatchImport {
         json: JSONObject,
         watermarks: Map<String, Long>,
         tally: Tally,
+        thisDeviceId: String,
     ): Boolean {
         when (type) {
             SyncBatch.Type.SEGMENT -> {
@@ -307,6 +325,11 @@ object BatchImport {
             SyncBatch.Type.SNAPSHOT_ENTRY -> {
                 tally.count(type)
                 applySnapshotEntry(database, SyncBatch.readSnapshotEntry(json), tally)
+            }
+
+            SyncBatch.Type.ROLE -> {
+                tally.count(type)
+                applyRole(database, SyncBatch.readRole(json), tally, thisDeviceId)
             }
 
             else -> return false
@@ -449,6 +472,49 @@ object BatchImport {
     }
 
     /**
+     * Claims the writer role, or learns that somebody else holds it.
+     *
+     * **This is the only way a device ever becomes the writer**, apart from the
+     * forced take-over on the settings screen. The releasing device stood down
+     * the moment it pressed the button; this is the other half, and the gap
+     * between them is the window in which nobody writes. That window is the
+     * design working, not a flaw in it: the alternative — a device announcing
+     * "I am the writer now" and the other standing down on hearing it — has
+     * both of them holding the role for exactly as long, which is the failure
+     * this whole mechanism exists to prevent.
+     *
+     * [WriterRole.resolve] keeps the later decision, so importing the same
+     * batch twice changes nothing and importing two batches in either order
+     * ends the same way.
+     */
+    private suspend fun applyRole(
+        database: EvergreenDatabase,
+        fact: SyncBatch.RoleFact,
+        tally: Tally,
+        thisDeviceId: String,
+    ) {
+        // The playlist the account uses, adopted only when this device has
+        // none. Independent of who wins the role below: a device that will
+        // never write still benefits from knowing which playlist is Evergreen,
+        // and a device that already has one must not have it repointed.
+        fact.playlistId?.let { playlistId ->
+            if (database.scoringDao().syncStateText(SyncKeys.EVERGREEN_PLAYLIST_ID) == null) {
+                database.scoringDao().putSyncText(SyncKeys.EVERGREEN_PLAYLIST_ID, playlistId)
+            }
+        }
+
+        val incoming = WriterRole(fact.holderDeviceId, fact.decidedAtMs)
+        val local = database.importDao().writerRole(thisDeviceId)
+        val winner = WriterRole.resolve(local, incoming)
+        if (winner == null || winner == local) return
+        database.importDao().putWriterRole(
+            winner,
+            holderName = fact.holderName ?: database.importDao().deviceNameOf(winner.holderDeviceId),
+        )
+        tally.roleChanged = true
+    }
+
+    /**
      * Picks the settings in force from the merged parameter log: **the latest
      * `changedAt` wins.**
      *
@@ -511,6 +577,17 @@ object BatchImport {
                 exportedAt = fact.exportedAt,
             ),
         )
+        if (id == null) {
+            // The stored snapshot for this month is the one to keep, so the
+            // entries that follow belong to the loser. Marked rather than
+            // forgotten: `applySnapshotEntry` falls back to a lookup by month
+            // when it sees no open snapshot, which would silently graft the
+            // loser's ranking onto the winner.
+            tally.openSnapshot = null
+            tally.skippingSnapshotFor = fact.monthKey
+            return
+        }
+        tally.skippingSnapshotFor = null
         tally.openSnapshot = Triple(fact.monthKey, id, fact.takenAt)
         tally.snapshotsWritten++
     }
@@ -520,6 +597,7 @@ object BatchImport {
         fact: SyncBatch.SnapshotEntryFact,
         tally: Tally,
     ) {
+        if (tally.skippingSnapshotFor == fact.monthKey) return
         val open = tally.openSnapshot
         val snapshotId: Long
         val takenAt: Long

@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MirrorState
 import com.example.evergreen.data.SnapshotEntity
@@ -147,7 +148,7 @@ fun SnapshotMonthScreen(
                         exporting = true
                         exportStatus = null
                         val api = SpotifyApi(SpotifyAuth(context))
-                        exportStatus = when (val result = Snapshots(db).export(current.id, api)) {
+                        exportStatus = when (val result = Snapshots(db, DeviceId.get(context)).export(current.id, api)) {
                             is SnapshotExport.Created ->
                                 "Exported \"${Snapshots.EXPORT_PREFIX}${current.label}\" to Spotify."
                             // A refusal is not a failure, and saying "check the

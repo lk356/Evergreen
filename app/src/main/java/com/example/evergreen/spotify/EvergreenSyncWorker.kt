@@ -12,6 +12,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.evergreen.Notifications
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.SyncKeys
 import java.util.concurrent.TimeUnit
@@ -56,7 +57,7 @@ class EvergreenSyncWorker(
         // writer should not even wake up for this. Cancelling the schedule
         // means the Pixel stops running it entirely once the Walkman is set as
         // the writer.
-        if (!db.importDao().isEvergreenWriter()) {
+        if (!db.importDao().isEvergreenWriter(DeviceId.get(applicationContext))) {
             Log.i(TAG, "not the writer device; cancelling the schedule")
             cancel(applicationContext)
             return Result.success()
@@ -73,7 +74,11 @@ class EvergreenSyncWorker(
             else -> Unit
         }
 
-        val sync = EvergreenSync(db = db, api = SpotifyApi(auth))
+        val sync = EvergreenSync(
+            db = db,
+            api = SpotifyApi(auth),
+            thisDeviceId = DeviceId.get(applicationContext),
+        )
 
         val result = sync.sync()
         return when (result.outcome) {

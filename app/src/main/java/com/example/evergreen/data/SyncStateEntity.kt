@@ -73,6 +73,34 @@ object SyncKeys {
     const val EVERGREEN_WRITER_DEVICE = "evergreen_writer_device"
 
     /**
+     * The model name of the device holding the writer role, for screens.
+     *
+     * **Cosmetic, and never identity.** `Build.MODEL` names a *kind* of device
+     * -- every NW-A300Series reports the same string -- which is why the role
+     * itself is keyed on the install id in [EVERGREEN_WRITER_DEVICE] and this
+     * is only ever shown. It travels beside the role in a batch so that a
+     * device can say "the NW-A300Series holds it" rather than printing a UUID
+     * at the user. If it ever drifts from the id, the worst outcome is a screen
+     * naming the wrong model; nothing decides anything on it.
+     */
+    const val EVERGREEN_WRITER_NAME = "evergreen_writer_name"
+
+    /**
+     * Prefix for "this install id is called that", one row per device known.
+     *
+     * A prefix and many rows rather than one row holding a list, for the same
+     * reason as [SYNC_EXPORT_THROUGH_PREFIX]: the lookup is a primary-key hit,
+     * and two imports finishing near each other cannot overwrite one another's
+     * record.
+     *
+     * Filled from a batch header, which says both who produced it and what to
+     * call them. It exists so a hand-over can be offered **by name** -- "hand
+     * the role to the Pixel 10 Pro" -- rather than by showing a UUID. Cosmetic
+     * throughout: the role itself is always keyed on the id.
+     */
+    const val DEVICE_NAME_PREFIX = "device_name:"
+
+    /**
      * The id of the playlist this app created, or adopted by name once.
      *
      * The app writes only to this playlist. Discovery by name happens only when

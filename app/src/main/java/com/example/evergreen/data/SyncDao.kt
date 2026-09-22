@@ -706,10 +706,33 @@ abstract class SyncDao {
      *
      * @return the local row id of the snapshot, for its entries to hang off.
      */
+    /**
+     * Upserts a snapshot on `monthKey`, keeping the **later** one.
+     *
+     * **Changed in Phase 5c, and the old rule was order-dependent.** It
+     * replaced whatever was stored for that month, which was right while only
+     * one device ever took a snapshot. A writer-role hand-over part-way
+     * through a month makes two possible: the new writer takes August's
+     * snapshot without having imported the old writer's August snapshot yet,
+     * and then two exist for one month. Under the old rule whichever file was
+     * imported last won, so the two devices could end up holding different
+     * Augusts — and a snapshot is an archive record, the one thing in this
+     * database that cannot be recomputed from facts.
+     *
+     * Later `takenAt` wins, breaking a tie on `parametersJson`: arbitrary, but
+     * deterministic, which is the property that matters. Same reasoning as the
+     * parameter and writer-role merges.
+     *
+     * @return the local row id for the entries to hang off, or **null** when
+     *   the stored snapshot is the one to keep — in which case the entries that
+     *   follow this line belong to the loser and are skipped too.
+     */
     @Transaction
-    open suspend fun applySnapshot(snapshot: SnapshotEntity): Long {
+    open suspend fun applySnapshot(snapshot: SnapshotEntity): Long? {
         val existing = findSnapshotId(snapshot.monthKey)
         if (existing == null) return insertSnapshot(snapshot)
+        val stored = snapshotById(existing)
+        if (stored != null && !isLater(snapshot, stored)) return null
         updateSnapshot(
             id = existing,
             label = snapshot.label,
@@ -723,4 +746,13 @@ abstract class SyncDao {
         deleteSnapshotEntries(existing)
         return existing
     }
+
+    /** Strictly later, with a deterministic tie-break. See [applySnapshot]. */
+    private fun isLater(incoming: SnapshotEntity, stored: SnapshotEntity): Boolean = when {
+        incoming.takenAt != stored.takenAt -> incoming.takenAt > stored.takenAt
+        else -> incoming.parametersJson > stored.parametersJson
+    }
+
+    @Query("SELECT * FROM snapshots WHERE id = :id")
+    abstract suspend fun snapshotById(id: Long): SnapshotEntity?
 }

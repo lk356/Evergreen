@@ -140,6 +140,9 @@ object BatchExport {
                 SyncBatch.Type.MEMBER to sync.countMembership(),
                 SyncBatch.Type.SNAPSHOT to sync.countSnapshots(),
                 SyncBatch.Type.SNAPSHOT_ENTRY to sync.countSnapshotEntries(),
+                // 0 or 1: the current decision, not a log of hand-overs.
+                SyncBatch.Type.ROLE to
+                    if (database.importDao().writerRole(ownDeviceId) == null) 0 else 1,
             ),
             fromTheBeginning = fromTheBeginning || origins.all { it.afterOriginId == 0L },
         )
@@ -179,6 +182,7 @@ object BatchExport {
                         formatVersion = SyncBatch.FORMAT_VERSION,
                         schemaVersion = EVERGREEN_SCHEMA_VERSION,
                         producerName = Build.MODEL,
+                        producerDeviceId = DeviceId.get(appContext),
                         takenAtMs = now,
                         origins = plan.origins,
                         counts = plan.counts,
@@ -191,6 +195,7 @@ object BatchExport {
                 writeParameters(database, sync, batch)
                 writeMembership(sync, batch)
                 writeSnapshots(sync, batch)
+                writeRole(database, appContext, batch)
 
                 writer.flush()
             }
@@ -303,6 +308,32 @@ object BatchExport {
      * the settings would compute a different ranking from the same history,
      * which is the one outcome this phase exists to rule out.
      */
+    /**
+     * The writer-role decision this device currently believes in, if any.
+     *
+     * Written **last**, after every fact. Nothing depends on the order — a
+     * receiver resolves the role against what it holds, not against what it has
+     * just read — but a release is the one line in a batch that changes what the
+     * *receiving device is allowed to do*, and having it sit at the end of the
+     * file rather than the top makes that easy to see when reading one.
+     */
+    private suspend fun writeRole(
+        database: EvergreenDatabase,
+        appContext: Context,
+        batch: SyncBatch.Writer,
+    ) {
+        val role = database.importDao().writerRole(DeviceId.get(appContext)) ?: return
+        batch.role(
+            SyncBatch.RoleFact(
+                holderDeviceId = role.holderDeviceId,
+                decidedAtMs = role.decidedAtMs,
+                holderName = database.importDao().writerName(),
+                playlistId = database.scoringDao()
+                    .syncStateText(SyncKeys.EVERGREEN_PLAYLIST_ID),
+            ),
+        )
+    }
+
     private suspend fun writeParameters(
         database: EvergreenDatabase,
         sync: SyncDao,

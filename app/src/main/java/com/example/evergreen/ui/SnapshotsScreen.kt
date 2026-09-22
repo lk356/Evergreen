@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.SnapshotSummary
 import com.example.evergreen.scoring.SnapshotResult
@@ -118,7 +119,10 @@ fun SnapshotsScreen(onOpenSnapshot: (Long) -> Unit, modifier: Modifier = Modifie
                 onClick = {
                     scope.launch {
                         busy = true
-                        status = when (val result = Snapshots(db).takeIfDue(force = true)) {
+                        status = when (
+                            val result = Snapshots(db, DeviceId.get(context))
+                                .takeIfDue(force = true)
+                        ) {
                             is SnapshotResult.Taken ->
                                 "Snapshot ${result.label} taken: ${result.trackCount} tracks."
                             is SnapshotResult.AlreadyExists ->
@@ -126,6 +130,13 @@ fun SnapshotsScreen(onOpenSnapshot: (Long) -> Unit, modifier: Modifier = Modifie
                             is SnapshotResult.Empty ->
                                 "Nothing to snapshot yet — no liked tracks have been scored."
                             is SnapshotResult.NotDue -> "Not due."
+                            is SnapshotResult.NotTheWriter ->
+                                result.holderName?.let {
+                                    "The $it holds the writer role, and only the writer " +
+                                        "keeps the archive. Take the snapshot there."
+                                } ?: "No device holds the writer role, so nothing takes " +
+                                    "snapshots. Hand it to this device, or take it over " +
+                                    "in Settings."
                         }
                         busy = false
                     }

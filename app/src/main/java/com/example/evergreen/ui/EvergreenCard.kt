@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.SyncKeys
 import com.example.evergreen.spotify.EvergreenSync
@@ -64,7 +65,11 @@ fun EvergreenCard() {
     var busy by remember { mutableStateOf(false) }
     var confirming by remember { mutableStateOf(false) }
 
-    fun newSync() = EvergreenSync(db = db, api = SpotifyApi(SpotifyAuth(context)))
+    fun newSync() = EvergreenSync(
+        db = db,
+        api = SpotifyApi(SpotifyAuth(context)),
+        thisDeviceId = DeviceId.get(context),
+    )
 
     SectionTitle("Evergreen playlist")
     Stat("Tracks in the playlist", "$memberCount")

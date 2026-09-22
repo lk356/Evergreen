@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.evergreen.capture.CaptureSwitch
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.DataExport
 import com.example.evergreen.data.DatabaseBackup
 import com.example.evergreen.data.BatchExport
@@ -39,7 +40,9 @@ import com.example.evergreen.data.DatabaseRestoreController
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.MirrorImport
 import com.example.evergreen.data.MirrorImportController
+import com.example.evergreen.data.ImportDao
 import com.example.evergreen.data.MirrorState
+import com.example.evergreen.data.WriterRole
 import kotlinx.coroutines.launch
 
 /**
@@ -57,9 +60,22 @@ fun DeviceCard() {
     val importDao = remember(context) { EvergreenDatabase.get(context).importDao() }
     val scope = rememberCoroutineScope()
 
+    val thisDeviceId = remember(context) { DeviceId.get(context) }
     val writerRow by importDao.evergreenWriterFlow().collectAsState(initial = null)
-    val isWriter = writerRow?.valueText == "true"
+    val writerNameRow by importDao.writerNameFlow().collectAsState(initial = null)
+    val role = WriterRole.fromStored(writerRow?.valueText, writerRow?.valueMs, thisDeviceId)
+    val isWriter = role?.isHeldBy(thisDeviceId) == true
+    val holderName = writerNameRow?.valueText
     val mirror by importDao.mirrorStateFlow().collectAsState(initial = null)
+    var confirmTakeOver by remember { mutableStateOf(false) }
+
+    // Devices this database has heard from, which is where a hand-over's
+    // candidates come from. Refreshed whenever the role changes, which covers
+    // the case that matters: an import has just landed and brought a new one.
+    var others by remember { mutableStateOf(emptyList<ImportDao.KnownDevice>()) }
+    LaunchedEffect(thisDeviceId, writerRow) {
+        others = importDao.knownDevices(exceptDeviceId = thisDeviceId)
+    }
 
     var backupMessage by remember { mutableStateOf<String?>(null) }
     var backingUp by remember { mutableStateOf(false) }
@@ -91,34 +107,135 @@ fun DeviceCard() {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "This device writes Evergreen",
+            text = "Writes Evergreen",
             style = MaterialTheme.typography.bodyMedium,
         )
-        // Switched off and unusable on a mirror rather than hidden. The flag
-        // is really there — it came in with the copy — and a control that
-        // vanished would leave the user wondering where it went instead of
-        // reading why it does nothing.
-        Switch(
-            checked = isWriter && mirror == null,
-            enabled = mirror == null,
-            onCheckedChange = { enabled -> scope.launch { importDao.setEvergreenWriter(enabled) } },
+        Text(
+            text = when {
+                isWriter -> "This device"
+                role == null -> "No device"
+                else -> holderName ?: "Another device"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
         )
     }
+
+    // The role is no longer a switch, and the reason is the whole of Phase 5c.
+    // A switch is a statement about *this* device, so two of them can both be
+    // on -- and two devices writing one playlist from two rankings undo each
+    // other daily against a quota neither can see. The role names one device
+    // id, it is released rather than claimed, and the other device picks it up
+    // only when the release actually reaches it. So there is briefly nobody,
+    // which is harmless, and never two, which is not.
     Text(
-        if (mirror != null) {
-            "Unavailable: this device holds a mirror of ${mirror!!.describeSource()}, and a " +
-                "mirror never writes to Spotify. It arrived carrying that device's own " +
-                "settings, including this one — which is exactly why the app checks for a " +
-                "mirror before it checks this switch."
-        } else {
-            "Turn this on for exactly one device — the one you listen on. Until the " +
-                "sync backend arrives, each device has its own database, so two devices " +
-                "running the Evergreen sync would each undo the other's writes every day, " +
-                "against a quota neither can see. The import should also be run only here."
+        when {
+            mirror != null ->
+                "This device holds a mirror of ${mirror!!.describeSource()}, and a mirror " +
+                    "never writes to Spotify whoever holds the role."
+            isWriter ->
+                "This device writes the Evergreen playlist, takes the monthly snapshot, and " +
+                    "exports a month. Hand the role over before you start relying on the " +
+                    "other device — it takes it up when it next imports your changes."
+            role == null ->
+                "Nobody holds the role, so Evergreen is not being written anywhere. That " +
+                    "happens between a hand-over and the other device importing it, and it " +
+                    "is harmless — but if it persists, the release never arrived."
+            else ->
+                "${holderName ?: "Another device"} writes the Evergreen playlist. This " +
+                    "device still captures, scores and syncs likes; it just does not write."
         },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    if (isWriter && mirror == null) {
+        // Named, not broadcast. A release that said only "somebody else take
+        // this" would be claimed by whichever device imported it first, which
+        // is fine with two devices and wrong with three -- and this project has
+        // a third producer already, in the Linux agent of Phase 7.
+        others.forEach { other ->
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        importDao.putWriterRole(
+                            WriterRole.release(
+                                to = other.deviceId,
+                                atMs = System.currentTimeMillis(),
+                            ),
+                            holderName = other.name,
+                        )
+                    }
+                },
+                modifier = Modifier.padding(top = 8.dp),
+            ) {
+                Text("Hand the role to the ${other.describe()}")
+            }
+        }
+        Text(
+            if (others.isEmpty()) {
+                "There is no other device to hand the role to yet. Import a changes file " +
+                    "from the other device first — that is how this one learns it exists."
+            } else {
+                "This device stops writing straight away, and the other takes it up when it " +
+                    "imports your next changes file. Export one afterwards, or nothing " +
+                    "writes Evergreen until you do."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (!isWriter && mirror == null) {
+        OutlinedButton(
+            onClick = { confirmTakeOver = true },
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Text("Take the role by force")
+        }
+        Text(
+            "For when the other device is lost, broken or wiped and can never hand it over.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (confirmTakeOver) {
+        AlertDialog(
+            onDismissRequest = { confirmTakeOver = false },
+            title = { Text("Take the writer role by force?") },
+            text = {
+                Text(
+                    "Only do this if ${holderName ?: "the other device"} is gone for good.\n\n" +
+                        "If it is still running and still believes it holds the role, both " +
+                        "devices will write the Evergreen playlist — each from its own " +
+                        "ranking, each undoing the other every day, against a Spotify quota " +
+                        "neither can see. Nothing in the app can detect that; you would " +
+                        "notice it as a playlist that keeps changing back.\n\n" +
+                        "It also does not move the listening. Whatever the other device " +
+                        "recorded and never exported stays there.\n\n" +
+                        "If that device is reachable, hand the role over from it instead.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmTakeOver = false
+                    scope.launch {
+                        importDao.putWriterRole(
+                            WriterRole.forceTakeOver(thisDeviceId, System.currentTimeMillis()),
+                            holderName = android.os.Build.MODEL,
+                        )
+                    }
+                }) { Text("Take it") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmTakeOver = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     OutlinedButton(
         onClick = { saver.launch(DatabaseBackup.suggestedFileName()) },

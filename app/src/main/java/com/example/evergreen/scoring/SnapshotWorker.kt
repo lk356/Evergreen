@@ -10,6 +10,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.evergreen.Notifications
+import com.example.evergreen.capture.DeviceId
 import com.example.evergreen.data.EvergreenDatabase
 import java.util.concurrent.TimeUnit
 
@@ -34,7 +35,7 @@ class SnapshotWorker(
     override suspend fun doWork(): Result {
         val db = EvergreenDatabase.get(applicationContext)
 
-        return when (val result = Snapshots(db).takeIfDue()) {
+        return when (val result = Snapshots(db, DeviceId.get(applicationContext)).takeIfDue()) {
             is SnapshotResult.Taken -> {
                 Log.i(TAG, "took snapshot ${result.monthKey} of ${result.trackCount} tracks")
                 Notifications.postSnapshotTaken(
@@ -44,11 +45,15 @@ class SnapshotWorker(
                 )
                 Result.success()
             }
-            // All three are ordinary: not the right day, already have one, or
-            // nothing scored yet on a fresh install.
+            // All four are ordinary: not the right day, already have one,
+            // nothing scored yet on a fresh install, or this device simply is
+            // not the one that keeps the archive. None is a failure, and a
+            // failure would make WorkManager retry something that will not
+            // change until the calendar or the role does.
             is SnapshotResult.NotDue,
             is SnapshotResult.AlreadyExists,
             is SnapshotResult.Empty,
+            is SnapshotResult.NotTheWriter,
             -> Result.success()
         }
     }

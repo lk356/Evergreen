@@ -33,6 +33,9 @@ import java.io.File
  * it closes the process-wide database handle, and it is a rename with no
  * branches in it.
  */
+/** A stable install id for these tests, standing in for DeviceId.get(). */
+private const val TEST_DEVICE_ID = "test-device-id"
+
 @RunWith(AndroidJUnit4::class)
 class DatabaseRestoreTest {
 
@@ -81,7 +84,7 @@ class DatabaseRestoreTest {
         ).build()
         try {
             deviceName?.let { source.importDao().setDeviceName(it, takenAt) }
-            source.importDao().setEvergreenWriter(true)
+            source.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device")
             source.scoringDao().putSyncText(SyncKeys.EVERGREEN_PLAYLIST_ID, "pl_walkman")
             source.scoringDao().putSyncMs(SyncKeys.EVERGREEN_WRITE_CONFIRMED_AT, takenAt)
             repeat(likes) { index -> likeOne(source, index) }
@@ -214,7 +217,7 @@ class DatabaseRestoreTest {
 
     @Test
     fun thePreviewNamesBothSidesAndTheRoleThatSurvives() = runBlocking {
-        runBlocking { live.importDao().setEvergreenWriter(true) }
+        runBlocking { live.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device") }
         writeBackupTakenOn(thisDevice, likes = 4)
 
         val preview = stage()
@@ -248,7 +251,7 @@ class DatabaseRestoreTest {
      */
     @Test
     fun restoringOnTheWriterLeavesItTheWriterAndNotAMirror() = runBlocking {
-        live.importDao().setEvergreenWriter(true)
+        live.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device")
         writeBackupTakenOn(thisDevice, likes = 4)
         val preview = stage()
 
@@ -256,7 +259,7 @@ class DatabaseRestoreTest {
         try {
             DatabaseRestore.reassertThisDevice(staged, preview, at)
 
-            assertTrue("still the writer", staged.importDao().isEvergreenWriter())
+            assertTrue("still the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
             assertNull("and not a mirror of itself", staged.importDao().mirrorState())
             assertEquals(
                 "the device name is re-stamped as this device",
@@ -297,11 +300,11 @@ class DatabaseRestoreTest {
 
         val staged = openStaged()
         try {
-            assertTrue("the file arrives as the writer", staged.importDao().isEvergreenWriter())
+            assertTrue("the file arrives as the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
 
             DatabaseRestore.reassertThisDevice(staged, preview, at)
 
-            assertFalse("and is not one afterwards", staged.importDao().isEvergreenWriter())
+            assertFalse("and is not one afterwards", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
         } finally {
             staged.close()
         }
@@ -329,7 +332,7 @@ class DatabaseRestoreTest {
             assertNotNull("still a mirror", mirror)
             assertEquals("NW-A307", mirror!!.sourceDevice)
             assertEquals(takenAt, mirror.takenAtMs)
-            assertFalse("and still not the writer", staged.importDao().isEvergreenWriter())
+            assertFalse("and still not the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
         } finally {
             staged.close()
         }
@@ -346,7 +349,7 @@ class DatabaseRestoreTest {
      */
     @Test
     fun theSameFileImportedAsAMirrorStillNeutralises() = runBlocking {
-        live.importDao().setEvergreenWriter(true)
+        live.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device")
         writeBackupTakenOn(thisDevice, likes = 4)
 
         val mirrorStaging = File(context.cacheDir, "restore-test-mirror-staging.db")
@@ -367,7 +370,7 @@ class DatabaseRestoreTest {
                 MirrorImport.neutralise(staged, preview, at)
 
                 assertNotNull("a mirror", staged.importDao().mirrorState())
-                assertFalse("and not the writer", staged.importDao().isEvergreenWriter())
+                assertFalse("and not the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
             } finally {
                 staged.close()
             }

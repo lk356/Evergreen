@@ -68,6 +68,9 @@ object SyncBatch {
         const val MEMBER = "member"
         const val SNAPSHOT = "snap"
         const val SNAPSHOT_ENTRY = "snap_entry"
+
+        /** Who writes Evergreen. **Format version 2.** */
+        const val ROLE = "role"
     }
 
     /** A reason the user can act on. Never a stack trace, never a row. */
@@ -92,6 +95,19 @@ object SyncBatch {
 
     data class Header(
         val formatVersion: Int,
+        /**
+         * The producing device's install id. **Format version 2.**
+         *
+         * The `origins` list says whose *facts* the batch carries, which is not
+         * the same question and can hold several answers -- imported history,
+         * an id left behind by a reinstall. This says which device wrote the
+         * file, so a receiver can learn that the other device exists, what it
+         * is called, and therefore offer to hand it the writer role by name.
+         *
+         * Null from a producer that does not say, which a v1 batch never does
+         * because v1 batches are refused outright.
+         */
+        val producerDeviceId: String?,
         val schemaVersion: Int,
         val producerName: String?,
         val takenAtMs: Long,
@@ -160,6 +176,7 @@ object SyncBatch {
                     .put("t", Type.HEADER)
                     .put("format", FORMAT)
                     .put("formatVersion", header.formatVersion)
+                    .putOrNull("producerDeviceId", header.producerDeviceId)
                     .put("schemaVersion", header.schemaVersion)
                     .putOrNull("producerName", header.producerName)
                     .put("takenAtMs", header.takenAtMs)
@@ -193,6 +210,26 @@ object SyncBatch {
                     .putOrNull("sourceEndReason", row.sourceEndReason)
                     .putOrNull("playbackType", row.playbackType)
                     .putOrNull("utcOffsetMinutes", row.utcOffsetMinutes),
+            )
+        }
+
+        /**
+         * The writer-role decision this producer currently believes in.
+         *
+         * At most one per batch, and it is **state rather than history**: the
+         * latest decision, not a log of hand-overs. That is all a receiver
+         * needs, because [WriterRole.resolve] compares two decisions and keeps
+         * the later one — the same rule, and the same reasoning, as the
+         * scoring parameters.
+         */
+        fun role(fact: RoleFact) {
+            line(
+                JSONObject()
+                    .put("t", Type.ROLE)
+                    .put("holderDeviceId", fact.holderDeviceId)
+                    .put("decidedAtMs", fact.decidedAtMs)
+                    .putOrNull("holderName", fact.holderName)
+                    .putOrNull("playlistId", fact.playlistId),
             )
         }
 
@@ -356,6 +393,7 @@ object SyncBatch {
 
             return Header(
                 formatVersion = version,
+                producerDeviceId = json.stringOrNull("producerDeviceId"),
                 schemaVersion = json.optInt("schemaVersion", 0),
                 producerName = json.stringOrNull("producerName"),
                 takenAtMs = json.optLong("takenAtMs", 0L),
@@ -426,6 +464,29 @@ object SyncBatch {
          * which is what happened before the field existed.
          */
         val utcOffsetMinutes: Int?,
+    )
+
+    data class RoleFact(
+        val holderDeviceId: String,
+        val decidedAtMs: Long,
+        /** Cosmetic, for screens. Never identity. */
+        val holderName: String?,
+        /**
+         * The Evergreen playlist the role is about.
+         *
+         * Carried so that a device taking up the role **continues the same
+         * playlist** rather than creating a second one called Evergreen. It
+         * rides on this line rather than crossing as `sync_state`, for the same
+         * reason the scoring parameters do: it belongs to the *account*, not to
+         * the device, and this is the line that hands the account's playlist to
+         * a new writer.
+         *
+         * A receiver adopts it only when it has none, never overwriting one it
+         * already holds -- the app writes only to the playlist whose id it
+         * stored, and quietly repointing that is the one thing that could make
+         * it touch a playlist it did not create.
+         */
+        val playlistId: String?,
     )
 
     data class LikeEventFact(
@@ -507,6 +568,13 @@ object SyncBatch {
         sourceEndReason = json.stringOrNull("sourceEndReason"),
         playbackType = json.stringOrNull("playbackType"),
         utcOffsetMinutes = json.longOrNull("utcOffsetMinutes")?.toInt(),
+    )
+
+    fun readRole(json: JSONObject) = RoleFact(
+        holderDeviceId = json.requireString("holderDeviceId"),
+        decidedAtMs = json.requireLong("decidedAtMs"),
+        holderName = json.stringOrNull("holderName"),
+        playlistId = json.stringOrNull("playlistId"),
     )
 
     fun readLikeEvent(json: JSONObject) = LikeEventFact(

@@ -23,6 +23,13 @@ import kotlinx.coroutines.flow.combine
 @Dao
 abstract class ImportDao {
 
+    /** Another device this database has heard from, and what it calls itself. */
+    data class KnownDevice(val deviceId: String, val name: String?) {
+        /** For a screen. Falls back to a short prefix rather than a whole UUID. */
+        fun describe(): String = name ?: "device ${deviceId.take(8)}"
+    }
+
+
     // --- Resolving a URI before deciding whether to import it -----------------
 
     /**
@@ -159,23 +166,91 @@ abstract class ImportDao {
     }
 
     /** True once this device has been told it is the one that writes Evergreen. */
-    suspend fun isEvergreenWriter(): Boolean =
-        syncState(SyncKeys.EVERGREEN_WRITER_DEVICE)?.valueText == "true"
+    /**
+     * Who writes Evergreen, as the stored row says. **Phase 5c.**
+     *
+     * Takes [thisDeviceId] because the row may still hold the pre-5c boolean,
+     * and `"true"` can only be read as a claim by whoever is asking. See
+     * [WriterRole.fromStored].
+     */
+    suspend fun writerRole(thisDeviceId: String): WriterRole? {
+        val row = syncState(SyncKeys.EVERGREEN_WRITER_DEVICE)
+        return WriterRole.fromStored(row?.valueText, row?.valueMs, thisDeviceId)
+    }
+
+    /** True when this device is the one that may write the playlist. */
+    suspend fun isEvergreenWriter(thisDeviceId: String): Boolean =
+        writerRole(thisDeviceId)?.isHeldBy(thisDeviceId) == true
+
+    /** Records a decision about who holds the role, and what to call it. */
+    suspend fun putWriterRole(role: WriterRole, holderName: String?) {
+        putSyncState(
+            SyncStateEntity(
+                key = SyncKeys.EVERGREEN_WRITER_DEVICE,
+                valueMs = role.decidedAtMs,
+                valueText = role.holderDeviceId,
+            ),
+        )
+        putSyncState(
+            SyncStateEntity(key = SyncKeys.EVERGREEN_WRITER_NAME, valueText = holderName),
+        )
+    }
+
+    /** Remembers what another device calls itself, from a batch header. */
+    suspend fun rememberDeviceName(deviceId: String, name: String?) {
+        if (name.isNullOrBlank()) return
+        putSyncState(
+            SyncStateEntity(key = SyncKeys.DEVICE_NAME_PREFIX + deviceId, valueText = name),
+        )
+    }
+
+    /** What a device id is called, if this database has ever been told. */
+    suspend fun deviceNameOf(deviceId: String): String? =
+        syncState(SyncKeys.DEVICE_NAME_PREFIX + deviceId)?.valueText
+
+    /**
+     * Every other device this database has heard from, newest name first.
+     *
+     * The list a hand-over is offered from. A device appears here only once a
+     * batch it produced has been imported, which is the right gate: handing the
+     * role to a device you have never heard from would be handing it into
+     * silence.
+     */
+    @Query(
+        "SELECT * FROM sync_state WHERE `key` LIKE :prefix || '%' ORDER BY `key`",
+    )
+    protected abstract suspend fun deviceNameRows(prefix: String): List<SyncStateEntity>
+
+    suspend fun knownDevices(exceptDeviceId: String): List<KnownDevice> =
+        deviceNameRows(SyncKeys.DEVICE_NAME_PREFIX)
+            .map { KnownDevice(it.key.removePrefix(SyncKeys.DEVICE_NAME_PREFIX), it.valueText) }
+            .filter { it.deviceId != exceptDeviceId && it.deviceId.isNotBlank() }
+
+    /** What to call the device holding the role. Cosmetic; see the key. */
+    suspend fun writerName(): String? = syncState(SyncKeys.EVERGREEN_WRITER_NAME)?.valueText
+
+    fun writerNameFlow(): Flow<SyncStateEntity?> = syncStateFlow(SyncKeys.EVERGREEN_WRITER_NAME)
+
+    /**
+     * Forgets who holds the role, leaving nobody.
+     *
+     * Used by the mirror import. A copy arrives holding the *source* device's
+     * row, and if that row is the pre-5c `"true"` it would be read as a claim
+     * by whoever reads it -- so a mirror would believe it had become the
+     * writer. Clearing is the honest state: this database no longer knows who
+     * writes, and it will learn from the next batch it imports.
+     */
+    suspend fun clearWriterRole() {
+        deleteSyncState(SyncKeys.EVERGREEN_WRITER_DEVICE)
+        deleteSyncState(SyncKeys.EVERGREEN_WRITER_NAME)
+    }
 
     fun evergreenWriterFlow(): Flow<SyncStateEntity?> = syncStateFlow(SyncKeys.EVERGREEN_WRITER_DEVICE)
 
     @Query("SELECT * FROM sync_state WHERE `key` = :key LIMIT 1")
     protected abstract fun syncStateFlow(key: String): Flow<SyncStateEntity?>
 
-    suspend fun setEvergreenWriter(enabled: Boolean) {
-        putSyncState(
-            SyncStateEntity(
-                key = SyncKeys.EVERGREEN_WRITER_DEVICE,
-                valueMs = System.currentTimeMillis(),
-                valueText = enabled.toString(),
-            ),
-        )
-    }
+
 
     // --- Mirror mode ----------------------------------------------------------
     //

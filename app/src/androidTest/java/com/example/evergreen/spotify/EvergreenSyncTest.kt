@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.evergreen.data.EndReason
 import com.example.evergreen.data.EvergreenDatabase
+import com.example.evergreen.data.WriterRole
 import com.example.evergreen.data.ListeningSegmentEntity
 import com.example.evergreen.data.SERVICE_SPOTIFY
 import com.example.evergreen.data.SyncKeys
@@ -31,6 +32,9 @@ import org.junit.runner.RunWith
  * wrong and least likely to be exercised by hand — nobody is going to arrange
  * a real quota block to see what happens.
  */
+/** A stable install id for these tests, standing in for DeviceId.get(). */
+private const val TEST_DEVICE_ID = "test-device-id"
+
 @RunWith(AndroidJUnit4::class)
 class EvergreenSyncTest {
 
@@ -137,7 +141,7 @@ class EvergreenSyncTest {
     @After
     fun tearDown() = db.close()
 
-    private fun sync() = EvergreenSync(db = db, api = api, now = { clock })
+    private fun sync() = EvergreenSync(db = db, api = api, thisDeviceId = TEST_DEVICE_ID, now = { clock })
 
     /** Likes [count] tracks, each with one full play so they score above zero. */
     private suspend fun likeTracks(count: Int, playedDaysAgo: Int = 0) {
@@ -188,7 +192,7 @@ class EvergreenSyncTest {
         }
     }
 
-    private suspend fun beTheWriter() = db.importDao().setEvergreenWriter(true)
+    private suspend fun beTheWriter() = db.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device")
 
     private suspend fun confirmWrites() = sync().confirmFirstWrite()
 
@@ -227,7 +231,7 @@ class EvergreenSyncTest {
         db.importDao().markAsMirror("NW-A307", takenAtMs = clock, importedAtMs = clock)
 
         // Every other guard would let this through.
-        assertTrue("the imported writer flag is still set", db.importDao().isEvergreenWriter())
+        assertTrue("the imported writer flag is still set", db.importDao().isEvergreenWriter(TEST_DEVICE_ID))
 
         val result = sync().sync()
 

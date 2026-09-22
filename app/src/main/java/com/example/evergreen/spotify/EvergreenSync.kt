@@ -77,6 +77,12 @@ data class EvergreenSyncResult(
 class EvergreenSync(
     private val db: EvergreenDatabase,
     private val api: ApiSource,
+    /**
+     * This device's install id, so the writer-role guard can ask whether the
+     * role is held *here*. Passed in rather than read from a `Context`,
+     * because this class deliberately has none.
+     */
+    private val thisDeviceId: String,
     private val scores: ScoreService = ScoreService(db),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
@@ -135,10 +141,18 @@ class EvergreenSync(
         }
 
         if (apply) {
-            if (!importDao.isEvergreenWriter()) {
+            if (!importDao.isEvergreenWriter(thisDeviceId)) {
+                val holder = importDao.writerName()
                 return EvergreenSyncResult(
                     EvergreenSyncResult.Outcome.NOT_THE_WRITER,
-                    message = "This device is not set as the one that writes Evergreen.",
+                    message = if (holder == null) {
+                        "No device currently holds the writer role, so nothing writes " +
+                            "Evergreen. Hand it to this device from the one that had it, " +
+                            "or take it over on the settings screen."
+                    } else {
+                        "The $holder holds the writer role, so it is the device that " +
+                            "writes Evergreen. Hand the role to this device from there."
+                    },
                 )
             }
             backoffRemainingMs(at)?.let { remaining ->

@@ -27,6 +27,18 @@ sealed interface SnapshotResult {
     data class AlreadyExists(val monthKey: String) : SnapshotResult
 
     data class Empty(val monthKey: String) : SnapshotResult
+
+    /**
+     * This device does not hold the writer role, so it does not take the
+     * monthly snapshot. **Phase 5c.**
+     *
+     * A snapshot is a record of what the ranking *was* at a moment, and it is
+     * exported to Spotify on demand. Two devices each taking one for the same
+     * month would produce two records of the same moment that could differ --
+     * if one had imported the other's plays and the other had not, they would
+     * differ by exactly the listening in flight. One writer, one snapshot.
+     */
+    data class NotTheWriter(val holderName: String?) : SnapshotResult
 }
 
 /** What exporting a snapshot to Spotify did. */
@@ -67,6 +79,11 @@ sealed interface SnapshotExport {
  */
 class Snapshots(
     private val db: EvergreenDatabase,
+    /**
+     * This device's install id, for the writer-role guard. Passed in for the
+     * same reason as in `EvergreenSync`: this class has no `Context`.
+     */
+    private val thisDeviceId: String,
     private val scores: ScoreService = ScoreService(db),
     private val zone: ZoneId = ZoneId.systemDefault(),
     private val now: () -> Long = System::currentTimeMillis,
@@ -80,6 +97,11 @@ class Snapshots(
      * @param force takes one whatever the date, for the debug screen's button.
      */
     suspend fun takeIfDue(force: Boolean = false): SnapshotResult {
+        // Before the date check, and before `force`: the debug screen's button
+        // is not a reason for a second device to start writing the archive.
+        if (!db.importDao().isEvergreenWriter(thisDeviceId)) {
+            return SnapshotResult.NotTheWriter(db.importDao().writerName())
+        }
         val at = now()
         val today = LocalDate.ofInstant(Instant.ofEpochMilli(at), zone)
 
@@ -169,6 +191,24 @@ class Snapshots(
             return SnapshotExport.Refused(
                 "This is a mirror of ${mirror.describeSource()}. Export the month on " +
                     "that device — it holds the same snapshot.",
+            )
+        }
+        // And nor does a device that is not the writer. Exporting a month
+        // creates a playlist on the account, which is a write like any other.
+        // Checked separately from the mirror rather than folded into it: a
+        // mirror is a statement about this *database*, the role is a statement
+        // about this *device*, and a peer that is simply not the writer is
+        // neither a mirror nor a mistake.
+        if (!db.importDao().isEvergreenWriter(thisDeviceId)) {
+            val holder = db.importDao().writerName()
+            return SnapshotExport.Refused(
+                if (holder == null) {
+                    "No device holds the writer role, so nothing may create playlists. " +
+                        "Hand the role to this device, or take it over on the settings screen."
+                } else {
+                    "The $holder holds the writer role. Export the month there — it has " +
+                        "the same snapshot."
+                },
             )
         }
 

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import com.example.evergreen.capture.CaptureSwitch
+import com.example.evergreen.capture.DeviceId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -75,6 +76,18 @@ object DatabaseRestore {
         val existingLikes: Int,
         /** What this device is now, and will still be afterwards. */
         val staysWriter: Boolean,
+        /**
+         * The writer-role decision in force on this device, restored verbatim.
+         *
+         * The whole decision and not just [staysWriter], because since Phase 5c
+         * the role names *which* device holds it. A restore that reinstated only
+         * "was I the writer" would lose the answer to "then who is?" -- and a
+         * device that did not hold the role would come back knowing nothing
+         * about who does, so every screen would say the role is unheld until the
+         * next batch arrived.
+         */
+        val staysWriterRole: WriterRole?,
+        val staysWriterName: String?,
         val staysMirrorOf: MirrorState?,
         val captureStaysOn: Boolean,
     ) {
@@ -124,6 +137,7 @@ object DatabaseRestore {
         live: EvergreenDatabase = EvergreenDatabase.get(context.applicationContext),
         thisDevice: String = Build.MODEL,
         captureEnabled: Boolean = CaptureSwitch.isEnabled(context.applicationContext),
+        thisDeviceId: String = DeviceId.get(context.applicationContext),
     ): Preview = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
 
@@ -159,7 +173,9 @@ object DatabaseRestore {
                     incomingLikes = incoming.spotifyDao().likedNowCountOnce(),
                     existingSegments = live.dao().segmentCountOnce(),
                     existingLikes = live.spotifyDao().likedNowCountOnce(),
-                    staysWriter = live.importDao().isEvergreenWriter(),
+                    staysWriter = live.importDao().isEvergreenWriter(thisDeviceId),
+                    staysWriterRole = live.importDao().writerRole(thisDeviceId),
+                    staysWriterName = live.importDao().writerName(),
                     staysMirrorOf = live.importDao().mirrorState(),
                     captureStaysOn = captureEnabled,
                 )
@@ -264,7 +280,12 @@ object DatabaseRestore {
         preview: Preview,
         at: Long,
     ) {
-        database.importDao().setEvergreenWriter(preview.staysWriter)
+        val role = preview.staysWriterRole
+        if (role == null) {
+            database.importDao().clearWriterRole()
+        } else {
+            database.importDao().putWriterRole(role, preview.staysWriterName)
+        }
         val mirror = preview.staysMirrorOf
         if (mirror == null) {
             database.importDao().clearMirror()

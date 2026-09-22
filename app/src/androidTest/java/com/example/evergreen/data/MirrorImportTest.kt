@@ -28,6 +28,9 @@ import java.io.File
  * pull the database out from under every test that ran afterwards, and it is
  * a rename with no branches in it.
  */
+/** A stable install id for these tests, standing in for DeviceId.get(). */
+private const val TEST_DEVICE_ID = "test-device-id"
+
 @RunWith(AndroidJUnit4::class)
 class MirrorImportTest {
 
@@ -81,7 +84,7 @@ class MirrorImportTest {
                 deviceName?.let { source.importDao().setDeviceName(it, at) }
                 // The trap this whole mechanism exists for: the source is the
                 // writer, and says so in its own sync_state.
-                source.importDao().setEvergreenWriter(true)
+                source.importDao().putWriterRole(WriterRole(TEST_DEVICE_ID, 1L), "Test device")
                 source.scoringDao().putSyncMs(SyncKeys.EVERGREEN_WRITE_CONFIRMED_AT, at)
                 source.scoringDao().putSyncText(SyncKeys.EVERGREEN_PLAYLIST_ID, "pl_walkman")
                 repeat(likes) { index -> likeOne(source, index) }
@@ -262,7 +265,7 @@ class MirrorImportTest {
         ).build()
         try {
             // As it arrives, it is the Walkman in every respect.
-            assertTrue("arrives as the writer", staged.importDao().isEvergreenWriter())
+            assertTrue("arrives as the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
             assertEquals(4, staged.scoringDao().cachedScoreCount())
             assertNull(staged.importDao().mirrorState())
 
@@ -272,7 +275,7 @@ class MirrorImportTest {
             assertNotNull("it is a mirror now", mirror)
             assertEquals("NW-A307", mirror!!.sourceDevice)
             assertEquals(at, mirror.importedAtMs)
-            assertFalse("and not the writer", staged.importDao().isEvergreenWriter())
+            assertFalse("and not the writer", staged.importDao().isEvergreenWriter(TEST_DEVICE_ID))
             assertEquals(
                 "the other device's scores are dropped, to be recomputed here",
                 0,
