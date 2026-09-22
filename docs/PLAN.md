@@ -3419,6 +3419,128 @@ nothing has nothing to get wrong — and only once another device is actually
 known, which is a different question from "has it sent anything lately" and
 keeps the warning off every single-device install.
 
+### Phase 5c step 7a — the handoff, measured 2026-09-22
+
+**The case step 7 was designed for does not happen, and a worse one does.**
+
+Nine handoffs in both directions, 28.5 minutes, both devices on adb, clock
+skew 1,109 ms and corrected for. Track identity reduced to an index.
+
+#### A handoff does not split a listen
+
+The prompt expected two partial plays where there was one full one. It is not
+what happens. On track #4 the Walkman recorded **0.93** and the Pixel recorded
+**0.93**, both ending at the identical position (254,678 ms). Spotify Connect
+syncs position to every device holding the session, so **both devices record
+the whole listen** and neither is left with a fragment.
+
+**So there is nothing to stitch, and 7b's stitching rule solves a problem that
+is not there.** That is the second time this phase that the designed solution
+did not match the measured problem — the first was check 0a expecting
+truncation and finding fragmentation.
+
+#### What happens instead: both devices mark it remote, and it scores nowhere
+
+| | |
+|---|---|
+| Real listening in the test | 28.5 min |
+| Marked `REMOTE` on **both** devices | **23.6 min (83%)** |
+| What that scores under step 2's rule | **nothing, on either device** |
+
+Five of nine listens came out `REMOTE` on both sides. Step 2 excludes remote
+segments at scoring time, so the listen is excluded twice and counts nowhere.
+
+#### The cause is the stickiness, not a noisy signal
+
+**Recorded wrong first, and corrected by the user.** The first reading of this
+was that the flag "oscillates" — evidence that Spotify's signal is unreliable.
+The user pushed back: a flag that goes local → remote → local over minutes is
+just a record of the handoffs they performed, plus one accidental device change
+they had already reported. Counting the transitions settles it:
+
+| | Walkman | Pixel |
+|---|---|---|
+| Flag transitions across the whole test | 6 | **9** |
+
+Nine handoffs, nine Pixel transitions, minutes apart. **The signal was
+faithful; the rule on top of it was wrong.**
+
+The real cause is `PlaybackType` being **sticky within a segment** (step 2). A
+handoff happens *mid-track*, so a segment spans a local stretch and a remote
+stretch, and stickiness condemns the whole row — including on the device that
+played most of it. Nearly every track in the test contained a handoff, which is
+why nearly every segment came out remote on both sides.
+
+**One genuine transient**, worth designing around rather than fearing: at
+05:33:12 both devices read `REMOTE` within the same 4-second sample, and the
+Walkman returned to `LOCAL` four seconds later. During a transfer there is a
+brief moment when neither device claims to be local.
+
+#### And the step 6 tripwire is blind to exactly this
+
+Run against the real database after the test: **it reports 0**. It excludes
+`REMOTE` rows by design, so when both sides are wrongly marked remote there is
+nothing left for it to count. The one check meant to catch the phantom fix
+failing cannot see its most damaging failure mode.
+
+#### `volumeType` fails in both directions
+
+A separate clean test the same day — Walkman playing, Pixel silent, no Connect
+transfer:
+
+| | media session | producing audio? |
+|---|---|---|
+| Walkman | `volumeType=LOCAL`, `volumeControlId=null` | **yes** — one started `AudioTrack`, `USAGE_MEDIA` |
+| Pixel | `volumeType=LOCAL`, `volumeControlId=null` | **no** — zero started players |
+
+So a phantom can read `LOCAL` too. Check 0a caught it reading `REMOTE`; here it
+reads `LOCAL` for the same situation, and `volumeControlId` — held out as a
+second, independent signal — was null on both. **The flag produces false
+positives and false negatives, and the backup signal is not there.**
+
+#### The signal that did work, and the user's rule
+
+`dumpsys audio` separated the two devices perfectly in every reading: the
+device making sound has an active playback configuration with
+`usage=USAGE_MEDIA`; the phantom has none. Verified against `android.jar` for
+API 37, this is reachable from an ordinary app:
+
+- `AudioManager.getActivePlaybackConfigurations()` — public
+- `AudioManager.registerAudioPlaybackCallback(…)` — public, so live rather than polled
+- `AudioPlaybackConfiguration.getAudioAttributes()` — public
+- `AudioPlaybackConfiguration.getAudioDeviceInfo()` — public, and names the
+  actual output (speaker, wired, Bluetooth, USB)
+- `getClientUid()` / `getPlayerState()` — absent; privileged
+
+An app cannot see *which* app owns a configuration, and does not need to: if an
+allowlisted session claims `PLAYING` while this device produces **no media
+audio at all**, that is a phantom. **Unverified and load-bearing:** a
+non-privileged app may receive *redacted* configurations, so the in-app view
+may differ from `dumpsys`. To be settled on both devices before anything is
+built on it.
+
+**The user's proposed rule, which is better than what was built:** exclude a
+segment only when another device has a concurrent, better-evidenced segment for
+the same listen — otherwise count it, even if it is marked remote. It fixes the
+83% loss directly, and it preserves the cast-to-a-speaker case that step 2's
+whole argument rested on: play to a laptop with both phones open, both record
+remote phantoms, and the listen counts **once** instead of never.
+
+Four things it needs: a deterministic tie-break; an acknowledgement that the
+answer depends on what has been imported (different facts, different ranking —
+which is correct, and what step 8's stale-peer warning exists for); it does not
+help the sleeping-device case below; and it makes step 6's tripwire meaningful
+again.
+
+**A hazard found by the user, unaddressed by any rule here.** Handing playback
+to a sleeping Pixel recorded a listen, but no audio came out of the speakers
+until they touched the fingerprint reader. A device can record a listen for
+audio nobody heard. Only the active-audio signal would catch it.
+
+**Not designed yet, deliberately.** The measurement is to be repeated with
+known timings and with active-audio recorded throughout, before any rule is
+written.
+
 ### Still unknown — carried into Phase 6
 
 
