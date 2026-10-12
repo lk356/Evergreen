@@ -200,6 +200,8 @@ _Update at the end of each task: what was done, what's next, any blockers._
   which is where both devices capture and where the phantom fix in `capture/`
   sits as the hard prerequisite. The reasoning is under the roadmap.
 - Last update: 2026-09-20.
+- 2026-10-12: added a root `README.md`, `docs/README.md` (an index of this folder) and
+  screenshots from the Walkman, on branch `docs-readme`. No code changed.
 
 **Phase 5b is built: a mirror update is a small text file rather than a
 21 MiB database.** "Export changes" on the writer and "Import changes" on the
