@@ -66,6 +66,17 @@ Later phases add a self-hosted sync backend and Windows/Linux desktop agents.
 - Keep API usage light: sync likes periodically, write Evergreen at most daily.
 - Handle 429 responses with backoff and respect `Retry-After`.
 
+## The repo is public
+The repository is public (since 2026-10-12), so everything committed or pushed is
+published: files, commit messages and every branch, with their full history.
+- Never commit device serials, listening data (databases, backups, sync batches,
+  CSV exports), tokens, client IDs or local file paths. A later fix does not
+  remove an earlier commit, so check before the first push of a branch.
+- Keep `README.md` accurate when a phase finishes (status, test counts).
+- The README states plainly that AI wrote most of the code and that it has had
+  no security review. Don't contradict that elsewhere, and don't name a specific
+  AI model in the README or docs.
+
 ## Git workflow
 - Repo is private. Small commits with descriptive messages.
 - Use a branch per phase or feature (e.g. `phase0-capture-spike`), merge when working.
