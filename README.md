@@ -80,6 +80,9 @@ The split, as honestly as I can put it: the AI wrote nearly all of the code and
 did much of the how-do-I-do-this research. I decided what to build, reviewed
 what came back, and pushed back when it was wrong.
 
+I can explain the design and the reasoning behind it; I wouldn't claim to know
+every line of the implementation equally well.
+
 - **Design decisions.** I caught choices I thought were bad and proposed
   alternatives. Two principles that shaped the whole data model came from me:
   capture only records facts and never decides anything (so scoring can be

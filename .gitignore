@@ -45,3 +45,6 @@ evergreen-backup-*
 evergreen-batch-*
 *.evergreen.jsonl
 evergreen-*.csv
+
+# IDE state that records the serial number of whichever device was selected
+/.idea/deploymentTargetSelector.xml
