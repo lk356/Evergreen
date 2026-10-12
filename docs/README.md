@@ -16,7 +16,7 @@ part. File names stay as they are because code comments refer to them by path.
 
 ## Prompts and briefs, by phase
 
-These are the instructions I gave Claude Code at the start of each phase, plus
+These are the instructions I gave the AI coding assistant at the start of each phase, plus
 the questions and decisions that came out of planning. They show how the work
 was directed.
 
