@@ -1,8 +1,8 @@
 # Docs
 
 This folder is the working record of the project, not polished documentation.
-It was written while building, mostly as hand-off notes between me, a planning
-chat in claude.ai, and Claude Code. It is long and has some dead ends in it; the
+It was written while building, mostly as hand-off notes between me, a separate
+AI planning chat, and the AI coding assistant. It is long and has some dead ends in it; the
 dead ends are left in on purpose, because the corrections are the interesting
 part. File names stay as they are because code comments refer to them by path.
 

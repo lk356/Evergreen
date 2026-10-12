@@ -71,27 +71,31 @@ self-hosted sync server. The full roadmap is in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## About the AI involved
 
-Most of the code was written by Claude (Anthropic's model) running in Claude
-Code, and most commits carry its co-author line. I started this project new to
-software development, so I treated it as a way to learn by building something I
-wanted to use, and to see how far a person can steer an AI through a real,
-multi-month project.
+Most of the code was written by an AI coding assistant, and most commits carry
+its co-author line. I started this project new to software development, so I
+treated it as a way to learn by building something I wanted to use, and to see
+how far one person can direct an AI through a real, multi-month project.
 
-What that meant in practice:
+The split, as honestly as I can put it: the AI wrote nearly all of the code and
+did much of the how-do-I-do-this research. I decided what to build, reviewed
+what came back, and pushed back when it was wrong.
 
-- **I set the goals and made the product decisions.** What "alive" means for a
-  song, which devices matter, what to cut (a home-screen like widget, for
-  example), when a measurement was good enough, and when an approach was
-  wrong. Decisions I made are recorded in the planning docs.
-- **I ran everything on real hardware.** The Walkman and Pixel testing, the
-  calibration against my own six years of history, and the checks that
-  decided whether a fix worked were done on my devices with my data. Several
-  design assumptions were wrong until measured, and the docs say so.
-- **I set the rules the AI worked under**, in [`CLAUDE.md`](CLAUDE.md): small
-  steps, plans approved before large changes, privacy rules that don't bend,
-  and measure before designing.
+- **Design decisions.** I caught choices I thought were bad and proposed
+  alternatives. Two principles that shaped the whole data model came from me:
+  capture only records facts and never decides anything (so scoring can be
+  changed later and recomputed over the same history), and no behaviour is
+  designed from an assumption until it has been measured. Several times the
+  measurement contradicted what we both expected, and the docs record that.
+- **Product decisions.** What "alive" means for a song, which devices matter,
+  what to cut (a home-screen like widget, for example), and when something was
+  good enough.
+- **Real-world testing.** Everything was run on a Walkman and a Pixel with my own
+  listening, including calibrating the scoring against six years of my history.
+- **Process.** I set the rules the AI worked under in
+  [`CLAUDE.md`](CLAUDE.md): small steps, a plan I approve before any large
+  change, and privacy rules that don't bend.
 
-What it does not mean:
+What that does not mean:
 
 - **The code has not had a security review.** I put effort into the obvious
   things (below) and wrote tests for them, but nobody qualified has audited it,
@@ -99,8 +103,8 @@ What it does not mean:
 - **The code is not guaranteed clean.** It was written quickly and in volume.
   Comments are often longer than they should be, some files are large, and
   there will be duplication and abstractions that don't earn their keep.
-- **Everything was tested by me on two devices** and a lot of automated tests,
-  not by a wider group. Expect rough edges.
+- **It has had a small test audience**: me, on two devices, plus a lot of
+  automated tests. Expect rough edges.
 
 [`docs/`](docs/README.md) keeps the working record: the plan, the prompts I
 gave the AI for each phase, and the findings, including the mistakes.
