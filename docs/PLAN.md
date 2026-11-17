@@ -176,6 +176,51 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
+**Where things stand, 2026-11-17** — written on returning after a gap, to sync
+GitHub before deciding what to do next. Nothing below was built today.
+
+- **`phase5c-merge` is still not merged to `main`, and must not be** until the
+  phantom fix is rebuilt — `docs/SYNC_FOUNDATION.md` §5.1. Steps 0–6 and 8 of
+  `docs/PHASE5C_PROMPT.md` are built and committed here, with 326 unit and 269
+  instrumented tests passing. Step 7 was measured and showed the step 2 fix
+  does not work; the handoff is `docs/PHASE5C_STEP7_FINDINGS.md` and the plan
+  for the rebuild is `docs/PHASE5C_CONTINUED_PROMPT.md`.
+- **Continuation step 1 is drafted, not approved, and not on this branch.** It
+  is on **`phase5c-step1-draft`**, waiting for the user to review the
+  `capture/` diff, as the prompt asked. What it does: a new
+  `capture/ActiveAudioMonitor.kt` records whether *this device* was producing
+  media audio during each segment (`producedAudio`, schema **v9**, one nullable
+  column, not backfilled); the batch format goes to **v3** and refuses v2; and
+  `playbackType` stops being sticky, which is what cost 83% of the measured
+  session. 333 unit tests pass on it. **Its instrumented tests have not been
+  run** — the Pixel was offline — including the new v8→v9 migration test.
+- **Privacy of the audio signal** was raised by the user and answered: it reads
+  the framework's list of active players, not the microphone, needs no
+  permission, cannot identify which app is playing, and writes only onto
+  segments that exist because Spotify was playing. Its one log line is gated on
+  an allowlisted session being open. Full reasoning in the class comment.
+- **Step 2's design was proposed, not built.** A segment is excluded only when
+  a concurrent same-track segment from another device outranks it: evidence
+  first (`producedAudio` true, then null, then false), then the global name
+  `(deviceId, COALESCE(originRowId, id))` as a deterministic tie-break. One
+  survivor per group, so a handoff counts once. A 2 s **minimum overlap**, so
+  that the ~1.1 s clock skew cannot invent an overlap between two sequential
+  plays. Cast to a Connect speaker: both phones read silent, one counts — once,
+  not never. **The 2 s reading is a judgement call to confirm** before building.
+- **Steps 2–6 of the continuation prompt are not started.**
+- **Housekeeping, 2026-11-17.** The repo has been public since 2026-10-12, and
+  this branch had never been pushed. Before its first push, both device serials
+  were redacted from its 13 local commits (one table in this file); nothing
+  else in those commits changed. `main` was merged in, which also stops
+  tracking the IDE file that held serials. **The Pixel's serial still exists in
+  old public history** — the IDE file committed in Phase 0 — though in no
+  current file; removing it would need a force-push over every branch, so it is
+  left for the user to decide.
+- **Open, waiting on the user:** pull request #7 (a note in `CLAUDE.md` that
+  the repo is public); and an uncommitted Android Gradle plugin bump
+  (9.4.0 → 9.4.1, with a matching KSP change) found in the working tree, left
+  uncommitted because dependency changes need approval. It does build.
+
 - Current phase: **Phase 5c — the merge. Started 2026-09-21** on branch
   `phase5c-merge`, from `main`. The prompt is `docs/PHASE5C_PROMPT.md`; the
   decisions that opened it are in the block below.
