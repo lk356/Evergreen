@@ -104,6 +104,7 @@ class BatchSyncTest {
         deviceId: String = walkman,
         playbackType: PlaybackType? = null,
         utcOffsetMinutes: Int? = null,
+        producedAudio: Boolean? = null,
     ) {
         val title = "Track $index"
         writer.dao().recordSegment(
@@ -134,6 +135,7 @@ class BatchSyncTest {
                 createdAt = at + listenedMs,
                 playbackType = playbackType,
                 utcOffsetMinutes = utcOffsetMinutes,
+                producedAudio = producedAudio,
             ),
         )
     }
@@ -941,6 +943,39 @@ class BatchSyncTest {
             assertTrue(c.moveToNext())
             assertTrue("null stays null -- not observed, not LOCAL", c.isNull(0))
             assertEquals(-300, c.getInt(1))
+        }
+    }
+
+    @Test
+    fun theAudioReadingCrossesIntactAndAbsenceStaysAbsent() = runBlocking {
+        // The reason for the v3 bump, and the one thing about it that could go
+        // wrong quietly. `false` means "observed making no sound", which is the
+        // evidence the phantom rule acts on; `null` means nobody looked. If the
+        // two collapsed into each other on the wire, either every unobserved
+        // historical row would start being treated as evidence, or every real
+        // phantom would stop being one.
+        like(1, t0)
+        play(1, t0 + day, producedAudio = true)
+        play(1, t0 + 2 * day, producedAudio = false)
+        play(1, t0 + 3 * day, producedAudio = null)
+        writer.scoringDao().putScoringParameters(ScoringParameters(), t0)
+
+        val file = tempFile("batch-v3-audio.jsonl")
+        exportTo(file, fromTheBeginning = true)
+        importInto(mirror, file)
+
+        val rows = mirror.query(
+            "SELECT producedAudio FROM listening_segments ORDER BY startedAtMs",
+            emptyArray(),
+        )
+        rows.use { c ->
+            assertEquals(3, c.count)
+            assertTrue(c.moveToNext())
+            assertEquals("observed producing audio", 1, c.getInt(0))
+            assertTrue(c.moveToNext())
+            assertEquals("observed silent, and that is a fact of its own", 0, c.getInt(0))
+            assertTrue(c.moveToNext())
+            assertTrue("unobserved stays unobserved -- never false", c.isNull(0))
         }
     }
 

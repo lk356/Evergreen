@@ -25,6 +25,16 @@ class SessionWatcher(
     private val controller: MediaController,
     onSegmentClosed: (ClosedSegment) -> Unit,
     private val onSessionDestroyedCallback: (SessionWatcher) -> Unit,
+    /**
+     * Whether this device is producing media audio, read at the moment a
+     * watcher starts. Device-wide rather than per-session, so the monitor lives
+     * in [CaptureNotificationListenerService] and this only reads it; later
+     * changes arrive through [onActiveAudio].
+     *
+     * Defaults to "not observed", which is what a device with no
+     * `AudioManager` reports and what every row written before schema v9 says.
+     */
+    private val producingMediaAudio: () -> Boolean? = { null },
 ) : MediaController.Callback() {
 
     val packageName: String = controller.packageName
@@ -79,6 +89,10 @@ class SessionWatcher(
         // only fires on a *change*, so without this priming a session that was
         // remote before the listener bound would look local for its whole life.
         controller.playbackInfo?.let { onAudioInfoChanged(it) }
+        // And the audio reading, for the same reason: the monitor only speaks on
+        // a change, so a session that opens a segment on the very next line
+        // would otherwise carry "not observed" until the device next went quiet.
+        producingMediaAudio()?.let { tracker.onActiveAudio(it) }
         controller.metadata?.let { onMetadataChanged(it) }
         controller.playbackState?.let { onPlaybackStateChanged(it) }
 
@@ -202,6 +216,19 @@ class SessionWatcher(
             detail = "controlId=" + (controlIdOf(info) ?: "(none)"),
             packageName = packageName,
         )
+    }
+
+    /**
+     * This device started or stopped producing media audio.
+     *
+     * Pushed in by [CaptureNotificationListenerService], which holds the one
+     * device-wide [ActiveAudioMonitor] and forwards every change to every live
+     * watcher. Not a `MediaController.Callback` method — the audio framework
+     * knows nothing about media sessions, which is exactly why this signal is
+     * worth something where the session's own `playbackType` was not.
+     */
+    fun onActiveAudio(producing: Boolean) {
+        tracker.onActiveAudio(producing)
     }
 
     /**

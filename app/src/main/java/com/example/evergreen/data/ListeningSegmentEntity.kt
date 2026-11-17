@@ -345,10 +345,49 @@ data class ListeningSegmentEntity(
      *
      * Null on every row written before v8, and on any row whose session never
      * reported a playback type. See [PlaybackType] for why this is stored
-     * rather than acted on at capture, and
-     * [com.example.evergreen.scoring.TrackScorer] for where it is acted on.
+     * rather than acted on at capture.
+     *
+     * **No longer what scoring excludes on, since Phase 5c step 7.** Measured
+     * against ground truth over 251 paired samples it caught 32% of phantoms
+     * and discarded 14 samples of real listening, and the Pixel called itself
+     * `LOCAL` 103 times out of 103 while producing no sound. The column stays
+     * because it is a fact that was observed and because 66 of those catches
+     * were correct; [producedAudio] is what the rule rests on now.
      */
     val playbackType: PlaybackType? = null,
+
+    /**
+     * Whether the device that recorded this segment was **producing media
+     * audio** while it was open. **Schema v9.**
+     *
+     * True if it produced any at all, false if it produced none, null if it did
+     * not observe — every row written before v9, every imported row, and any
+     * row from a producer that cannot tell.
+     *
+     * **Why a second column rather than a better first one.** `playbackType`
+     * asks the media session about itself, and a session is not a witness to
+     * which device made the sound: with Spotify Connect the position is synced
+     * to every device holding the session, so all of them look like they are
+     * playing. This asks the *audio framework*, which knows nothing about media
+     * sessions and therefore cannot repeat the session's mistake. Over the same
+     * 251 samples it identified exactly one owner in 249.
+     *
+     * **False is not by itself a phantom, and scoring must not treat it as
+     * one.** A device that produced no audio while a session claimed to be
+     * playing might be a phantom — or might be a device whose audio the app
+     * could not see, or one handed playback while asleep. The rule needs a
+     * second device to contradict it: exclude a segment only when *another*
+     * device demonstrably produced the sound for the same track at the same
+     * time. See [com.example.evergreen.scoring.ConcurrentListens], which is
+     * where that comparison happens, and why it happens in scoring rather than
+     * in capture — capture holds one device's facts and this question needs two.
+     *
+     * **Not backfilled**, for the same reason `playbackType` was not: no
+     * existing row observed it, and writing false for all of them would be the
+     * database claiming to have watched something it did not. Null keeps
+     * scoring them exactly as it always has.
+     */
+    val producedAudio: Boolean? = null,
 
     /**
      * The device's UTC offset in minutes at the moment this segment was

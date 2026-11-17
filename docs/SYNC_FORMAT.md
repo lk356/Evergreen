@@ -1,8 +1,15 @@
-# The Evergreen fact batch — wire format v2
+# The Evergreen fact batch — wire format v3
 
-Written 2026-09-20 for Phase 5b, **version 2 on 2026-09-21 for Phase 5c**.
-Companion to `docs/SYNC_FOUNDATION.md`, which argues *why* this exists; this
-document says *what it is*, precisely enough to be implemented from scratch.
+Written 2026-09-20 for Phase 5b, version 2 on 2026-09-21 for Phase 5c,
+**version 3 on 2026-09-22 for Phase 5c step 7**. Companion to
+`docs/SYNC_FOUNDATION.md`, which argues *why* this exists; this document says
+*what it is*, precisely enough to be implemented from scratch.
+
+**What changed in v3**, and nothing else did:
+
+- a `seg` line gains one optional field, `producedAudio`, described in §4.2;
+- **a v2 batch is refused**, on the same rule and for a stronger reason than a
+  v1 batch is. See §4.2.
 
 **What changed in v2**, and nothing else did:
 
@@ -81,8 +88,8 @@ Exactly one, and it is the first line.
 {
   "t": "header",
   "format": "evergreen-batch",
-  "formatVersion": 2,
-  "schemaVersion": 8,
+  "formatVersion": 3,
+  "schemaVersion": 9,
   "producerName": "NW-A307",
   "producerDeviceId": "6f1c9a3e-3c2f-4f1e-9a11-2d4e5b6c7d8e",
   "takenAtMs": 1789603200000,
@@ -100,8 +107,8 @@ Exactly one, and it is the first line.
 | field | meaning |
 |---|---|
 | `format` | always the literal `"evergreen-batch"`. A reader refuses anything else rather than trying. |
-| `formatVersion` | this document is version **2**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know — and for v1 specifically, for a second reason given below. |
-| `schemaVersion` | the producer's database schema, **8** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
+| `formatVersion` | this document is version **3**. A reader refuses a version it does not know, in both directions, for the same reason the mirror import refuses a schema it does not know — and for v1 and v2 specifically, for a second reason given below. |
+| `schemaVersion` | the producer's database schema, **9** here. Informational: it explains a `t` a reader does not recognise. A reader does not refuse on it, because a batch is facts and not a table dump. |
 | `producerName` | a model name such as `NW-A307`, for saying whose batch it is on a screen. Every unit of that model reports the same string, so it identifies a *kind* of device, not one. **Never used as identity.** |
 | `producerDeviceId` | **v2.** The install id of the device that wrote the file. Distinct from `origins`, which says whose *facts* it carries and may list several — imported history, an id left by a reinstall. This says who is speaking, so a receiver can learn the other device exists, pair it with `producerName`, and offer to hand it the writer role **by name**. Null from a producer that does not say. |
 | `takenAtMs` | when the batch was produced, epoch milliseconds. |
@@ -263,7 +270,7 @@ roughly one per song played.
  "endReason":"TRACK_CHANGE","endJumpFromMs":null,"endJumpToMs":null,
  "lastSampleAgeMs":420,"createdAt":1789600180500,
  "source":"CAPTURE","sourceEndReason":null,
- "playbackType":"LOCAL","utcOffsetMinutes":60}
+ "playbackType":"LOCAL","utcOffsetMinutes":60,"producedAudio":true}
 ```
 
 | field | notes |
@@ -284,6 +291,7 @@ roughly one per song played.
 | `sourceEndReason` | the streaming-history export's own code (`trackdone`, `fwdbtn`, `endplay`, …) for an imported row; null on captured rows. |
 | `playbackType` | **v2.** `LOCAL`, `REMOTE`, or null. What the media session said about *whose volume it was controlling* — not about location. A producer that cannot tell writes null. See below. |
 | `utcOffsetMinutes` | **v2.** The producer's UTC offset in minutes when the segment **ended**: `60` for UTC+1, `-300` for UTC−5, `330` for UTC+5:30. Minutes and not hours, because India is UTC+5:30 and Nepal UTC+5:45. Null means the producer did not record one, and the receiver then buckets the row by its own zone. |
+| `producedAudio` | **v3.** `true` if the producing device was making media audio at any point while the segment was open, `false` if it made none, `null` if it did not observe. This is the signal the phantom rule rests on, and it replaces `playbackType` in that role. See below. |
 
 **`playbackType`, and why a receiver must not read a missing one as `LOCAL`.**
 With Spotify Connect, a device showing a session for music playing somewhere
@@ -307,6 +315,54 @@ rather than read with both fields absent. A v1 batch is by definition one
 produced before its writer could distinguish a phantom, so reading it as "all
 local" would let the phantoms this field exists to exclude in through the side
 door. Refusing costs one re-export; accepting costs the guarantee.
+
+**`producedAudio`, and why `playbackType` stopped being the phantom signal.**
+
+Everything above about `playbackType` is still true as a *description of what
+the media session said*. What is no longer true is that it is sufficient.
+Measured on 2026-09-22 against ground truth over 251 paired samples from two
+devices during a nine-handoff session:
+
+| | |
+|---|---|
+| Phantoms it caught | **66 of 205 (32%)** |
+| Phantoms it missed | 139, including the Pixel calling itself `LOCAL` **103 times out of 103** while producing no sound |
+| Real listening it would have discarded | 14 samples where the device making the sound called itself remote |
+
+Worse, the reading was **sticky within a segment** on the producing side, and a
+handoff happens mid-track — so a single segment spans a local stretch and a
+remote stretch and was condemned whole, on *both* devices. That cost **23.6 of
+28.5 minutes (83%)** of a real session, scoring nowhere at all.
+
+The reason it fails is structural, not a bug: with Spotify Connect the session
+is synced to every device holding it, so **the session is not a witness to which
+device made the sound.** `producedAudio` asks the audio framework instead, which
+knows nothing about media sessions and so cannot repeat the mistake. Over the
+same 251 samples it identified exactly one owner in **249 (99.2%)**; the two
+exceptions are single samples at handoff instants, one with both devices
+producing and one with neither.
+
+Three rules follow, and a receiver that breaks any of them is unsafe:
+
+1. **Absent is absent.** A missing or null `producedAudio` must never be read as
+   `false`. False is "observed silent", which is evidence that some *other*
+   device owns the listen; inventing it would hand real listening away.
+2. **False alone is not a phantom.** A device that produced no audio while its
+   session claimed to be playing might be a phantom — or a device whose audio
+   the producer could not see, or one handed playback while asleep. The rule is:
+   **exclude a segment only when another device demonstrably produced the sound
+   for the same track at the same time.** Otherwise count it, even if it is
+   marked `REMOTE`. See §5.
+3. **A v2 batch is refused**, on the same rule as v1 and for a stronger reason.
+   A v1 batch predates any phantom marking. A v2 batch carries marking that was
+   *measured to be wrong in both directions* — it misses two thirds of phantoms
+   and condemns real listening — so reading one would import both errors while
+   looking like it had the field it needed. Refusing costs one re-export from a
+   device that the same build is upgrading anyway.
+
+`playbackType` is **kept and still written**. 66 of its catches were correct, it
+is a fact that was observed, and deleting an observation because a rule built on
+it was wrong would be destroying evidence rather than correcting a mistake.
 
 **There is no outcome field, now or ever** (invariant 1b). No `COMPLETED`, no
 `SKIPPED`. Those are conclusions, they depend on thresholds that are still
@@ -641,7 +697,10 @@ was read.
   the decision stays reversible.
 - **No merge.** A batch says what one device observed. Deciding what to do when
   two devices observed overlapping things is Phase 5c, and it is gated on the
-  phantom fix in `capture/`.
+  phantom fix in `capture/`. **Still true in v3, and worth restating**: the
+  phantom rule compares two devices' facts, so it lives in the receiver's
+  scoring and not in the format. A batch never says "this one is a phantom",
+  because no single device is in a position to know.
 - ~~**No timezone.**~~ **Added in v2** as `utcOffsetMinutes`, exactly as this
   section predicted it would be. The reasoning it recorded stands and is worth
   keeping: a segment used to carry wall-clock milliseconds and no zone, and

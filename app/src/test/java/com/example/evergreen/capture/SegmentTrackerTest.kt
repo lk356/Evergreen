@@ -520,10 +520,12 @@ class SegmentTrackerTest {
     }
 
     @Test
-    fun `remote is sticky within a segment`() {
-        // Playback transfers away mid-track: this device was genuinely playing
-        // for part of it. One field cannot say "half", and marking the row is
-        // the direction that does not quietly score somebody else's listening.
+    fun `the playback type is the last reading, not a sticky one`() {
+        // The 83% regression, pinned so it cannot come back. Playback moves away
+        // and back mid-track; the old rule marked the whole row REMOTE because
+        // one reading was, and step 2 then excluded it -- on *both* devices, so
+        // the listen scored nowhere. The row now says what the session last
+        // said, and nothing is excluded on it.
         tracker.onPlaybackType(PlaybackType.LOCAL)
         metadata("A", at = 0)
         state(0, at = 0)
@@ -535,23 +537,41 @@ class SegmentTrackerTest {
 
         val segment = finish(at = 90_000).single()
         assertEquals(
-            "one remote reading marks the whole segment",
-            PlaybackType.REMOTE,
+            "the latest reading wins; a mid-segment handoff no longer condemns the row",
+            PlaybackType.LOCAL,
             segment.playbackType,
         )
     }
 
     @Test
+    fun `a remote reading still reaches the row when it is the last one`() {
+        // The other direction of the same change: dropping the stickiness must
+        // not turn into dropping the signal. A segment that ends remote says so.
+        tracker.onPlaybackType(PlaybackType.LOCAL)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        tracker.onPlaybackType(PlaybackType.REMOTE)
+        state(60_000, at = 60_000)
+
+        assertEquals(PlaybackType.REMOTE, finish(at = 60_000).single().playbackType)
+    }
+
+    @Test
     fun `the next segment starts clean after a remote one ends`() {
-        // Stickiness is per segment, not for the life of the session --
-        // otherwise a single Connect session would poison every later listen.
+        // Each segment records the session's own reading at the time, so a
+        // Connect session does not poison every later listen.
+        //
+        // The Connect teardown is delivered *after* the track change here,
+        // which is what "the next segment" means. Delivered before it, the
+        // reading would land on the segment still open -- which is correct too,
+        // and is the case the test above covers.
         tracker.onPlaybackType(PlaybackType.REMOTE)
         metadata("A", at = 0)
         state(0, at = 0)
         state(60_000, at = 60_000)
 
-        tracker.onPlaybackType(PlaybackType.LOCAL)
         metadata("B", at = 60_000)
+        tracker.onPlaybackType(PlaybackType.LOCAL)
         state(0, at = 60_000)
         state(30_000, at = 90_000)
 
@@ -572,6 +592,109 @@ class SegmentTrackerTest {
         state(60_000, at = 60_000)
 
         assertEquals(PlaybackType.REMOTE, finish(at = 60_000).single().playbackType)
+    }
+
+    // --- Producing audio, Phase 5c step 7 -----------------------------------
+
+    @Test
+    fun `a segment with no audio reading carries no verdict`() {
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+
+        assertNull(
+            "null means 'not observed', which is every row before v9",
+            finish(at = 60_000).single().producedAudio,
+        )
+    }
+
+    @Test
+    fun `a device producing audio stamps every segment`() {
+        tracker.onActiveAudio(true)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+        metadata("B", at = 60_000)
+        state(0, at = 60_000)
+        state(30_000, at = 90_000)
+
+        val segments = finish(at = 90_000)
+        assertEquals(2, segments.size)
+        assertTrue(segments.all { it.producedAudio == true })
+    }
+
+    @Test
+    fun `a silent device records the phantom rather than dropping it`() {
+        // The same decision as the playback type, for the same reason: capture
+        // stores the observation. "This device made no sound" is not by itself a
+        // phantom -- only another device's concurrent listen makes it one -- so
+        // capture is not in a position to decide.
+        tracker.onActiveAudio(false)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(179_000, at = 179_000)
+
+        val segment = finish(at = 179_000).single()
+        assertEquals(false, segment.producedAudio)
+        assertTrue("the listen is still recorded in full", segment.listenedMs > 170_000)
+    }
+
+    @Test
+    fun `producing audio for part of a segment counts as producing audio`() {
+        // A handoff mid-track: silent, then this device takes over. The honest
+        // answer to "did this device make any sound during this listen" is yes.
+        // The opposite direction from the stickiness that was dropped, and
+        // deliberately so -- the value scoring acts on is *no sound at all*.
+        tracker.onActiveAudio(false)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(30_000, at = 30_000)
+        tracker.onActiveAudio(true)
+        state(90_000, at = 90_000)
+
+        assertEquals(true, finish(at = 90_000).single().producedAudio)
+    }
+
+    @Test
+    fun `a gap between players does not erase that the device was playing`() {
+        // The player tears one AudioTrack down and builds the next, so the
+        // reading can blink false mid-listen. A value read at close time would
+        // fall into that gap; this one does not.
+        //
+        // The known cost of that, and it is narrow: if a handoff lands within
+        // milliseconds of a track boundary, the outgoing device's next segment
+        // can open on the stale `true` and keep it. That counts one phantom,
+        // which is the direction this phase fails in deliberately -- against
+        // losing a real listen every time playback moves mid-track, which is
+        // what the alternative did.
+        tracker.onActiveAudio(true)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        tracker.onActiveAudio(false)
+        state(60_000, at = 60_000)
+
+        assertEquals(true, finish(at = 60_000).single().producedAudio)
+    }
+
+    @Test
+    fun `the next segment starts from the current audio reading`() {
+        // Per segment, not for the life of the session: a device that played and
+        // then handed over must not carry "I made the sound" into the phantom
+        // segments that follow. That would defeat the whole rule.
+        tracker.onActiveAudio(true)
+        metadata("A", at = 0)
+        state(0, at = 0)
+        state(60_000, at = 60_000)
+
+        tracker.onActiveAudio(false)
+        metadata("B", at = 60_000)
+        state(0, at = 60_000)
+        state(30_000, at = 90_000)
+
+        val segments = finish(at = 90_000)
+        assertEquals(2, segments.size)
+        assertEquals(true, segments[0].producedAudio)
+        assertEquals(false, segments[1].producedAudio)
     }
 
     private companion object {

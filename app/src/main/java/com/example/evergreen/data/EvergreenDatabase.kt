@@ -71,7 +71,7 @@ class Converters {
  * backup taken under a different schema by comparing against this number
  * rather than a literal written out a second time somewhere else.
  */
-const val EVERGREEN_SCHEMA_VERSION = 8
+const val EVERGREEN_SCHEMA_VERSION = 9
 
 /**
  * v6 to v7: `listening_segments.originRowId`, and the unique index over
@@ -211,6 +211,44 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
 }
 
 /**
+ * v8 to v9: `listening_segments.producedAudio`.
+ *
+ * **Hand-written for the third time, and for the third time the reason is
+ * 78,110 rows.** One nullable column, no index, no constraint — the one shape
+ * SQLite changes without reading a row:
+ *
+ * ```
+ * ALTER TABLE listening_segments ADD COLUMN producedAudio INTEGER DEFAULT NULL
+ * ```
+ *
+ * See [MIGRATION_6_7] for the full argument. It has not changed, and it applies
+ * more strongly now that the table is on the real Walkman database at v8 with
+ * verified offsets: this migration must not touch a row of it.
+ *
+ * **Nothing is backfilled, and this time there is a second reason.** As with
+ * `playbackType`, no existing row observed whether its device was producing
+ * audio, so there is nothing to backfill *from*. But the value also means
+ * something specific to scoring: false is "observed silent", which is evidence
+ * another device may own the listen. Writing false across 78,110 rows would
+ * invent that evidence for six years of history, and the new rule would then
+ * start handing those listens to whichever device happened to have a
+ * concurrent row. Null means "not observed", the rule ignores it, and every
+ * historical row scores exactly as it does today.
+ *
+ * **The ranking cannot move.** One nullable column with a NULL default, read by
+ * one rule that requires a non-null value to act, over a table whose existing
+ * rows all become null. `EvergreenMigrationTest` pins that against a populated
+ * v8 database, including the ranking either side.
+ */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSQL(
+            "ALTER TABLE `listening_segments` ADD COLUMN `producedAudio` INTEGER DEFAULT NULL",
+        )
+    }
+}
+
+/**
  * The app's local database, and the source of truth for everything Evergreen
  * knows. Streaming services are sync targets, never the authority.
  *
@@ -274,11 +312,11 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
         // cache. `scores` can be dropped and rebuilt; a parameter change that
         // was never recorded is gone. See ParameterHistoryEntity.
         AutoMigration(from = 5, to = 6),
-        // v7 and v8 are deliberately NOT here. They are the hand-written
-        // migrations in this project, and MIGRATION_6_7 and MIGRATION_7_8
-        // above say why: both add nullable columns to a 77,000-row table,
-        // which SQLite does for free, and neither needs the table rebuild a
-        // generated migration might reach for.
+        // v7, v8 and v9 are deliberately NOT here. They are the hand-written
+        // migrations in this project, and MIGRATION_6_7, MIGRATION_7_8 and
+        // MIGRATION_8_9 above say why: each adds nullable columns to a
+        // 78,000-row table, which SQLite does for free, and none needs the
+        // table rebuild a generated migration might reach for.
     ],
 )
 @TypeConverters(Converters::class)
@@ -319,7 +357,7 @@ abstract class EvergreenDatabase : RoomDatabase() {
                 // the capture service writes, instead of the two blocking each
                 // other. Room enables foreign-key enforcement on its own.
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build()
 
         /** Where the database file lives, for the one operation that replaces it. */

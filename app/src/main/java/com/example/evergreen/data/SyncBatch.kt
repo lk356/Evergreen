@@ -42,6 +42,16 @@ object SyncBatch {
      *
      * **v2, Phase 5c**: `seg` gains `playbackType` and `utcOffsetMinutes`.
      *
+     * **v3, Phase 5c step 7**: `seg` gains `producedAudio`, and a v2 batch is
+     * refused for the same reason a v1 batch is. A v2 batch is one produced
+     * while the phantom fix rested on `playbackType`, which was measured to
+     * catch 32% of phantoms — so its rows are not merely missing a field, they
+     * are rows whose phantoms are unmarked by any signal that works. Reading
+     * one would let them in unmarked, which is the exact harm
+     * `docs/SYNC_FOUNDATION.md` §5.1 makes the merge's hard prerequisite.
+     * Refusing costs one re-export from a device that is already being
+     * upgraded in the same build.
+     *
      * **A reader refuses a version it does not know, in both directions**, and
      * for v1 that is a deliberate choice rather than an oversight. The format's
      * own rule is that an unrecognised *field* is ignored, so a v2 reader could
@@ -56,7 +66,7 @@ object SyncBatch {
      * inflating the other device's play counts invisibly. Refusing costs one
      * re-export; accepting costs the guarantee.
      */
-    const val FORMAT_VERSION = 2
+    const val FORMAT_VERSION = 3
 
     /** The `t` tag on each line. */
     object Type {
@@ -209,7 +219,8 @@ object SyncBatch {
                     .put("source", row.source)
                     .putOrNull("sourceEndReason", row.sourceEndReason)
                     .putOrNull("playbackType", row.playbackType)
-                    .putOrNull("utcOffsetMinutes", row.utcOffsetMinutes),
+                    .putOrNull("utcOffsetMinutes", row.utcOffsetMinutes)
+                    .putOrNull("producedAudio", row.producedAudio),
             )
         }
 
@@ -464,6 +475,17 @@ object SyncBatch {
          * which is what happened before the field existed.
          */
         val utcOffsetMinutes: Int?,
+        /**
+         * Whether the producing device was making media audio during the
+         * segment. **Format version 3.** Null means it did not observe, and the
+         * receiver's rule then ignores the row rather than assuming either way.
+         *
+         * **A receiver must not treat a missing value as false.** False is
+         * evidence that some *other* device owns the listen, and inventing it
+         * would hand real listening to whichever device happened to have a
+         * concurrent row. Absent is absent.
+         */
+        val producedAudio: Boolean?,
     )
 
     data class RoleFact(
@@ -568,6 +590,7 @@ object SyncBatch {
         sourceEndReason = json.stringOrNull("sourceEndReason"),
         playbackType = json.stringOrNull("playbackType"),
         utcOffsetMinutes = json.longOrNull("utcOffsetMinutes")?.toInt(),
+        producedAudio = json.booleanOrNull("producedAudio"),
     )
 
     fun readRole(json: JSONObject) = RoleFact(
@@ -681,6 +704,15 @@ object SyncBatch {
 
     private fun JSONObject.longOrNull(key: String): Long? =
         if (isNull(key)) null else optLong(key)
+
+    /**
+     * Absent and null both come back as null, and neither becomes false.
+     * `optBoolean` would default a missing `producedAudio` to false, which is
+     * "this device was observed silent" -- a fact nobody recorded, and one the
+     * scoring rule acts on.
+     */
+    private fun JSONObject.booleanOrNull(key: String): Boolean? =
+        if (!has(key) || isNull(key)) null else optBoolean(key)
 
     private fun JSONObject.requireString(key: String): String =
         stringOrNull(key) ?: throw Malformed(

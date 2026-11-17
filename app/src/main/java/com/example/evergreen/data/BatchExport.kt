@@ -255,6 +255,7 @@ object BatchExport {
                         sourceEndReason = row.sourceEndReason,
                         playbackType = row.playbackType,
                         utcOffsetMinutes = row.utcOffsetMinutes,
+                        producedAudio = row.producedAudio,
                     ),
                 )
             }

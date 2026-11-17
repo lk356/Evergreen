@@ -174,6 +174,8 @@ abstract class SyncDao {
         /** Schema v8. Null on every row captured before it existed. */
         val playbackType: String?,
         val utcOffsetMinutes: Int?,
+        /** Schema v9. Null on every row captured before it existed. */
+        val producedAudio: Boolean?,
         val trackKey: String,
         val title: String?,
         val artist: String?,
@@ -205,6 +207,7 @@ abstract class SyncDao {
                s.createdAt AS createdAt, s.source AS source,
                s.sourceEndReason AS sourceEndReason,
                s.playbackType AS playbackType, s.utcOffsetMinutes AS utcOffsetMinutes,
+               s.producedAudio AS producedAudio,
                t.trackKey AS trackKey, t.title AS title, t.artist AS artist,
                t.album AS album, t.durationMs AS trackDuration,
                st.service AS service, st.serviceTrackId AS serviceTrackId, st.isrc AS isrc

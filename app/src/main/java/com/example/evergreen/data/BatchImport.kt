@@ -416,6 +416,7 @@ object BatchImport {
                 playbackType = fact.playbackType
                     ?.let { name -> runCatching { PlaybackType.valueOf(name) }.getOrNull() },
                 utcOffsetMinutes = fact.utcOffsetMinutes,
+                producedAudio = fact.producedAudio,
             ),
         )
         if (inserted == -1L) tally.segmentsAlreadyHeld++ else tally.segmentsAdded++

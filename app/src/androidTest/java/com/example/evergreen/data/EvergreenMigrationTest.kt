@@ -1114,6 +1114,145 @@ class EvergreenMigrationTest {
         migrated.close()
     }
 
+    /**
+     * v9 adds one nullable column to a populated v8 database and must change
+     * nothing at all — not a row, not an index, and not the ranking.
+     *
+     * **Nothing is backfilled, and unlike v8 that is true of the only column
+     * here.** v8 could fill `utcOffsetMinutes` because the value it wrote was
+     * the one the scorer was already falling back to, so filling it was
+     * recording a fallback rather than inventing a fact. `producedAudio` has no
+     * such property: `false` means "observed making no sound", which is the
+     * evidence the phantom rule acts on. Writing it across 78,110 historical
+     * rows would invent that evidence for six years of listening and let the
+     * rule start handing those listens to whichever device happened to hold a
+     * concurrent row. NULL means "not observed", the rule ignores it, and every
+     * historical row scores exactly as it does today.
+     *
+     * The rows here are chosen to be the ones a mistake would show up on: a
+     * locally captured row and a row that arrived in a delta batch, so both
+     * sides of v7's unique index are present, plus v8's two columns already
+     * filled, so a rebuild that dropped or reordered them would be visible.
+     */
+    @Test
+    fun migrate8To9_addsTheAudioColumnAndDisturbsNothing() {
+        helper.createDatabase(TEST_DB, 8).use { db ->
+            db.execSQL(
+                """
+                INSERT INTO tracks
+                    (id, trackKey, title, artist, album, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 'electro swingity|willix|electro swingity', 'Electro Swingity',
+                        'Willix', 'Electro Swingity', $SEEKED_DURATION, 1000, 2000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO service_tracks
+                    (id, trackId, service, serviceTrackId, isrc, isrcLookupAt,
+                     isrcLookupAttempts, isrcLookupError, durationMs, firstSeenAt, lastSeenAt)
+                VALUES (1, 1, 'spotify', 'spotify:track:aaa', 'GBAAA0000001', 1000, 1, NULL,
+                        $SEEKED_DURATION, 1000, 2000)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs,
+                     endedAtMs, startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason, originRowId,
+                     playbackType, utcOffsetMinutes)
+                VALUES (10, 1, 1, 'com.spotify.music', 'device-a', 1700000000000,
+                        1700000100000, 0, $SEEKED_END_POSITION, $SEEKED_LISTENED,
+                        $SEEKED_DURATION, 1, 200000, 'TRACK_CHANGE', NULL, NULL, 500,
+                        1700000000000, 'CAPTURE', NULL, NULL, 'LOCAL', 60)
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT INTO listening_segments
+                    (id, trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs,
+                     endedAtMs, startPositionMs, endPositionMs, listenedMs, trackDurationMs,
+                     forwardSeekCount, seekedForwardMs, endReason, endJumpFromMs, endJumpToMs,
+                     lastSampleAgeMs, createdAt, source, sourceEndReason, originRowId,
+                     playbackType, utcOffsetMinutes)
+                VALUES (11, 1, 1, 'com.spotify.music', 'device-b', 1700000200000,
+                        1700000300000, NULL, NULL, 31250, $SEEKED_DURATION,
+                        NULL, NULL, 'IMPORTED', NULL, NULL, NULL,
+                        1700000200000, 'IMPORT_SPOTIFY_HISTORY', 'fwdbtn', 4242,
+                        NULL, NULL)
+                """.trimIndent(),
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 9, true, MIGRATION_8_9)
+
+        migrated.query("SELECT COUNT(*) FROM listening_segments").use { c ->
+            c.moveToFirst()
+            assertEquals("both segments must survive", 2, c.getInt(0))
+        }
+
+        // Every v8 column is exactly where it was. A rebuild-and-copy would be
+        // the thing that could get this wrong, which is why this migration does
+        // not rebuild.
+        migrated.query(
+            "SELECT endPositionMs, listenedMs, deviceId, originRowId, playbackType, " +
+                "utcOffsetMinutes FROM listening_segments WHERE id = 10",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(SEEKED_END_POSITION, c.getLong(0))
+            assertEquals(SEEKED_LISTENED, c.getLong(1))
+            assertEquals("device-a", c.getString(2))
+            assertTrue("a locally captured row still has no origin id", c.isNull(3))
+            assertEquals("LOCAL", c.getString(4))
+            assertEquals(60, c.getInt(5))
+        }
+        migrated.query(
+            "SELECT originRowId, source, sourceEndReason, playbackType, utcOffsetMinutes " +
+                "FROM listening_segments WHERE id = 11",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals(4242L, c.getLong(0))
+            assertEquals("IMPORT_SPOTIFY_HISTORY", c.getString(1))
+            assertEquals("fwdbtn", c.getString(2))
+            assertTrue("an imported row observed no playback type", c.isNull(3))
+            assertTrue("and no offset", c.isNull(4))
+        }
+
+        // The whole point: not one historical row claims to have been observed.
+        migrated.query(
+            "SELECT COUNT(*) FROM listening_segments WHERE producedAudio IS NULL",
+        ).use { c ->
+            c.moveToFirst()
+            assertEquals("no pre-v9 row observed whether it made a sound", 2, c.getInt(0))
+        }
+
+        // And a row written after the migration can carry all three readings,
+        // including the one that says "observed, and it made no sound" -- which
+        // is a different statement from the NULLs above and must stay so.
+        migrated.execSQL(
+            """
+            INSERT INTO listening_segments
+                (trackId, serviceTrackRowId, appPackage, deviceId, startedAtMs, endedAtMs,
+                 startPositionMs, endPositionMs, listenedMs, trackDurationMs, forwardSeekCount,
+                 seekedForwardMs, endReason, endJumpFromMs, endJumpToMs, lastSampleAgeMs,
+                 createdAt, source, sourceEndReason, originRowId, playbackType,
+                 utcOffsetMinutes, producedAudio)
+            VALUES (1, 1, 'com.spotify.music', 'device-a', 1700000400000, 1700000500000,
+                    0, 1000, 1000, $SEEKED_DURATION, 0, 0, 'TRACK_CHANGE', NULL, NULL, 100,
+                    1700000400000, 'CAPTURE', NULL, NULL, 'LOCAL', 60, 0)
+            """.trimIndent(),
+        )
+        migrated.query(
+            "SELECT producedAudio FROM listening_segments WHERE producedAudio IS NOT NULL",
+        ).use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("observed silent, which is not the same as unobserved", 0, c.getInt(0))
+            assertEquals("exactly one row carries an audio reading", 1, c.count)
+        }
+        migrated.close()
+    }
+
     private fun freshV2Database(): EvergreenDatabase {
         val context = ApplicationProvider.getApplicationContext<Context>()
         return Room.inMemoryDatabaseBuilder(context, EvergreenDatabase::class.java)

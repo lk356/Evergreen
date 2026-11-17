@@ -2,9 +2,12 @@ package com.example.evergreen.capture
 
 import android.content.ComponentName
 import android.content.Context
+import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -27,6 +30,17 @@ class CaptureNotificationListenerService : NotificationListenerService() {
     private var broadcastReceiver: SpotifyBroadcastReceiver? = null
     private var writer: SegmentWriter? = null
 
+    /**
+     * One monitor for the whole device, not one per session.
+     *
+     * "Is this device making a sound" has a single answer however many media
+     * sessions are open, and `registerAudioPlaybackCallback` is a device-wide
+     * subscription. Registering it per watcher would mean several subscriptions
+     * reporting the same thing on a device with little to spare. Changes are
+     * fanned out to every live watcher instead.
+     */
+    private var audioMonitor: ActiveAudioMonitor? = null
+
     private val sessionsChangedListener =
         MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
             handleActiveSessions(controllers.orEmpty())
@@ -48,6 +62,14 @@ class CaptureNotificationListenerService : NotificationListenerService() {
 
         writer = SegmentWriter(applicationContext, DeviceId.get(applicationContext))
         registerSpotifyBroadcasts()
+
+        // Before the watchers, so that a session that is already playing when
+        // this binds opens its first segment with the reading already in hand.
+        audioMonitor = ActiveAudioMonitor(
+            audio = getSystemService(AudioManager::class.java),
+            handler = Handler(Looper.getMainLooper()),
+            onChanged = { producing -> onActiveAudioChanged(producing) },
+        ).also { it.start() }
 
         val manager = getSystemService(MediaSessionManager::class.java)
         if (manager == null) {
@@ -89,6 +111,8 @@ class CaptureNotificationListenerService : NotificationListenerService() {
         // the writer is shut down or the last listen of the session is lost.
         watchers.values.forEach { it.stop() }
         watchers.clear()
+        audioMonitor?.stop()
+        audioMonitor = null
         unregisterSpotifyBroadcasts()
         writer?.shutdown()
         writer = null
@@ -148,6 +172,7 @@ class CaptureNotificationListenerService : NotificationListenerService() {
                 controller = controller,
                 onSegmentClosed = { segment -> writer?.write(segment) },
                 onSessionDestroyedCallback = { finished -> dropWatcher(finished) },
+                producingMediaAudio = { audioMonitor?.isProducingMediaAudio },
             )
             watchers[token] = watcher
             CaptureLog.add(
@@ -168,6 +193,28 @@ class CaptureNotificationListenerService : NotificationListenerService() {
                 packageName = watcher.packageName,
             )
         }
+    }
+
+    /**
+     * A change in whether this device is producing media audio.
+     *
+     * PRIVACY: gated on there being an allowlisted session to be about. The
+     * audio framework is device-wide and says nothing about which app is
+     * playing, so a transition arriving with no watcher open is a transition
+     * caused by something Evergreen is not entitled to observe — it is dropped
+     * here without being stored or logged, the same discipline the allowlist
+     * applies to sessions. [ActiveAudioMonitor.isProducingMediaAudio] still
+     * tracks it in memory, because a watcher opening a moment later has to know
+     * what the device was already doing.
+     */
+    private fun onActiveAudioChanged(producing: Boolean) {
+        if (watchers.isEmpty()) return
+        watchers.values.forEach { it.onActiveAudio(producing) }
+        CaptureLog.add(
+            source = EventSource.SYSTEM,
+            summary = if (producing) "this device is producing audio" else "this device is silent",
+            detail = "media playback on this device; no app is identified",
+        )
     }
 
     private fun dropWatcher(watcher: SessionWatcher) {

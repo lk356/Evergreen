@@ -26,18 +26,35 @@ data class ClosedSegment(
     val endJumpToMs: Long?,
     val lastSampleAgeMs: Long,
     /**
-     * What the session said about whose volume it was, while this segment was
-     * open. Null when the session never reported one.
+     * What the session last said about whose volume it was, while this segment
+     * was open. Null when the session never reported one.
      *
-     * [PlaybackType.REMOTE] if **any** reading during the segment was remote,
-     * which is the only summary a single field can honestly carry: a listen
-     * that was partly somebody else's playback is not a clean local one, and
-     * the conservative direction is the one that does not quietly score it.
-     * Cutting a new segment when the type changes would preserve more, and it
-     * would be a change to how capture segments — out of scope for the one
-     * field this phase approved.
+     * **The latest reading, not a sticky one.** Until Phase 5c step 7 this was
+     * `REMOTE` if *any* reading during the segment was, on the argument that a
+     * partly-somebody-else's listen is not a clean local one. Measured, that
+     * argument cost 83% of a real session: a handoff happens mid-track, so a
+     * segment routinely spans a local stretch and a remote stretch, and the
+     * sticky value condemned the whole row on *both* devices. The row now
+     * carries the last thing the session actually said, and whether the listen
+     * counts is decided from a signal that turned out to be worth something —
+     * see [producedAudio].
      */
     val playbackType: PlaybackType?,
+
+    /**
+     * Whether **this device** produced media audio at any point while this
+     * segment was open, from [ActiveAudioMonitor]. Null when nothing was
+     * observed.
+     *
+     * **True if any reading was true**, which is the opposite direction from
+     * the stickiness this field replaces and deliberately so. A device that
+     * made sound for part of a listen did make sound; the value that matters to
+     * scoring is whether it made *none at all*, because that is what a phantom
+     * looks like. It also rides out the gap where the player tears one
+     * `AudioTrack` down and builds the next one, which a reading taken at close
+     * time would fall into.
+     */
+    val producedAudio: Boolean?,
 )
 
 /**
@@ -70,6 +87,8 @@ class SegmentTracker(
         val openedByJumpBack: Boolean,
         /** Whatever the session had most recently reported when this opened. */
         var playbackType: PlaybackType?,
+        /** Whatever the audio monitor had most recently reported when this opened. */
+        var producedAudio: Boolean?,
     ) {
         var listenedMs = 0L
         var lastKnownPositionMs = startPositionMs
@@ -77,12 +96,24 @@ class SegmentTracker(
         var seekedForwardMs = 0L
 
         /**
-         * Folds one reading in. Remote is sticky: once any part of this segment
-         * was somebody else's playback, the whole row says so.
+         * Folds one reading in. The latest wins; a null reading is "the session
+         * did not say this time" and changes nothing.
+         *
+         * Not sticky any more. See [ClosedSegment.playbackType] for the 83%
+         * that the sticky version cost.
          */
         fun observePlaybackType(type: PlaybackType?) {
             if (type == null) return
-            if (playbackType != PlaybackType.REMOTE) playbackType = type
+            playbackType = type
+        }
+
+        /**
+         * Folds one audio reading in. True wins and stays: the question this
+         * field answers is "did this device make any sound during the listen",
+         * and one moment of sound is a yes for the whole segment.
+         */
+        fun observeProducedAudio(producing: Boolean) {
+            if (producedAudio != true) producedAudio = producing
         }
     }
 
@@ -101,6 +132,15 @@ class SegmentTracker(
      * listen that was not.
      */
     private var currentPlaybackType: PlaybackType? = null
+
+    /**
+     * Whether this device was last seen producing media audio, carried across
+     * segments for the same reason [currentPlaybackType] is: a segment opening
+     * on the next callback has to know, and the monitor only speaks on a change.
+     *
+     * Null until the first reading arrives.
+     */
+    private var currentProducedAudio: Boolean? = null
 
     /**
      * The most recently closed segment, held back from the database for a
@@ -198,6 +238,23 @@ class SegmentTracker(
         if (type == null) return
         currentPlaybackType = type
         open?.observePlaybackType(type)
+    }
+
+    /**
+     * This device started or stopped producing media audio.
+     *
+     * Arrives from [ActiveAudioMonitor], which is device-wide rather than
+     * per-session: one monitor feeds every watcher, because "is this device
+     * making a sound" has one answer however many sessions are open.
+     *
+     * Recorded, never acted on — and this one *cannot* be acted on here even in
+     * principle. "This device made no sound" is not by itself a phantom: if no
+     * other device claims the same listen, it is a listen. That comparison needs
+     * the other device's facts, which capture does not have and scoring does.
+     */
+    fun onActiveAudio(producing: Boolean) {
+        currentProducedAudio = producing
+        open?.observeProducedAudio(producing)
     }
 
     /** A new playback-state reading arrived. */
@@ -372,6 +429,7 @@ class SegmentTracker(
             startPositionKnown = startKnown,
             openedByJumpBack = byJumpBack,
             playbackType = currentPlaybackType,
+            producedAudio = currentProducedAudio,
         )
     }
 
@@ -404,6 +462,7 @@ class SegmentTracker(
             endJumpToMs = jumpToMs,
             lastSampleAgeMs = sampleAge,
             playbackType = segment.playbackType,
+            producedAudio = segment.producedAudio,
         )
 
         flushPending()
