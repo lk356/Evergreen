@@ -212,10 +212,13 @@ GitHub before deciding what to do next. Nothing below was built today.
   this branch had never been pushed. Before its first push, both device serials
   were redacted from its 13 local commits (one table in this file); nothing
   else in those commits changed. `main` was merged in, which also stops
-  tracking the IDE file that held serials. **The Pixel's serial still exists in
-  old public history** — the IDE file committed in Phase 0 — though in no
-  current file; removing it would need a force-push over every branch, so it is
-  left for the user to decide.
+  tracking the IDE file that held serials. **The Pixel's serial is still
+  public**, in that IDE file (`.idea/deploymentTargetSelector.xml`, committed in
+  Phase 0): in `main`'s history, and as a current file at the tip of the 11 old
+  phase branches still on GitHub, all of them already merged. Deleting those
+  branches would take it off every branch tip; it would stay in `main`'s
+  history unless that were rewritten and force-pushed. Left for the user to
+  decide. The Walkman's serial is in no public commit.
 - **Open, waiting on the user:** pull request #7 (a note in `CLAUDE.md` that
   the repo is public); and an uncommitted Android Gradle plugin bump
   (9.4.0 → 9.4.1, with a matching KSP change) found in the working tree, left
