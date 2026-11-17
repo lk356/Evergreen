@@ -218,6 +218,8 @@ _Update at the end of each task: what was done, what's next, any blockers._
   which is where both devices capture and where the phantom fix in `capture/`
   sits as the hard prerequisite. The reasoning is under the roadmap.
 - Last update: 2026-09-21.
+- 2026-10-12: added a root `README.md`, `docs/README.md` (an index of this folder) and
+  screenshots from the Walkman, on branch `docs-readme`. No code changed.
 
 **Phase 5c is started, and what it is has changed — decided by the user
 2026-09-21.** 5c was written as "both devices capture and the facts merge",
