@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import com.example.evergreen.scoring.ScoringParameters
+import com.example.evergreen.scoring.TimelineListen
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -564,6 +565,28 @@ abstract class ScoringDao {
         """,
     )
     abstract suspend fun commentaryTimestamps(trackUriPrefix: String, fromMs: Long): List<Long>
+
+    /**
+     * The whole listening timeline in the window, every track, narrowly.
+     *
+     * For browsing runs (scoring freshness, change B), which need the songs
+     * flicked past whether or not they are liked. Five small columns rather
+     * than whole rows, because this reads every track rather than the liked
+     * few hundred. Rows from a remote session are left out: another device
+     * was playing them, so they are not part of this one's timeline.
+     */
+    @Query(
+        """
+        SELECT s.deviceId AS timeline, s.startedAtMs, s.endedAtMs, s.listenedMs,
+               (st.serviceTrackId IS NOT NULL AND st.serviceTrackId NOT LIKE :trackUriPrefix || '%')
+                 AS isCommentary
+          FROM listening_segments s
+          LEFT JOIN service_tracks st ON st.id = s.serviceTrackRowId
+         WHERE s.endedAtMs >= :fromMs
+           AND (s.playbackType IS NULL OR s.playbackType != 'REMOTE')
+        """,
+    )
+    abstract suspend fun timelineForBrowsing(trackUriPrefix: String, fromMs: Long): List<TimelineListen>
 
     @Query("SELECT * FROM service_tracks")
     abstract suspend fun allServiceTracks(): List<ServiceTrackEntity>

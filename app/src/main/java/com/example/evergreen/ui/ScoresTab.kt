@@ -237,7 +237,10 @@ private fun RankedRow(row: RankedTrackRow, parameters: ScoringParameters, onClic
 internal fun noteColour(note: ContributionNote) = when (note) {
     ContributionNote.SCORED, ContributionNote.LIKE -> MaterialTheme.colorScheme.onSurface
     ContributionNote.DAILY_CAP -> MaterialTheme.colorScheme.tertiary
-    ContributionNote.DJ_SUPPRESSED -> MaterialTheme.colorScheme.primary
+    ContributionNote.DJ_SUPPRESSED,
+    ContributionNote.BROWSING,
+    ContributionNote.BROWSING_REVISIT,
+    -> MaterialTheme.colorScheme.primary
     ContributionNote.COMMENTARY,
     ContributionNote.REMOTE_SESSION,
     ContributionNote.UNKNOWN_DURATION,
@@ -253,6 +256,8 @@ internal fun describe(kind: ContributionKind, note: ContributionNote): String = 
     ContributionNote.UNKNOWN_DURATION -> "played, but no track length known"
     ContributionNote.DJ_SUPPRESSED -> "skipped during a DJ session — not counted against it"
     ContributionNote.DAILY_CAP -> "played, trimmed by the daily cap"
+    ContributionNote.BROWSING -> "skipped while flicking through songs — counted for less"
+    ContributionNote.BROWSING_REVISIT -> "passed while going back to a song — not counted"
     ContributionNote.SCORED -> if (kind == ContributionKind.LISTEN) "played" else "like"
 }
 

@@ -63,6 +63,7 @@ class TrackScorer(
         parameters: ScoringParameters,
         nowMs: Long,
         djWindows: List<DjWindow> = emptyList(),
+        browsingWindows: List<BrowsingWindow> = emptyList(),
     ): ScoreBreakdown {
         val contributions = mutableListOf<ScoreContribution>()
 
@@ -119,8 +120,10 @@ class TrackScorer(
             .merge(local.sortedByDescending { it.endedAtMs }, parameters.replayJumpThresholdMs)
             .sortedBy { it.endedAtMs }
 
-        // 3-5. Fraction heard, the curve, DJ suppression.
-        val scored = listens.map { listen -> scoreListen(listen, input, parameters, djWindows) }
+        // 3-5. Fraction heard, the curve, browsing runs, DJ suppression.
+        val scored = listens.map { listen ->
+            scoreListen(listen, input, parameters, djWindows, browsingWindows, listens)
+        }
 
         // 6. The daily cap, applied before decay, per section 3.2.
         contributions += applyDailyCap(scored, parameters, nowMs)
@@ -163,6 +166,8 @@ class TrackScorer(
         input: TrackScoringInput,
         parameters: ScoringParameters,
         djWindows: List<DjWindow>,
+        browsingWindows: List<BrowsingWindow>,
+        allListens: List<MergedSegment>,
     ): ScoreContribution {
         val outcome = ScoringCurve.outcome(
             listenedMs = listen.listenedMs,
@@ -176,10 +181,21 @@ class TrackScorer(
             CurveNote.SCORED -> ContributionNote.SCORED
         }
 
-        // 5. DJ suppression. Negatives only: a skip during a DJ session is
-        //    browsing, but letting a DJ pick play through is still real
-        //    information about the song.
-        if (value < 0.0 && DjSessions.isDuringSession(djWindows, listen.startedAtMs)) {
+        // 4b. Browsing runs (scoring freshness, change B). Before the DJ
+        //     rule, and instead of it: a skip inside a run takes the run's
+        //     discount and no other, so the breakdown gives one reason.
+        if (value < 0.0 && isBrowsing(listen, parameters, browsingWindows)) {
+            if (isRevisit(listen, allListens)) {
+                value = 0.0
+                note = ContributionNote.BROWSING_REVISIT
+            } else {
+                value *= parameters.rapidRunSkipWeight
+                note = ContributionNote.BROWSING
+            }
+        } else if (value < 0.0 && DjSessions.isDuringSession(djWindows, listen.startedAtMs)) {
+            // 5. DJ suppression. Negatives only: a skip during a DJ session is
+            //    browsing, but letting a DJ pick play through is still real
+            //    information about the song.
             value = 0.0
             note = ContributionNote.DJ_SUPPRESSED
         }
@@ -197,6 +213,36 @@ class TrackScorer(
             segmentIds = listen.rows.map { it.id },
             utcOffsetMinutes = listen.utcOffsetMinutes,
         )
+    }
+
+    /**
+     * True when [listen] is one of the short listens of a browsing run on its
+     * own device's timeline. Off, and never true, when runs are off.
+     */
+    private fun isBrowsing(
+        listen: MergedSegment,
+        parameters: ScoringParameters,
+        windows: List<BrowsingWindow>,
+    ): Boolean =
+        parameters.browsingRunsOn &&
+            listen.listenedMs <= parameters.rapidRunMaxListenMs &&
+            BrowsingRuns.isInRun(windows, listen.rows.first().deviceId, listen.startedAtMs)
+
+    /**
+     * True when this track was already heard on the same timeline within
+     * [BrowsingRuns.REVISIT_WINDOW_MS] before [listen] started: going back
+     * past it, not judging it. Any earlier listen counts, a flick included,
+     * so passing a song twice in one search costs at most once.
+     */
+    private fun isRevisit(listen: MergedSegment, allListens: List<MergedSegment>): Boolean {
+        val timeline = listen.rows.first().deviceId
+        val from = listen.startedAtMs - BrowsingRuns.REVISIT_WINDOW_MS
+        return allListens.any { earlier ->
+            earlier !== listen &&
+                earlier.rows.first().deviceId == timeline &&
+                earlier.endedAtMs <= listen.startedAtMs &&
+                earlier.endedAtMs >= from
+        }
     }
 
     /**

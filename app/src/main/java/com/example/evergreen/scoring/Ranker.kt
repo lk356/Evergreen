@@ -27,9 +27,10 @@ class Ranker(private val scorer: TrackScorer = TrackScorer()) {
         parameters: ScoringParameters,
         nowMs: Long,
         djWindows: List<DjWindow> = emptyList(),
+        browsingWindows: List<BrowsingWindow> = emptyList(),
     ): List<RankedTrack> =
         inputs
-            .map { input -> scorer.score(input, parameters, nowMs, djWindows) }
+            .map { input -> scorer.score(input, parameters, nowMs, djWindows, browsingWindows) }
             // Ties break on trackId so the ranking is stable between runs.
             // Without it, two tracks on identical scores could swap places
             // every recompute, and each swap across the cutoff would be a

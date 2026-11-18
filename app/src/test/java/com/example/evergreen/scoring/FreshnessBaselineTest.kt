@@ -347,7 +347,19 @@ class FreshnessBaselineTest {
             TrackScorer(LONDON).score(it, defaults, now, DjSessions.infer(fixture.commentaryEndedAtMs))
         }
         val notes = breakdowns.flatMap { b -> b.contributions.map { it.note } }.toSet()
-        assertEquals("every note the old formula can give", ContributionNote.entries.toSet(), notes)
+        // Listed by name rather than as `entries`, so that adding a note for a
+        // new setting does not make this claim about the old formula wrong.
+        val oldNotes = setOf(
+            ContributionNote.SCORED,
+            ContributionNote.UNKNOWN_DURATION,
+            ContributionNote.COMMENTARY,
+            ContributionNote.REMOTE_SESSION,
+            ContributionNote.DJ_SUPPRESSED,
+            ContributionNote.DAILY_CAP,
+            ContributionNote.LIKE,
+            ContributionNote.UNLIKE_IGNORED,
+        )
+        assertEquals("every note the old formula can give, and no other", oldNotes, notes)
         assertTrue("too few DJ sessions", fixture.commentaryEndedAtMs.size >= 10)
         assertEquals("two phones and the import", 3, fixture.inputs.flatMap { it.segments }.map { it.deviceId }.toSet().size)
     }

@@ -50,6 +50,20 @@ enum class ContributionNote {
     /** Reduced, possibly to nothing, by the per-track daily cap. */
     DAILY_CAP,
 
+    /**
+     * A skip inside a browsing run: several very short listens in a row
+     * ([BrowsingRuns]). Scaled by `rapidRunSkipWeight` rather than counted
+     * as a full rejection. Scoring freshness, change B.
+     */
+    BROWSING,
+
+    /**
+     * A skip inside a browsing run, of a song already heard on the same
+     * device within the previous two hours: passing back over it while
+     * looking for something else. Contributes nothing.
+     */
+    BROWSING_REVISIT,
+
     /** A like. */
     LIKE,
 

@@ -49,6 +49,23 @@ import java.security.MessageDigest
  * @param playlistLeaveRank a member leaves once its rank falls below this. The
  *   gap between the two is hysteresis: without it, tracks sitting either side
  *   of the cutoff would be added and removed on alternate days (decisions 4).
+ *
+ * **The scoring-freshness settings below, and the rule they all obey.** Each
+ * one defaults to its **off** value, and off reproduces the formula from
+ * before they existed to the bit (`FreshnessBaselineTest`). That is not
+ * tidiness: every snapshot and `parameter_history` row stores the settings it
+ * was scored under, none of them carry these keys, and a missing key is read
+ * as its default — so the default has to mean "this did not exist". The
+ * values actually wanted are applied as an ordinary settings change.
+ * `docs/SCORING_FRESHNESS_PROMPT.md`.
+ *
+ * @param rapidRunMinSkips this many very short listens in a row, or more, are
+ *   browsing rather than judging ([BrowsingRuns]). 0 is off.
+ * @param rapidRunMaxListenMs how short a listen must be to be part of a run.
+ *   Only read when runs are on.
+ * @param rapidRunSkipWeight what a skip inside a run still counts for, from 0
+ *   (pure browsing) to 1 (a full rejection, as if runs were off). Only read
+ *   when runs are on. Revisits count 0 whatever this is.
  */
 data class ScoringParameters(
     val halfLifeDays: Double = 45.0,
@@ -61,7 +78,13 @@ data class ScoringParameters(
     val recordFloor: Double = 0.1,
     val playlistJoinRank: Int = 100,
     val playlistLeaveRank: Int = 130,
+    val rapidRunMinSkips: Int = 0,
+    val rapidRunMaxListenMs: Long = DEFAULT_RAPID_RUN_MAX_LISTEN_MS,
+    val rapidRunSkipWeight: Double = 0.0,
 ) {
+
+    /** True when browsing runs are on. */
+    val browsingRunsOn: Boolean get() = rapidRunMinSkips > 0
 
     /** [halfLifeDays] in milliseconds, which is what the decay actually uses. */
     val halfLifeMs: Double get() = halfLifeDays * MS_PER_DAY
@@ -95,6 +118,15 @@ data class ScoringParameters(
         appendNumber(KEY_RECORD_FLOOR, recordFloor.toString())
         appendNumber(KEY_PLAYLIST_JOIN_RANK, playlistJoinRank.toString())
         appendNumber(KEY_PLAYLIST_LEAVE_RANK, playlistLeaveRank.toString())
+        // The scoring-freshness keys are written only when their feature is
+        // on. Settings that never touched them keep the exact text, and so
+        // the exact hash, they had before the keys existed: no spurious cache
+        // rebuild, and old parameter_history rows still match.
+        if (browsingRunsOn) {
+            appendNumber(KEY_RAPID_RUN_MIN_SKIPS, rapidRunMinSkips.toString())
+            appendNumber(KEY_RAPID_RUN_MAX_LISTEN_MS, rapidRunMaxListenMs.toString())
+            appendNumber(KEY_RAPID_RUN_SKIP_WEIGHT, rapidRunSkipWeight.toString())
+        }
         append('}')
     }
 
@@ -152,12 +184,35 @@ data class ScoringParameters(
         if (playlistJoinRank < 1) {
             add("$KEY_PLAYLIST_JOIN_RANK must be at least 1, was $playlistJoinRank")
         }
+        if (rapidRunMinSkips < 0 || rapidRunMinSkips == 1) {
+            add("$KEY_RAPID_RUN_MIN_SKIPS must be 0 (off) or at least 2, was $rapidRunMinSkips")
+        }
+        if (rapidRunMaxListenMs <= 0L) {
+            add("$KEY_RAPID_RUN_MAX_LISTEN_MS must be a positive number, was $rapidRunMaxListenMs")
+        }
+        if (!rapidRunSkipWeight.isFinite() || rapidRunSkipWeight < 0.0 || rapidRunSkipWeight > 1.0) {
+            add("$KEY_RAPID_RUN_SKIP_WEIGHT must be between 0 and 1, was $rapidRunSkipWeight")
+        }
         if (playlistLeaveRank < playlistJoinRank) {
             add(
                 "$KEY_PLAYLIST_LEAVE_RANK ($playlistLeaveRank) must be at least " +
                     "$KEY_PLAYLIST_JOIN_RANK ($playlistJoinRank)",
             )
         }
+    }
+
+    /**
+     * The same settings with every value an off feature ignores put back to
+     * its default.
+     *
+     * So that "off" has one form: two settings that score identically are
+     * equal, and survive a round trip through [toJson], which writes nothing
+     * for an off feature.
+     */
+    fun normalised(): ScoringParameters = if (browsingRunsOn) {
+        this
+    } else {
+        copy(rapidRunMinSkips = 0, rapidRunMaxListenMs = DEFAULT_RAPID_RUN_MAX_LISTEN_MS, rapidRunSkipWeight = 0.0)
     }
 
     private fun StringBuilder.appendNumber(key: String, value: String, first: Boolean = false) {
@@ -181,11 +236,19 @@ data class ScoringParameters(
         const val KEY_RECORD_FLOOR = "recordFloor"
         const val KEY_PLAYLIST_JOIN_RANK = "playlistJoinRank"
         const val KEY_PLAYLIST_LEAVE_RANK = "playlistLeaveRank"
+        const val KEY_RAPID_RUN_MIN_SKIPS = "rapidRunMinSkips"
+        const val KEY_RAPID_RUN_MAX_LISTEN_MS = "rapidRunMaxListenMs"
+        const val KEY_RAPID_RUN_SKIP_WEIGHT = "rapidRunSkipWeight"
+
+        /** Only a placeholder while runs are off; written whenever they are on. */
+        const val DEFAULT_RAPID_RUN_MAX_LISTEN_MS: Long = 5_000L
 
         /**
          * Reads settings from JSON, throwing on anything unusable.
          *
-         * **Unknown keys are ignored and missing keys take their default.**
+         * **Unknown keys are ignored and missing keys take their default**,
+         * and for every key added after Phase 4 the default is that feature's
+         * off value — see the class comment.
          * Both matter for snapshots: one written by an older build will lack
          * any parameter added since, and filling it with today's default is
          * right, because that older build behaved as though the default were in
@@ -213,7 +276,10 @@ data class ScoringParameters(
                 recordFloor = values.double(KEY_RECORD_FLOOR, defaults.recordFloor),
                 playlistJoinRank = values.int(KEY_PLAYLIST_JOIN_RANK, defaults.playlistJoinRank),
                 playlistLeaveRank = values.int(KEY_PLAYLIST_LEAVE_RANK, defaults.playlistLeaveRank),
-            )
+                rapidRunMinSkips = values.int(KEY_RAPID_RUN_MIN_SKIPS, defaults.rapidRunMinSkips),
+                rapidRunMaxListenMs = values.long(KEY_RAPID_RUN_MAX_LISTEN_MS, defaults.rapidRunMaxListenMs),
+                rapidRunSkipWeight = values.double(KEY_RAPID_RUN_SKIP_WEIGHT, defaults.rapidRunSkipWeight),
+            ).normalised()
             val problems = parsed.problems()
             require(problems.isEmpty()) { problems.joinToString(separator = "; ") }
             return parsed

@@ -79,6 +79,7 @@ class ScoreService(
             parameters = parameters,
             nowMs = nowMs,
             djWindows = loadDjWindows(parameters, nowMs),
+            browsingWindows = loadBrowsingWindows(parameters, Ranker.loadFromMs(nowMs, parameters)),
         )
 
         val hash = parameters.hash()
@@ -111,7 +112,15 @@ class ScoreService(
     ): ScoreBreakdown? = withContext(Dispatchers.Default) {
         val parameters = parameters()
         val input = loadInputs(parameters, nowMs, onlyTrackIds = listOf(trackId)).firstOrNull()
-        input?.let { scorer.score(it, parameters, nowMs, loadDjWindows(parameters, nowMs)) }
+        input?.let {
+            scorer.score(
+                it,
+                parameters,
+                nowMs,
+                loadDjWindows(parameters, nowMs),
+                loadBrowsingWindows(parameters, Ranker.loadFromMs(nowMs, parameters)),
+            )
+        }
     }
 
     /**
@@ -160,6 +169,9 @@ class ScoreService(
         val djWindows = DjSessions.infer(
             scoringDao.commentaryTimestamps(TrackScorer.SPOTIFY_TRACK_PREFIX, loadFrom),
         )
+        // Over the same span as the DJ windows. A run is found from the whole
+        // timeline, so a later point never changes an earlier point's windows.
+        val browsingWindows = loadBrowsingWindows(parameters, loadFrom)
 
         (0 until points).map { index ->
             val at = firstMs + spanMs * index / (points - 1)
@@ -182,13 +194,26 @@ class ScoreService(
                 segments = input.segments.filter { it.endedAtMs in windowStart..at },
                 likeEvents = input.likeEvents.filter { it.atMs <= at },
             )
-            ScorePoint(at, scorer.score(asOf, parameters, at, djWindows).score)
+            ScorePoint(at, scorer.score(asOf, parameters, at, djWindows, browsingWindows).score)
         }
     }
 
     /** Every liked track still above the record floor — "what is alive". */
     suspend fun record(nowMs: Long = System.currentTimeMillis()): List<RankedTrack> =
         Membership.record(ranking(nowMs).tracks, parameters())
+
+    /**
+     * Browsing runs over every track's listening from [fromMs], or nothing at
+     * all when runs are off, in which case the query is not even made.
+     */
+    private suspend fun loadBrowsingWindows(parameters: ScoringParameters, fromMs: Long): List<BrowsingWindow> {
+        if (!parameters.browsingRunsOn) return emptyList()
+        return BrowsingRuns.find(
+            listens = scoringDao.timelineForBrowsing(TrackScorer.SPOTIFY_TRACK_PREFIX, fromMs),
+            minSkips = parameters.rapidRunMinSkips,
+            maxListenMs = parameters.rapidRunMaxListenMs,
+        )
+    }
 
     private suspend fun loadDjWindows(parameters: ScoringParameters, nowMs: Long): List<DjWindow> =
         DjSessions.infer(
