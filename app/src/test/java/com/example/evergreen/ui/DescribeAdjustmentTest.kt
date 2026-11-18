@@ -38,6 +38,12 @@ class DescribeAdjustmentTest {
     }
 
     @Test
+    fun aTrimTooSmallToSeeIsNotShown() {
+        assertTrue(!isVisibleChange(ScoreAdjustment(AdjustmentKind.CEILING, 1.0, 0.9996)))
+        assertTrue(isVisibleChange(ScoreAdjustment(AdjustmentKind.CEILING, 1.0, 0.87)))
+    }
+
+    @Test
     fun everyNoteHasWords() {
         ContributionNote.entries.forEach { note ->
             assertTrue(note.name, describe(ContributionKind.LISTEN, note).length > 4)

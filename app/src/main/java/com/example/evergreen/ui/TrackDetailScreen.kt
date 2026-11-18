@@ -176,7 +176,7 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
                             fontSize = 11.sp,
                             color = noteColour(contribution.note),
                         )
-                        contribution.adjustments.forEach { adjustment ->
+                        contribution.adjustments.filter(::isVisibleChange).forEach { adjustment ->
                             Text(
                                 text = "  " + describeAdjustment(adjustment),
                                 style = MaterialTheme.typography.bodySmall,

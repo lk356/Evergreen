@@ -344,6 +344,15 @@ internal fun describeAdjustment(adjustment: ScoreAdjustment): String {
     return "$what: ${format(adjustment.before)} → ${format(adjustment.after)}"
 }
 
+/**
+ * True when an adjustment changes the number as the screen prints it. The
+ * ceiling trims nearly every play a little, and a trim of a few
+ * ten-thousandths shows as "1 → 1", which is noise. Found on the Walkman,
+ * 2026-11-18.
+ */
+internal fun isVisibleChange(adjustment: ScoreAdjustment): Boolean =
+    format(adjustment.before) != format(adjustment.after)
+
 internal fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')
 
 internal fun formatDuration(ms: Long): String {
