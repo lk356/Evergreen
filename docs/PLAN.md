@@ -218,10 +218,18 @@ including the values chosen and why, under "Scoring freshness results" below.
   (a higher ceiling or a longer half-life slows them), and whether songs the
   user is tired of now fall as they are skipped. Merging waits for 5c, which
   waits for the phantom-fix rebuild.
-- **Left alone, for the user:** the uncommitted Gradle plugin bump (the Walkman
-  build was made without it, from committed code only), and the throwaway
-  report runner, which is excluded from git on this computer only
-  (`.git/info/exclude`) and never committed.
+- **Housekeeping, 2026-11-18, at the user's request.** The Gradle plugin bump
+  (AGP 9.4.1, KSP 2.3.6) is committed on this branch, since every test run of
+  this work used it. The throwaway report runner is deleted. The branch is
+  pushed, after a scan of all 15 commits for serials, local paths, the install
+  id and song titles found none.
+- **The Pixel's serial on GitHub: one step left for the user.** It sits in the
+  IDE file at the tip of 11 old phase branches, all fully merged into `main`.
+  Deleting them from GitHub, with local copies kept, takes it off every branch
+  tip; the user runs that command, because deleting remote branches was
+  refused to the assistant. It would still be in `main`'s history. Rewriting
+  that means a force-push of `main`, which is not recommended for a serial
+  that grants nothing.
 
 **Scoring freshness — what it is.** On branch
 `scoring-freshness`, from `phase5c-merge`. The prompt is
