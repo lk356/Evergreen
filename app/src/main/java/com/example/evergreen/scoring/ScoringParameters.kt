@@ -70,6 +70,14 @@ import java.security.MessageDigest
  *   (forgiven, decision 2g as it was) to 1 (a full rejection). 0 is off.
  *   Revises decision 2g at the user's request, 2026-11-17: most of their
  *   listening is DJ, so forgiving every DJ skip hid most of their real ones.
+ * @param dailyCapSkips the most one track can lose on one local day, in
+ *   skips (1.0 is one skip, worth [negativeWeight]), before the streak
+ *   multiplier. 0 is off: no cap. Lever 2 of the volatility question.
+ * @param skipStreakGrowth on the Nth skip day in a row for a track, its skips
+ *   are multiplied by `skipStreakGrowth^(N-1)`, up to
+ *   [skipStreakMaxMultiplier]. 1.0 is off.
+ * @param skipStreakMaxMultiplier the most a streak can multiply a skip by.
+ *   Only read when streaks are on.
  */
 data class ScoringParameters(
     val halfLifeDays: Double = 45.0,
@@ -86,7 +94,13 @@ data class ScoringParameters(
     val rapidRunMaxListenMs: Long = DEFAULT_RAPID_RUN_MAX_LISTEN_MS,
     val rapidRunSkipWeight: Double = 0.0,
     val djSkipWeight: Double = 0.0,
+    val dailyCapSkips: Double = 0.0,
+    val skipStreakGrowth: Double = 1.0,
+    val skipStreakMaxMultiplier: Double = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER,
 ) {
+
+    /** True when skip streaks are on. */
+    val skipStreaksOn: Boolean get() = skipStreakGrowth != 1.0
 
     /** True when browsing runs are on. */
     val browsingRunsOn: Boolean get() = rapidRunMinSkips > 0
@@ -133,6 +147,11 @@ data class ScoringParameters(
             appendNumber(KEY_RAPID_RUN_SKIP_WEIGHT, rapidRunSkipWeight.toString())
         }
         if (djSkipWeight != 0.0) appendNumber(KEY_DJ_SKIP_WEIGHT, djSkipWeight.toString())
+        if (dailyCapSkips != 0.0) appendNumber(KEY_DAILY_CAP_SKIPS, dailyCapSkips.toString())
+        if (skipStreaksOn) {
+            appendNumber(KEY_SKIP_STREAK_GROWTH, skipStreakGrowth.toString())
+            appendNumber(KEY_SKIP_STREAK_MAX_MULTIPLIER, skipStreakMaxMultiplier.toString())
+        }
         append('}')
     }
 
@@ -202,6 +221,15 @@ data class ScoringParameters(
         if (!djSkipWeight.isFinite() || djSkipWeight < 0.0 || djSkipWeight > 1.0) {
             add("$KEY_DJ_SKIP_WEIGHT must be between 0 and 1, was $djSkipWeight")
         }
+        if (!dailyCapSkips.isFinite() || dailyCapSkips < 0.0) {
+            add("$KEY_DAILY_CAP_SKIPS must be 0 (no cap) or positive, was $dailyCapSkips")
+        }
+        if (!skipStreakGrowth.isFinite() || skipStreakGrowth < 1.0) {
+            add("$KEY_SKIP_STREAK_GROWTH must be 1 (off) or more, was $skipStreakGrowth")
+        }
+        if (!skipStreakMaxMultiplier.isFinite() || skipStreakMaxMultiplier < 1.0) {
+            add("$KEY_SKIP_STREAK_MAX_MULTIPLIER must be at least 1, was $skipStreakMaxMultiplier")
+        }
         if (playlistLeaveRank < playlistJoinRank) {
             add(
                 "$KEY_PLAYLIST_LEAVE_RANK ($playlistLeaveRank) must be at least " +
@@ -218,10 +246,17 @@ data class ScoringParameters(
      * equal, and survive a round trip through [toJson], which writes nothing
      * for an off feature.
      */
-    fun normalised(): ScoringParameters = if (browsingRunsOn) {
-        this
-    } else {
-        copy(rapidRunMinSkips = 0, rapidRunMaxListenMs = DEFAULT_RAPID_RUN_MAX_LISTEN_MS, rapidRunSkipWeight = 0.0)
+    fun normalised(): ScoringParameters {
+        var out = this
+        if (!browsingRunsOn) {
+            out = out.copy(
+                rapidRunMinSkips = 0,
+                rapidRunMaxListenMs = DEFAULT_RAPID_RUN_MAX_LISTEN_MS,
+                rapidRunSkipWeight = 0.0,
+            )
+        }
+        if (!skipStreaksOn) out = out.copy(skipStreakMaxMultiplier = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER)
+        return out
     }
 
     private fun StringBuilder.appendNumber(key: String, value: String, first: Boolean = false) {
@@ -249,6 +284,12 @@ data class ScoringParameters(
         const val KEY_RAPID_RUN_MAX_LISTEN_MS = "rapidRunMaxListenMs"
         const val KEY_RAPID_RUN_SKIP_WEIGHT = "rapidRunSkipWeight"
         const val KEY_DJ_SKIP_WEIGHT = "djSkipWeight"
+        const val KEY_DAILY_CAP_SKIPS = "dailyCapSkips"
+        const val KEY_SKIP_STREAK_GROWTH = "skipStreakGrowth"
+        const val KEY_SKIP_STREAK_MAX_MULTIPLIER = "skipStreakMaxMultiplier"
+
+        /** Only a placeholder while streaks are off; written whenever they are on. */
+        const val DEFAULT_SKIP_STREAK_MAX_MULTIPLIER: Double = 4.0
 
         /** Only a placeholder while runs are off; written whenever they are on. */
         const val DEFAULT_RAPID_RUN_MAX_LISTEN_MS: Long = 5_000L
@@ -290,6 +331,12 @@ data class ScoringParameters(
                 rapidRunMaxListenMs = values.long(KEY_RAPID_RUN_MAX_LISTEN_MS, defaults.rapidRunMaxListenMs),
                 rapidRunSkipWeight = values.double(KEY_RAPID_RUN_SKIP_WEIGHT, defaults.rapidRunSkipWeight),
                 djSkipWeight = values.double(KEY_DJ_SKIP_WEIGHT, defaults.djSkipWeight),
+                dailyCapSkips = values.double(KEY_DAILY_CAP_SKIPS, defaults.dailyCapSkips),
+                skipStreakGrowth = values.double(KEY_SKIP_STREAK_GROWTH, defaults.skipStreakGrowth),
+                skipStreakMaxMultiplier = values.double(
+                    KEY_SKIP_STREAK_MAX_MULTIPLIER,
+                    defaults.skipStreakMaxMultiplier,
+                ),
             ).normalised()
             val problems = parsed.problems()
             require(problems.isEmpty()) { problems.joinToString(separator = "; ") }

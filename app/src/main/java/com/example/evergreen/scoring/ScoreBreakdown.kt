@@ -120,7 +120,38 @@ data class ScoreContribution(
      * scorer did before the column existed.
      */
     val utcOffsetMinutes: Int? = null,
+    /**
+     * What the scoring-freshness stages did to [playEquivalents], in the
+     * order they ran, so the track screen can say why a number is what it is.
+     * Empty when every one of those settings is off.
+     *
+     * Separate from [note] because these stack: a skip can be browsing, then
+     * trimmed by the daily skip cap, then multiplied by a streak. The note
+     * still gives the main reason; these are the modifiers on top.
+     */
+    val adjustments: List<ScoreAdjustment> = emptyList(),
 )
+
+/** One modifier a scoring-freshness stage applied to a contribution. */
+data class ScoreAdjustment(
+    val kind: AdjustmentKind,
+    /** Play-equivalents before this stage. */
+    val before: Double,
+    /** Play-equivalents after it. */
+    val after: Double,
+    /** For [AdjustmentKind.SKIP_STREAK]: which skip day in a row this was. */
+    val streakDays: Int? = null,
+    /** For [AdjustmentKind.SKIP_STREAK]: the multiplier applied. */
+    val multiplier: Double? = null,
+)
+
+enum class AdjustmentKind {
+    /** Trimmed by the daily skip cap, `dailyCapSkips`. Change D. */
+    SKIP_CAP,
+
+    /** Multiplied because this is one of several skip days in a row. Change D. */
+    SKIP_STREAK,
+}
 
 /**
  * A track's score, and every event that produced it.

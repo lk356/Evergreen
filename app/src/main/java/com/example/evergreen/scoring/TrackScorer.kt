@@ -7,6 +7,7 @@ import com.example.evergreen.data.PlaybackType
 import com.example.evergreen.data.SegmentGrouping
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.math.pow
 
 /** What the scorer knows about one service identifier for a track. */
 data class ServiceTrackInfo(
@@ -125,8 +126,9 @@ class TrackScorer(
             scoreListen(listen, input, parameters, djWindows, browsingWindows, listens)
         }
 
-        // 6. The daily cap, applied before decay, per section 3.2.
-        contributions += applyDailyCap(scored, parameters, nowMs)
+        // 6. The daily caps, then the skip streak (change D), then decay.
+        contributions += applySkipStreak(applyDailyCap(scored, parameters), parameters)
+            .map { contribution -> withDecay(contribution, parameters, nowMs) }
 
         // 8. Likes.
         input.likeEvents.sortedBy { it.atMs }.forEach { event ->
@@ -282,24 +284,50 @@ class TrackScorer(
      * not forty — with a cap rather than a diminishing-returns curve, and with
      * no loop detection to write (decisions 2e).
      *
-     * Negatives are not capped. Capping them would mean that skipping a track
-     * repeatedly in one sitting, which is about the clearest rejection there
-     * is, counted for less the more emphatically it happened.
+     * **Negatives can now be capped too**, by [ScoringParameters.dailyCapSkips]
+     * — off by default. They were deliberately left uncapped in Phase 3, on
+     * the argument that skipping a track repeatedly in one sitting is about
+     * the clearest rejection there is and should not count for less the more
+     * emphatically it happened. Using the app showed the other side: one
+     * sitting of repeated skips is usually one mood, not several judgements,
+     * and a single recording glitch could do the same damage. What changed is
+     * that "repeated rejection" now has a cleaner carrier: the skip streak
+     * ([applySkipStreak]) counts it across *days*, which one bad evening
+     * cannot fake. So the cap can stop one sitting counting several times
+     * without losing the signal it was protecting.
      *
      * Applied before decay, per section 3.2. Within a day the earliest listens
      * fill the allowance first, so the one that crosses the line is trimmed and
-     * later ones are zeroed.
+     * later ones are zeroed. The two allowances are separate: plays and skips
+     * on the same day do not cancel against each other here.
      */
     private fun applyDailyCap(
         listens: List<ScoreContribution>,
         parameters: ScoringParameters,
-        nowMs: Long,
     ): List<ScoreContribution> {
         val usedPerDay = mutableMapOf<Long, Double>()
+        // Skip-equivalents to play-equivalents: one skip is the negative weight.
+        val skipAllowance = parameters.dailyCapSkips * -parameters.negativeWeight
+        val lostPerDay = mutableMapOf<Long, Double>()
 
         return listens.sortedBy { it.atMs }.map { contribution ->
             var value = contribution.playEquivalents
             var note = contribution.note
+            var adjustments = contribution.adjustments
+
+            if (value < 0.0 && parameters.dailyCapSkips > 0.0) {
+                val day = localDayOf(contribution.atMs, contribution.utcOffsetMinutes)
+                val lost = lostPerDay.getOrDefault(day, 0.0)
+                val allowed = (skipAllowance - lost).coerceAtLeast(0.0)
+                if (-value > allowed) {
+                    // `0.0 - allowed`, not `-allowed`: a fully used allowance
+                    // must give 0, not the -0.0 that prints as "-0".
+                    val trimmed = 0.0 - allowed
+                    adjustments = adjustments + ScoreAdjustment(AdjustmentKind.SKIP_CAP, value, trimmed)
+                    value = trimmed
+                }
+                lostPerDay[day] = lost - value
+            }
 
             if (value > 0.0) {
                 val day = localDayOf(contribution.atMs, contribution.utcOffsetMinutes)
@@ -312,14 +340,80 @@ class TrackScorer(
                 usedPerDay[day] = used + value
             }
 
-            val weight = Decay.weight(contribution.atMs, nowMs, parameters)
+            contribution.copy(playEquivalents = value, note = note, adjustments = adjustments)
+        }
+    }
+
+    /**
+     * Change D: repeated rejection, counted in **days**, not skips.
+     *
+     * Each local day this track was listened to is one of three kinds, read
+     * after browsing, the DJ weight and the daily caps:
+     *
+     * - a **listen day** has at least one positive listen, and resets the
+     *   streak to 0;
+     * - a **skip day** has at least one negative and no positive, and adds 1;
+     * - any other day (only neutral listens, or skips already forgiven to 0)
+     *   leaves it where it was.
+     *
+     * On the Nth skip day in a row the day's skips are multiplied by
+     * `min(growth^(N-1), max)`, so the first skip day costs what it always
+     * did and the third costs four times that at growth 2. Days rather than
+     * skips so that one messy evening, or one recording glitch, moves the
+     * streak by at most one step. Likes are not listens and do not touch it.
+     *
+     * Off, and the identity, when [ScoringParameters.skipStreakGrowth] is 1.
+     */
+    private fun applySkipStreak(
+        listens: List<ScoreContribution>,
+        parameters: ScoringParameters,
+    ): List<ScoreContribution> {
+        if (!parameters.skipStreaksOn) return listens
+
+        val days = listens.groupBy { localDayOf(it.atMs, it.utcOffsetMinutes) }
+        val multiplierByDay = mutableMapOf<Long, Pair<Int, Double>>()
+        var streak = 0
+        for (day in days.keys.sorted()) {
+            val values = days.getValue(day).map { it.playEquivalents }
+            when {
+                values.any { it > 0.0 } -> streak = 0
+                values.any { it < 0.0 } -> {
+                    streak++
+                    val multiplier = minOf(
+                        parameters.skipStreakGrowth.pow(streak - 1),
+                        parameters.skipStreakMaxMultiplier,
+                    )
+                    multiplierByDay[day] = streak to multiplier
+                }
+            }
+        }
+
+        return listens.map { contribution ->
+            val (streakDays, multiplier) = multiplierByDay[localDayOf(contribution.atMs, contribution.utcOffsetMinutes)]
+                ?: return@map contribution
+            if (contribution.playEquivalents >= 0.0 || multiplier == 1.0) return@map contribution
+            val after = contribution.playEquivalents * multiplier
             contribution.copy(
-                playEquivalents = value,
-                decayWeight = weight,
-                decayedValue = value * weight,
-                note = note,
+                playEquivalents = after,
+                adjustments = contribution.adjustments + ScoreAdjustment(
+                    kind = AdjustmentKind.SKIP_STREAK,
+                    before = contribution.playEquivalents,
+                    after = after,
+                    streakDays = streakDays,
+                    multiplier = multiplier,
+                ),
             )
         }
+    }
+
+    /** Step 7: what a contribution is worth today. */
+    private fun withDecay(
+        contribution: ScoreContribution,
+        parameters: ScoringParameters,
+        nowMs: Long,
+    ): ScoreContribution {
+        val weight = Decay.weight(contribution.atMs, nowMs, parameters)
+        return contribution.copy(decayWeight = weight, decayedValue = contribution.playEquivalents * weight)
     }
 
     /**
