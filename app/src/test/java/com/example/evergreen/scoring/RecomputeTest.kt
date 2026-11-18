@@ -331,6 +331,98 @@ class RecomputeTest {
         }
     }
 
+    // --- The load window with scoring freshness on ---------------------------
+
+    /**
+     * The candidate settings from `docs/SCORING_FRESHNESS_PROMPT.md` step 4,
+     * at both half-lives it names.
+     */
+    private val freshness45 = ScoringParameters(
+        scoreCeiling = 8.0,
+        skipStreakGrowth = 2.0,
+        skipStreakMaxMultiplier = 4.0,
+        dailyCapSkips = 1.0,
+        rapidRunMinSkips = 3,
+        rapidRunMaxListenMs = 5_000,
+        rapidRunSkipWeight = 0.25,
+        djSkipWeight = 0.5,
+    )
+    private val freshness35 = freshness45.copy(halfLifeDays = 35.0)
+
+    /** Scores with browsing windows found over the same rows, as the service does. */
+    private fun freshScores(inputs: List<TrackScoringInput>, parameters: ScoringParameters): Map<Long, Double> {
+        val windows = BrowsingRuns.find(
+            inputs.flatMap { it.segments }.map {
+                TimelineListen(it.deviceId, it.startedAtMs, it.endedAtMs, it.listenedMs, it.listenedMs == 0L)
+            },
+            parameters.rapidRunMinSkips,
+            parameters.rapidRunMaxListenMs,
+        )
+        return inputs.associate { input ->
+            input.trackId to scorer.score(input, parameters, now, browsingWindows = windows).score
+        }
+    }
+
+    /**
+     * The bound re-measured with every scoring-freshness setting on, as the
+     * prompt asked, rather than assumed to carry over: the saturating walk
+     * and the skip streak both let an old event change what a later one is
+     * worth, which a per-event decay bound says nothing about.
+     *
+     * Measured 2026-11-17: worst 0.00071 at a 45-day half-life and 0.00079
+     * at 35, against 0.00082 with everything off. The first measurement was
+     * 0.0137 at 35 days, and all of it came from the skip streak, which then
+     * never forgot: skips years apart compounded into today's multiplier, so
+     * the answer depended on how much old history was loaded. The streak now
+     * resets after `skipStreakResetDays` without hearing the song.
+     */
+    @Test
+    fun `with freshness on, the load window still changes no score by more than 0-001`() {
+        listOf(freshness45, freshness35).forEach { parameters ->
+            val cutoff = Ranker.loadFromMs(now, parameters)
+            val inputs = history()
+            val full = freshScores(inputs, parameters)
+            val bounded = freshScores(inputs.map { it.withinWindow(cutoff) }, parameters)
+            inputs.forEach { input ->
+                assertEquals(
+                    "half-life ${parameters.halfLifeDays}, track ${input.trackId}",
+                    full.getValue(input.trackId),
+                    bounded.getValue(input.trackId),
+                    0.001,
+                )
+            }
+        }
+    }
+
+    /**
+     * And the dense worst case, which the ceiling turns from the largest error
+     * (0.063 without it) into none at all: within weeks of the cutoff the
+     * walk has climbed to the same balance whether or not the older plays
+     * were there, so nothing before the window reaches today.
+     */
+    @Test
+    fun `with the ceiling on, a track played for years loses nothing to the window`() {
+        listOf(freshness45, freshness35).forEach { parameters ->
+            val dense = densePlayHistory()
+            val cutoff = Ranker.loadFromMs(now, parameters)
+            val full = scorer.score(dense, parameters, now).score
+            val bounded = scorer.score(dense.withinWindow(cutoff), parameters, now).score
+            assertEquals(full, bounded, 1e-9)
+        }
+    }
+
+    /** Without the reset, the streak alone breaks the bound. Kept as the reason the reset exists. */
+    @Test
+    fun `a streak that never forgets would break the window`() {
+        val neverForgets = ScoringParameters(halfLifeDays = 35.0, skipStreakGrowth = 2.0, skipStreakResetDays = 0)
+        val cutoff = Ranker.loadFromMs(now, neverForgets)
+        val inputs = history()
+        val full = freshScores(inputs, neverForgets)
+        val bounded = freshScores(inputs.map { it.withinWindow(cutoff) }, neverForgets)
+        val worst = inputs.maxOf { kotlin.math.abs(full.getValue(it.trackId) - bounded.getValue(it.trackId)) }
+        assertTrue("measured 0.0157 on 2026-11-17; was $worst", worst > 0.01)
+    }
+
     @Test
     fun `the window really does drop most of six years of history`() {
         val inputs = history()

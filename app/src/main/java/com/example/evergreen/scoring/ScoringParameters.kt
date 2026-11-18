@@ -78,6 +78,12 @@ import java.security.MessageDigest
  *   [skipStreakMaxMultiplier]. 1.0 is off.
  * @param skipStreakMaxMultiplier the most a streak can multiply a skip by.
  *   Only read when streaks are on.
+ * @param skipStreakResetDays a skip day this many days or more after the
+ *   track was last heard at all starts a fresh streak. 0 means never forget.
+ *   Only read when streaks are on, and always written with them, so it is a
+ *   setting the user can see rather than a hidden link to the half-life.
+ *   Added 2026-11-17 after the load-window test showed a streak that never
+ *   forgets carries skips from years apart into today's multiplier.
  * @param scoreCeiling the score at which a new play or like stops adding
  *   anything: each positive event adds `v × (1 − score so far / ceiling)`.
  *   0 is off.
@@ -100,6 +106,7 @@ data class ScoringParameters(
     val dailyCapSkips: Double = 0.0,
     val skipStreakGrowth: Double = 1.0,
     val skipStreakMaxMultiplier: Double = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER,
+    val skipStreakResetDays: Int = DEFAULT_SKIP_STREAK_RESET_DAYS,
     val scoreCeiling: Double = 0.0,
 ) {
 
@@ -158,6 +165,7 @@ data class ScoringParameters(
         if (skipStreaksOn) {
             appendNumber(KEY_SKIP_STREAK_GROWTH, skipStreakGrowth.toString())
             appendNumber(KEY_SKIP_STREAK_MAX_MULTIPLIER, skipStreakMaxMultiplier.toString())
+            appendNumber(KEY_SKIP_STREAK_RESET_DAYS, skipStreakResetDays.toString())
         }
         if (scoreCeilingOn) appendNumber(KEY_SCORE_CEILING, scoreCeiling.toString())
         append('}')
@@ -238,6 +246,9 @@ data class ScoringParameters(
         if (!skipStreakMaxMultiplier.isFinite() || skipStreakMaxMultiplier < 1.0) {
             add("$KEY_SKIP_STREAK_MAX_MULTIPLIER must be at least 1, was $skipStreakMaxMultiplier")
         }
+        if (skipStreakResetDays < 0) {
+            add("$KEY_SKIP_STREAK_RESET_DAYS must be 0 (never forget) or positive, was $skipStreakResetDays")
+        }
         if (!scoreCeiling.isFinite() || scoreCeiling < 0.0) {
             add("$KEY_SCORE_CEILING must be 0 (off) or positive, was $scoreCeiling")
         }
@@ -266,7 +277,12 @@ data class ScoringParameters(
                 rapidRunSkipWeight = 0.0,
             )
         }
-        if (!skipStreaksOn) out = out.copy(skipStreakMaxMultiplier = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER)
+        if (!skipStreaksOn) {
+            out = out.copy(
+                skipStreakMaxMultiplier = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER,
+                skipStreakResetDays = DEFAULT_SKIP_STREAK_RESET_DAYS,
+            )
+        }
         return out
     }
 
@@ -299,6 +315,10 @@ data class ScoringParameters(
         const val KEY_SKIP_STREAK_GROWTH = "skipStreakGrowth"
         const val KEY_SKIP_STREAK_MAX_MULTIPLIER = "skipStreakMaxMultiplier"
         const val KEY_SCORE_CEILING = "scoreCeiling"
+        const val KEY_SKIP_STREAK_RESET_DAYS = "skipStreakResetDays"
+
+        /** Only a placeholder while streaks are off; written whenever they are on. */
+        const val DEFAULT_SKIP_STREAK_RESET_DAYS: Int = 45
 
         /** Only a placeholder while streaks are off; written whenever they are on. */
         const val DEFAULT_SKIP_STREAK_MAX_MULTIPLIER: Double = 4.0
@@ -350,6 +370,7 @@ data class ScoringParameters(
                     defaults.skipStreakMaxMultiplier,
                 ),
                 scoreCeiling = values.double(KEY_SCORE_CEILING, defaults.scoreCeiling),
+                skipStreakResetDays = values.int(KEY_SKIP_STREAK_RESET_DAYS, defaults.skipStreakResetDays),
             ).normalised()
             val problems = parsed.problems()
             require(problems.isEmpty()) { problems.joinToString(separator = "; ") }

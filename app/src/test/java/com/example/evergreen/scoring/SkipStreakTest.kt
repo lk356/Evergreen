@@ -125,13 +125,32 @@ class SkipStreakTest {
     }
 
     @Test
+    fun `a long silence starts a fresh streak`() {
+        // Skipped three times, each two months apart: without forgetting that
+        // would be x1, x2, x4; with a 45-day reset each is a first skip day.
+        val spread = listOf(skip(130), skip(65), skip(1))
+        assertEquals(listOf(-0.5, -0.5, -0.5), score(spread).values())
+        assertEquals(listOf(-0.5, -1.0, -2.0), score(spread, streaks.copy(skipStreakResetDays = 0)).values())
+        // Inside the reset, the streak builds as before.
+        assertEquals(listOf(-0.5, -1.0), score(listOf(skip(40), skip(1))).values())
+    }
+
+    @Test
+    fun `the reset counts from when the song was last heard at all`() {
+        // A neutral listen in between keeps the streak alive across the gap.
+        val half = segment(now - 60 * day, duration / 2)
+        assertEquals(listOf(-0.5, 0.0, -1.0), score(listOf(skip(100), half, skip(20))).values())
+    }
+
+    @Test
     fun `off writes no keys and has one form`() {
         assertFalse(ScoringParameters().toJson().contains("Streak"))
         assertFalse(ScoringParameters().toJson().contains("dailyCapSkips"))
         assertEquals(ScoringParameters(), ScoringParameters(skipStreakMaxMultiplier = 9.0).normalised())
         val on = streaks.copy(dailyCapSkips = 1.5)
         assertEquals(on, ScoringParameters.fromJson(on.toJson()))
-        assertTrue(on.toJson().contains(""""skipStreakGrowth":2.0,"skipStreakMaxMultiplier":4.0"""))
+        assertTrue(on.toJson().contains(""""skipStreakGrowth":2.0,"skipStreakMaxMultiplier":4.0,"skipStreakResetDays":45"""))
+        assertEquals(ScoringParameters(), ScoringParameters(skipStreakResetDays = 3).normalised())
     }
 
     @Test
@@ -139,5 +158,6 @@ class SkipStreakTest {
         assertEquals(1, ScoringParameters(skipStreakGrowth = 0.5).problems().size)
         assertEquals(1, ScoringParameters(skipStreakGrowth = 2.0, skipStreakMaxMultiplier = 0.5).problems().size)
         assertEquals(1, ScoringParameters(dailyCapSkips = -1.0).problems().size)
+        assertEquals(1, streaks.copy(skipStreakResetDays = -1).problems().size)
     }
 }

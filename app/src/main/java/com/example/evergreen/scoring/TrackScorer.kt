@@ -385,6 +385,15 @@ class TrackScorer(
      * skips so that one messy evening, or one recording glitch, moves the
      * streak by at most one step. Likes are not listens and do not touch it.
      *
+     * **The streak forgets.** A skip day that comes
+     * [ScoringParameters.skipStreakResetDays] or more after the track was
+     * last heard at all starts again at 1. Without this a song met once a
+     * year and skipped each time would reach ×4 on the strength of skips
+     * years apart: the skips themselves fade from the score, but the
+     * multiplier lands on today's skip at full strength, so fading does not
+     * undo it. It also made the score depend on how much old history was
+     * loaded (`RecomputeTest`). 0 keeps the never-forgetting rule.
+     *
      * Off, and the identity, when [ScoringParameters.skipStreakGrowth] is 1.
      */
     private fun applySkipStreak(
@@ -396,8 +405,12 @@ class TrackScorer(
         val days = listens.groupBy { localDayOf(it.atMs, it.utcOffsetMinutes) }
         val multiplierByDay = mutableMapOf<Long, Pair<Int, Double>>()
         var streak = 0
+        var previousDay: Long? = null
         for (day in days.keys.sorted()) {
             val values = days.getValue(day).map { it.playEquivalents }
+            val resetDays = parameters.skipStreakResetDays
+            if (resetDays > 0 && previousDay != null && day - previousDay >= resetDays) streak = 0
+            previousDay = day
             when {
                 values.any { it > 0.0 } -> streak = 0
                 values.any { it < 0.0 } -> {
