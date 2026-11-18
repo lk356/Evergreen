@@ -219,6 +219,34 @@ today's scores exactly. No schema change, no change in `capture/`.
   it is built.
 - **Change C revises decision 2g** (DJ skips are always forgiven), at the
   user's request. With the setting at 0 that decision stands as it is.
+- **Both devices confirmed at schema v8**, 2026-11-17, from the database
+  file header only.
+- **Browsing runs (change B), as approved by the user 2026-11-17.** The
+  prompt had every listen in a run count 0. The user pointed out that a run
+  can be a search (forward or back) or a string of songs they no longer
+  want, so a run is a discount, not a verdict:
+  - **Run boundaries.** A listen longer than `rapidRunMaxListenMs` ends a
+    run, and so does a gap of **more than 30 s** between one listen ending
+    and the next starting. DJ commentary neither breaks a run nor counts
+    toward one. Each device's timeline is separate, and **imported history
+    is one timeline of its own**: Spotify plays one stream at a time per
+    account.
+  - **`rapidRunSkipWeight`, 0 to 1.** A negative inside a run is multiplied
+    by it: 0 is pure browsing, 1 is today's full rejection. Always written
+    when runs are on. A missing key means 0, the prompt's original rule.
+  - **The skip streak (change D) tells a search from rejection.** A search
+    passes different songs each time; tiring of songs passes the *same* ones
+    on different days. A small non-zero weight keeps that day a "skip day",
+    so repetition across days builds a streak. At exactly 0, run skips are
+    invisible to the streak.
+  - **Revisits score 0.** The app cannot see which button was pressed, but
+    going back passes through songs just heard. A run listen of a track
+    already played on the same timeline within the previous **2 hours** is a
+    revisit and contributes 0 whatever the weight. That is a constant with a
+    reason, like the 20-minute DJ window, not a setting. The Step 4 report
+    splits revisits from forward flicks so the rule can be judged.
+  - **No stacking.** A listen discounted as browsing does not also take the
+    DJ weight (change C): one reason per contribution.
 
 **Where things stand, 2026-11-17** — written on returning after a gap, to sync
 GitHub before deciding what to do next. Nothing below was built today.
