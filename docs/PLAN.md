@@ -223,13 +223,11 @@ including the values chosen and why, under "Scoring freshness results" below.
   this work used it. The throwaway report runner is deleted. The branch is
   pushed, after a scan of all 15 commits for serials, local paths, the install
   id and song titles found none.
-- **The Pixel's serial on GitHub: one step left for the user.** It sits in the
-  IDE file at the tip of 11 old phase branches, all fully merged into `main`.
-  Deleting them from GitHub, with local copies kept, takes it off every branch
-  tip; the user runs that command, because deleting remote branches was
-  refused to the assistant. It would still be in `main`'s history. Rewriting
-  that means a force-push of `main`, which is not recommended for a serial
-  that grants nothing.
+- **The Pixel's serial is off every branch on GitHub**, 2026-11-18. The user
+  deleted the 11 old, fully merged phase branches that held it in the IDE
+  file; local copies are kept. It remains only in `main`'s history, which is
+  being left alone: a serial grants nothing, and rewriting `main` is not worth
+  it.
 
 **Scoring freshness — what it is.** On branch
 `scoring-freshness`, from `phase5c-merge`. The prompt is
