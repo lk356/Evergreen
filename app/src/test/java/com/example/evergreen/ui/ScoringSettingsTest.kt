@@ -185,7 +185,8 @@ class ScoringSettingsTest {
             listOf(
                 "halfLifeDays", "lowerBreakpoint", "upperBreakpoint", "negativeWeight",
                 "likeWeight", "replayJumpThresholdMs", "dailyCapPlays", "recordFloor",
-                "playlistJoinRank", "playlistLeaveRank",
+                "playlistJoinRank", "playlistLeaveRank", "scoreCeiling", "rapidRun", "djSkipWeight",
+                "dailyCapSkips", "skipStreak",
             ).forEach { key ->
                 assertTrue(
                     "${setting.title} leaks the field name '$key' into the explanation",
@@ -198,21 +199,56 @@ class ScoringSettingsTest {
     /** Every tunable number is reachable; none was forgotten. */
     @Test
     fun everyScoringParameterHasAControl() {
-        val defaults = ScoringParameters()
-        val reachable = SCORING_SETTINGS.mapNotNull { it.increase(defaults) }
-        val fields = listOf<(ScoringParameters) -> Any>(
-            { it.halfLifeDays }, { it.lowerBreakpoint }, { it.upperBreakpoint },
-            { it.negativeWeight }, { it.likeWeight }, { it.replayJumpThresholdMs },
-            { it.dailyCapPlays }, { it.recordFloor }, { it.playlistJoinRank },
-            { it.playlistLeaveRank },
+        // The scoring-freshness settings that only mean something while
+        // another is on are reached from settings with that one on.
+        val allOn = ScoringParameters(rapidRunMinSkips = 3, skipStreakGrowth = 2.0)
+        val reachable = SCORING_SETTINGS.flatMap {
+            listOfNotNull(it.increase(ScoringParameters()), it.increase(allOn), it.decrease(allOn))
+        }
+        val fields = listOf<Pair<String, (ScoringParameters) -> Any>>(
+            "halfLifeDays" to { it.halfLifeDays }, "lowerBreakpoint" to { it.lowerBreakpoint },
+            "upperBreakpoint" to { it.upperBreakpoint }, "negativeWeight" to { it.negativeWeight },
+            "likeWeight" to { it.likeWeight }, "replayJumpThresholdMs" to { it.replayJumpThresholdMs },
+            "dailyCapPlays" to { it.dailyCapPlays }, "recordFloor" to { it.recordFloor },
+            "playlistJoinRank" to { it.playlistJoinRank }, "playlistLeaveRank" to { it.playlistLeaveRank },
+            "scoreCeiling" to { it.scoreCeiling }, "rapidRunMinSkips" to { it.rapidRunMinSkips },
+            "rapidRunMaxListenMs" to { it.rapidRunMaxListenMs }, "rapidRunSkipWeight" to { it.rapidRunSkipWeight },
+            "djSkipWeight" to { it.djSkipWeight }, "dailyCapSkips" to { it.dailyCapSkips },
+            "skipStreakGrowth" to { it.skipStreakGrowth },
+            "skipStreakMaxMultiplier" to { it.skipStreakMaxMultiplier },
+            "skipStreakResetDays" to { it.skipStreakResetDays },
         )
-        fields.forEach { read ->
+        fields.forEach { (name, read) ->
             assertTrue(
-                "no control moves one of the ten parameters",
-                reachable.any { read(it) != read(defaults) },
+                "no control moves $name",
+                reachable.any { read(it) != read(ScoringParameters()) },
             )
         }
-        assertEquals("ten parameters, ten controls", 10, SCORING_SETTINGS.size)
+        assertEquals("one control per parameter", fields.size, SCORING_SETTINGS.size)
+    }
+
+    /** A control that means nothing while its feature is off is hidden, and inert. */
+    @Test
+    fun secondarySettingsAreHiddenAndInertWhileTheirFeatureIsOff() {
+        val hidden = SCORING_SETTINGS.filter { !it.visible(ScoringParameters()) }
+        assertEquals(4, hidden.size)
+        hidden.forEach { setting ->
+            assertEquals(setting.title, null, setting.increase(ScoringParameters()))
+            assertEquals(setting.title, null, setting.decrease(ScoringParameters()))
+        }
+    }
+
+    /** Switching a feature off forgets its secondary values, so off has one form. */
+    @Test
+    fun turningAFeatureOffLeavesNoTrace() {
+        val runs = SCORING_SETTINGS.single { it.title == "Flicking through songs" }
+        val on = ScoringParameters(rapidRunMinSkips = 2, rapidRunSkipWeight = 0.3)
+        assertEquals(ScoringParameters(), runs.decrease(on))
+        val streak = SCORING_SETTINGS.single { it.title == "Skipping a song day after day" }
+        assertEquals(
+            ScoringParameters(),
+            streak.decrease(ScoringParameters(skipStreakGrowth = 1.25, skipStreakResetDays = 10)),
+        )
     }
 
     // --- The change log's wording --------------------------------------------

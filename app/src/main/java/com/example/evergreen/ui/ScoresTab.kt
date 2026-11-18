@@ -36,8 +36,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.evergreen.data.EvergreenDatabase
 import com.example.evergreen.data.RankedTrackRow
+import com.example.evergreen.scoring.AdjustmentKind
 import com.example.evergreen.scoring.ContributionKind
 import com.example.evergreen.scoring.ContributionNote
+import com.example.evergreen.scoring.ScoreAdjustment
 import com.example.evergreen.scoring.ScoreBreakdown
 import com.example.evergreen.scoring.ScoreService
 import com.example.evergreen.scoring.ScoringParameters
@@ -264,7 +266,9 @@ internal fun describe(kind: ContributionKind, note: ContributionNote): String = 
 }
 
 /**
- * The settings in force: one line, expanding to all nine.
+ * The settings in force: one line, expanding to all of them. The
+ * scoring-freshness settings are listed only while switched on, so the
+ * summary of a device that never used them looks as it always did.
  *
  * Collapsed by default because this is reference material and the ranking is
  * what the tab is for. Nine rows is most of a 602 dp screen, and on the Walkman
@@ -285,7 +289,8 @@ private fun ParameterSummary(
         Text(
             text = "${format(parameters.halfLifeDays)}d half-life · " +
                 "${format(parameters.lowerBreakpoint)}–${format(parameters.upperBreakpoint)} · " +
-                "like ${format(parameters.likeWeight)} · cap ${format(parameters.dailyCapPlays)}",
+                "like ${format(parameters.likeWeight)} · cap ${format(parameters.dailyCapPlays)}" +
+                freshnessInForce(parameters).let { if (it.isEmpty()) "" else " · +${it.size} more" },
             style = MaterialTheme.typography.bodySmall,
             fontFamily = FontFamily.Monospace,
             fontSize = 11.sp,
@@ -313,7 +318,30 @@ private fun ParameterSummary(
             "Playlist ranks",
             "join ${parameters.playlistJoinRank}, leave ${parameters.playlistLeaveRank}",
         )
+        freshnessInForce(parameters).forEach { setting -> Stat(setting.title, setting.display(parameters)) }
     }
+}
+
+/** The scoring-freshness settings that are switched on, in screen order. */
+internal fun freshnessInForce(parameters: ScoringParameters): List<ScoringSetting> =
+    SCORING_SETTINGS.filter { setting ->
+        setting.freshness && setting.visible(parameters) &&
+            setting.display(parameters) != setting.display(ScoringParameters())
+    }
+
+/**
+ * One scoring-freshness modifier, as a line under the event it changed: what
+ * happened, then the value before and after, so the arithmetic can be
+ * followed down the screen.
+ */
+internal fun describeAdjustment(adjustment: ScoreAdjustment): String {
+    val what = when (adjustment.kind) {
+        AdjustmentKind.SKIP_CAP -> "trimmed by the daily skip limit"
+        AdjustmentKind.SKIP_STREAK ->
+            "skip day ${adjustment.streakDays} in a row, ×${format(adjustment.multiplier ?: 1.0)}"
+        AdjustmentKind.CEILING -> "reduced: the score was already near its ceiling"
+    }
+    return "$what: ${format(adjustment.before)} → ${format(adjustment.after)}"
 }
 
 internal fun format(value: Double): String = String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')

@@ -166,7 +166,7 @@ private fun ScoringSection() {
         )
     }
 
-    SCORING_SETTINGS.forEach { setting ->
+    SCORING_SETTINGS.filter { it.visible(draft) }.forEach { setting ->
         SettingRow(
             setting = setting,
             parameters = draft,

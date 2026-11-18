@@ -28,6 +28,13 @@ internal data class ScoringSetting(
     val decrease: (ScoringParameters) -> ScoringParameters?,
     /** Shown under the control when the value is not the calibrated default. */
     val defaultNote: String,
+    /**
+     * False for a setting that only means something while another is on, so
+     * the screen does not show a number that currently does nothing.
+     */
+    val visible: (ScoringParameters) -> Boolean = { true },
+    /** One of the scoring-freshness settings, which are all off by default. */
+    val freshness: Boolean = false,
 )
 
 /**
@@ -100,9 +107,8 @@ internal val SCORING_SETTINGS: List<ScoringSetting> = listOf(
         display = { p -> trim(p.negativeWeight) },
         increase = { p -> p.step(p.negativeWeight, 0.05, max = 0.0) { v -> p.copy(negativeWeight = v) } },
         decrease = { p -> p.step(p.negativeWeight, -0.05, min = -2.0) { v -> p.copy(negativeWeight = v) } },
-        defaultNote = "Chosen rather than calibrated, and the one under active question: " +
-            "skips are not capped per day while plays are, so four skips in one evening " +
-            "cost more than a day of listening can win back.",
+        defaultNote = "Chosen rather than calibrated. A skip can now also be capped per " +
+            "day, and multiplied when it repeats day after day — see the settings below.",
     ),
     ScoringSetting(
         title = "What liking a song is worth",
@@ -147,8 +153,189 @@ internal val SCORING_SETTINGS: List<ScoringSetting> = listOf(
         display = { p -> "${trim(p.dailyCapPlays)} plays" },
         increase = { p -> p.step(p.dailyCapPlays, 0.5, max = 10.0) { v -> p.copy(dailyCapPlays = v) } },
         decrease = { p -> p.step(p.dailyCapPlays, -0.5, min = 0.5) { v -> p.copy(dailyCapPlays = v) } },
-        defaultNote = "Skips are deliberately not capped the same way. Whether that " +
-            "asymmetry is right is an open question.",
+        defaultNote = "Skips have a cap of their own, below, off unless you turn it on.",
+    ),
+
+    // --- Scoring freshness, 2026-11-17. Every one is off by default, and off
+    //     scores exactly as the app did before they existed.
+
+    ScoringSetting(
+        title = "Ceiling on a song's score",
+        explain = { p ->
+            if (!p.scoreCeilingOn) {
+                "Off: every play adds the same, however high a song's score already is. " +
+                    "A song you played to death can bank a score that takes months to fade."
+            } else {
+                "The closer a song is to ${trim(p.scoreCeiling)}, the less a new play adds: " +
+                    "halfway there, a play is worth half. Skips still cost in full, so a " +
+                    "song you have gone off falls from the top as quickly as anything else."
+            }
+        },
+        display = { p -> if (p.scoreCeilingOn) trim(p.scoreCeiling) else "off" },
+        increase = { p -> p.step(p.scoreCeiling, 1.0, max = 30.0) { v -> p.copy(scoreCeiling = v) } },
+        decrease = { p -> p.step(p.scoreCeiling, -1.0, min = 0.0) { v -> p.copy(scoreCeiling = v) } },
+        defaultNote = "Off. It also lowers middling scores a little, not only the top ones.",
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "Flicking through songs",
+        explain = { p ->
+            if (!p.browsingRunsOn) {
+                "Off: every quick skip counts as rejecting the song, even when you were " +
+                    "flicking past several to find something."
+            } else {
+                "${p.rapidRunMinSkips} or more very short listens in a row are browsing, " +
+                    "not judging. A song you pass while going back to one you just heard " +
+                    "is not counted against at all."
+            }
+        },
+        display = { p -> if (p.browsingRunsOn) "${p.rapidRunMinSkips} in a row" else "off" },
+        increase = { p ->
+            p.stepInt(p.rapidRunMinSkips, if (p.rapidRunMinSkips == 0) 2 else 1, max = 10) { v ->
+                p.copy(rapidRunMinSkips = v)
+            }
+        },
+        decrease = { p ->
+            p.stepInt(p.rapidRunMinSkips, if (p.rapidRunMinSkips == 2) -2 else -1, min = 0) { v ->
+                p.copy(rapidRunMinSkips = v).normalised()
+            }
+        },
+        defaultNote = "Off.",
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "How short a flick is",
+        explain = { p ->
+            "A listen of ${trim(p.rapidRunMaxListenMs / 1000.0)} seconds or less can be part " +
+                "of a run of flicks."
+        },
+        display = { p -> "${trim(p.rapidRunMaxListenMs / 1000.0)} s" },
+        increase = { p ->
+            if (!p.browsingRunsOn) null
+            else p.stepMs(p.rapidRunMaxListenMs, 1_000, max = 15_000) { v -> p.copy(rapidRunMaxListenMs = v) }
+        },
+        decrease = { p ->
+            if (!p.browsingRunsOn) null
+            else p.stepMs(p.rapidRunMaxListenMs, -1_000, min = 1_000) { v -> p.copy(rapidRunMaxListenMs = v) }
+        },
+        defaultNote = "5 seconds.",
+        visible = { p -> p.browsingRunsOn },
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "What a flick still costs",
+        explain = { p ->
+            if (p.rapidRunSkipWeight == 0.0) {
+                "Nothing. A song flicked past is never counted against, however often it " +
+                    "happens — which also means flicking past it every day never adds up."
+            } else {
+                "${percent(p.rapidRunSkipWeight)} of a skip. Small on one evening, but a song " +
+                    "you flick past day after day still builds up a skip streak."
+            }
+        },
+        display = { p -> percent(p.rapidRunSkipWeight) },
+        increase = { p ->
+            if (!p.browsingRunsOn) null
+            else p.step(p.rapidRunSkipWeight, 0.05, max = 1.0) { v -> p.copy(rapidRunSkipWeight = v) }
+        },
+        decrease = { p ->
+            if (!p.browsingRunsOn) null
+            else p.step(p.rapidRunSkipWeight, -0.05, min = 0.0) { v -> p.copy(rapidRunSkipWeight = v) }
+        },
+        defaultNote = "0%: a flick costs nothing.",
+        visible = { p -> p.browsingRunsOn },
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "What a DJ skip costs",
+        explain = { p ->
+            if (p.djSkipWeight == 0.0) {
+                "Nothing: skipping a song Spotify DJ chose is never counted against it."
+            } else {
+                "${percent(p.djSkipWeight)} of an ordinary skip. A song DJ picked that you " +
+                    "let play still counts in full either way."
+            }
+        },
+        display = { p -> percent(p.djSkipWeight) },
+        increase = { p -> p.step(p.djSkipWeight, 0.05, max = 1.0) { v -> p.copy(djSkipWeight = v) } },
+        decrease = { p -> p.step(p.djSkipWeight, -0.05, min = 0.0) { v -> p.copy(djSkipWeight = v) } },
+        defaultNote = "0%: DJ skips are forgiven, as the app has always done.",
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "Most one song can lose in a day",
+        explain = { p ->
+            if (p.dailyCapSkips == 0.0) {
+                "No limit: four skips in one evening cost four skips."
+            } else {
+                "However often a song is skipped in one day, it loses at most " +
+                    "${trim(p.dailyCapSkips)} skip${if (p.dailyCapSkips == 1.0) "" else "s"}' worth. " +
+                    "One bad evening is one mood, not several judgements."
+            }
+        },
+        display = { p -> if (p.dailyCapSkips == 0.0) "no limit" else "${trim(p.dailyCapSkips)} skips" },
+        increase = { p -> p.step(p.dailyCapSkips, 0.5, max = 10.0) { v -> p.copy(dailyCapSkips = v) } },
+        decrease = { p -> p.step(p.dailyCapSkips, -0.5, min = 0.0) { v -> p.copy(dailyCapSkips = v) } },
+        defaultNote = "No limit.",
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "Skipping a song day after day",
+        explain = { p ->
+            if (!p.skipStreaksOn) {
+                "Off: a skip costs the same whether it is the first in months or the fifth day running."
+            } else {
+                "Each day in a row a song is skipped and never played through, its skips " +
+                    "count ×${trim(p.skipStreakGrowth)} the day before's. Playing it through " +
+                    "once starts the count again."
+            }
+        },
+        display = { p -> if (p.skipStreaksOn) "×${trim(p.skipStreakGrowth)}" else "off" },
+        increase = { p -> p.step(p.skipStreakGrowth, 0.25, max = 4.0) { v -> p.copy(skipStreakGrowth = v) } },
+        decrease = { p ->
+            p.step(p.skipStreakGrowth, -0.25, min = 1.0) { v -> p.copy(skipStreakGrowth = v).normalised() }
+        },
+        defaultNote = "Off.",
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "Most a streak can multiply a skip",
+        explain = { p -> "However long the streak, a skip counts at most ×${trim(p.skipStreakMaxMultiplier)}." },
+        display = { p -> "×${trim(p.skipStreakMaxMultiplier)}" },
+        increase = { p ->
+            if (!p.skipStreaksOn) null
+            else p.step(p.skipStreakMaxMultiplier, 0.5, max = 10.0) { v -> p.copy(skipStreakMaxMultiplier = v) }
+        },
+        decrease = { p ->
+            if (!p.skipStreaksOn) null
+            else p.step(p.skipStreakMaxMultiplier, -0.5, min = 1.0) { v -> p.copy(skipStreakMaxMultiplier = v) }
+        },
+        defaultNote = "×4.",
+        visible = { p -> p.skipStreaksOn },
+        freshness = true,
+    ),
+    ScoringSetting(
+        title = "When a streak is forgotten",
+        explain = { p ->
+            if (p.skipStreakResetDays == 0) {
+                "Never: skips months apart keep adding to the same streak."
+            } else {
+                "If you have not heard a song for ${p.skipStreakResetDays} days, its next skip " +
+                    "starts a fresh streak."
+            }
+        },
+        display = { p -> if (p.skipStreakResetDays == 0) "never" else "${p.skipStreakResetDays} days" },
+        increase = { p ->
+            if (!p.skipStreaksOn) null
+            else p.stepInt(p.skipStreakResetDays, 5, max = 365) { v -> p.copy(skipStreakResetDays = v) }
+        },
+        decrease = { p ->
+            if (!p.skipStreaksOn) null
+            else p.stepInt(p.skipStreakResetDays, -5, min = 0) { v -> p.copy(skipStreakResetDays = v) }
+        },
+        defaultNote = "45 days.",
+        visible = { p -> p.skipStreaksOn },
+        freshness = true,
     ),
     ScoringSetting(
         title = "When a song stops counting as alive",

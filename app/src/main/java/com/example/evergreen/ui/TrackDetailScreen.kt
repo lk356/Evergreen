@@ -64,6 +64,7 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
     var breakdown by remember(trackId) { mutableStateOf<ScoreBreakdown?>(null) }
     var months by remember(trackId) { mutableStateOf<List<TrackMonthRow>>(emptyList()) }
     var history by remember(trackId) { mutableStateOf<List<ScorePoint>>(emptyList()) }
+    var historyMs by remember(trackId) { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(trackId) {
         // All three off the main thread: ScoreService moves its own work to
@@ -73,7 +74,13 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
         // moment later.
         breakdown = service.breakdown(trackId)
         months = scoringDao.trackMonthHistory(trackId)
+        // Timed, and the time shown under the chart: the line is the most
+        // expensive thing this screen does, and the scoring-freshness walk
+        // makes each of its sixty points a little dearer, so the Walkman's own
+        // figure is worth being able to read off rather than guess.
+        val started = System.nanoTime()
         history = service.scoreHistory(trackId)
+        historyMs = (System.nanoTime() - started) / 1_000_000
     }
 
     LazyColumn(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -121,6 +128,14 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 ScoreChart(history)
+                historyMs?.let { ms ->
+                    Text(
+                        text = "Worked out in $ms ms.",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
@@ -133,7 +148,8 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
                 SectionTitle("Every event, oldest first")
                 Text(
                     "'Raw' is what the event was worth when it happened; the bold number " +
-                        "is what it is worth today, after decay.",
+                        "is what it is worth today, after decay. Indented lines are the " +
+                        "scoring settings that changed it on the way.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 4.dp),
@@ -160,6 +176,14 @@ fun TrackDetailScreen(trackId: Long, modifier: Modifier = Modifier) {
                             fontSize = 11.sp,
                             color = noteColour(contribution.note),
                         )
+                        contribution.adjustments.forEach { adjustment ->
+                            Text(
+                                text = "  " + describeAdjustment(adjustment),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
                     }
                     Text(
                         text = "raw ${format(contribution.rawPlayEquivalents)}\n" +
