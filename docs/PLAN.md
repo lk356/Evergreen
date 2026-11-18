@@ -86,6 +86,26 @@ anything that moves facts between devices.
         make. **Started 2026-09-21** on `phase5c-merge`; the prompt is
         `docs/PHASE5C_PROMPT.md` and the decisions behind it are under
         Status.
+  - [~] **Scoring freshness — interleaved, before the rest of 5c.** Decided
+        by the user 2026-11-17, after two months of use: stale songs are not
+        falling out of Evergreen, so four new scoring settings come before
+        the phantom-fix rebuild. Every one defaults to "off", which is
+        exactly today's formula. Branch `scoring-freshness`, **from
+        `phase5c-merge`**, not from `main` as the prompt first said: both
+        devices run the 5c build (schema v8), which a `main` build (v7)
+        cannot open, and 5c changed the scorer. So it reaches `main` when 5c
+        does. The prompt is `docs/SCORING_FRESHNESS_PROMPT.md`; the reason is
+        under "How volatile should a score be?".
+
+  **An option for 5c, not a decision (raised 2026-11-17).** The two-way
+  merge, with the writer role handed over by moving files, might be replaced
+  by the user's **always-on home server holding the writer role
+  permanently**, with both phones uploading fact batches to it. Nothing in
+  5c's design forbids this: the role is already tied to a device id rather
+  than to "an Android device" (step 5) for this reason, and the fact batch
+  is the format a server would accept. It would bring Phase 7's sync backend
+  forward and remove the hand-over. To be weighed when 5c resumes. Nothing is
+  being built for it now.
 
   **Why 5b is a deliverable and not the first half of one.** The fact batch
   is needed by the merge, by the Linux agent in Phase 7 (which cannot produce
@@ -175,6 +195,30 @@ So the architectural instruction is narrower than it first read:
 
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
+
+**Scoring freshness, 2026-11-17: in progress, step 0 of 5.** On branch
+`scoring-freshness`, from `phase5c-merge`. The prompt is
+`docs/SCORING_FRESHNESS_PROMPT.md`. Four new scoring settings (saturating
+gains, browsing runs, DJ skips that count, skip streaks with a daily skip
+cap) come before the rest of 5c. Each defaults to off, which must reproduce
+today's scores exactly. No schema change, no change in `capture/`.
+
+- **Why the base branch changed.** The prompt said `main`. The Pixel's database
+  is at schema v8 (read from its file header, 2026-11-17), the Walkman's
+  almost certainly too, and `main` is v7 with no downgrade path, so a `main`
+  build would not open on either device. 5c also changed the scorer (remote
+  sessions excluded, per-row UTC offset in the daily cap), so the "all off =
+  identical" test has to pin *that* formula. Approved by the user.
+- **The parameter hash does not move.** `toJson()` writes every key today,
+  so adding keys naively would change the hash of unchanged settings. New
+  keys are written only when their feature is on, so unchanged settings stay
+  byte-identical: no spurious cache rebuild, and old `parameter_history` rows
+  keep matching. This is the "missing key means off" rule read the other way.
+- **The ranker loads liked tracks only.** Browsing runs need every track's
+  listens in the load window, which is one extra pass, to be measured before
+  it is built.
+- **Change C revises decision 2g** (DJ skips are always forgiven), at the
+  user's request. With the setting at 0 that decision stands as it is.
 
 **Where things stand, 2026-11-17** — written on returning after a gap, to sync
 GitHub before deciding what to do next. Nothing below was built today.
@@ -2417,6 +2461,19 @@ here without a bound, and a backup is taken by hand.
 ## Open questions — still open
 
 ### Raised by using it (2026-09-18) — carried through Phase 4
+
+**How volatile should a score be? Reopened 2026-11-17, for the opposite
+reason.** The condition below for reopening was "a track the user still loves
+visibly falls out". That has not happened. The opposite has: after two months
+of use, **a few songs stay after the user stopped caring about them.** A song
+that banked a big score has a long way to fall. A skip costs a flat −0.5
+whether the score is 1 or 12. Skips during Spotify DJ, which the user listens
+to a lot, cost nothing at all (decision 2g), so many real skips are invisible.
+And flicking past several songs outside DJ counts each flick as a full
+rejection, though it is browsing. The playlist is otherwise good and scores
+are not inflated (rank 1 is 11.7, rank 10 is 7, rank 50 is 4), so this is
+tuning, not an overhaul. The response is `docs/SCORING_FRESHNESS_PROMPT.md`.
+Lever 2 below (a daily cap on negatives) is part of it, as `dailyCapSkips`.
 
 ~~**How volatile should a score be?**~~ **Settled 2026-09-19, at the current
 parameters.** Score over time was built to answer this question; the user has
