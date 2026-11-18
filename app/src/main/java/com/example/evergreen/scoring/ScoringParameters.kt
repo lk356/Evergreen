@@ -78,6 +78,9 @@ import java.security.MessageDigest
  *   [skipStreakMaxMultiplier]. 1.0 is off.
  * @param skipStreakMaxMultiplier the most a streak can multiply a skip by.
  *   Only read when streaks are on.
+ * @param scoreCeiling the score at which a new play or like stops adding
+ *   anything: each positive event adds `v × (1 − score so far / ceiling)`.
+ *   0 is off.
  */
 data class ScoringParameters(
     val halfLifeDays: Double = 45.0,
@@ -97,7 +100,11 @@ data class ScoringParameters(
     val dailyCapSkips: Double = 0.0,
     val skipStreakGrowth: Double = 1.0,
     val skipStreakMaxMultiplier: Double = DEFAULT_SKIP_STREAK_MAX_MULTIPLIER,
+    val scoreCeiling: Double = 0.0,
 ) {
+
+    /** True when gains saturate. */
+    val scoreCeilingOn: Boolean get() = scoreCeiling > 0.0
 
     /** True when skip streaks are on. */
     val skipStreaksOn: Boolean get() = skipStreakGrowth != 1.0
@@ -152,6 +159,7 @@ data class ScoringParameters(
             appendNumber(KEY_SKIP_STREAK_GROWTH, skipStreakGrowth.toString())
             appendNumber(KEY_SKIP_STREAK_MAX_MULTIPLIER, skipStreakMaxMultiplier.toString())
         }
+        if (scoreCeilingOn) appendNumber(KEY_SCORE_CEILING, scoreCeiling.toString())
         append('}')
     }
 
@@ -230,6 +238,9 @@ data class ScoringParameters(
         if (!skipStreakMaxMultiplier.isFinite() || skipStreakMaxMultiplier < 1.0) {
             add("$KEY_SKIP_STREAK_MAX_MULTIPLIER must be at least 1, was $skipStreakMaxMultiplier")
         }
+        if (!scoreCeiling.isFinite() || scoreCeiling < 0.0) {
+            add("$KEY_SCORE_CEILING must be 0 (off) or positive, was $scoreCeiling")
+        }
         if (playlistLeaveRank < playlistJoinRank) {
             add(
                 "$KEY_PLAYLIST_LEAVE_RANK ($playlistLeaveRank) must be at least " +
@@ -287,6 +298,7 @@ data class ScoringParameters(
         const val KEY_DAILY_CAP_SKIPS = "dailyCapSkips"
         const val KEY_SKIP_STREAK_GROWTH = "skipStreakGrowth"
         const val KEY_SKIP_STREAK_MAX_MULTIPLIER = "skipStreakMaxMultiplier"
+        const val KEY_SCORE_CEILING = "scoreCeiling"
 
         /** Only a placeholder while streaks are off; written whenever they are on. */
         const val DEFAULT_SKIP_STREAK_MAX_MULTIPLIER: Double = 4.0
@@ -337,6 +349,7 @@ data class ScoringParameters(
                     KEY_SKIP_STREAK_MAX_MULTIPLIER,
                     defaults.skipStreakMaxMultiplier,
                 ),
+                scoreCeiling = values.double(KEY_SCORE_CEILING, defaults.scoreCeiling),
             ).normalised()
             val problems = parsed.problems()
             require(problems.isEmpty()) { problems.joinToString(separator = "; ") }

@@ -126,16 +126,30 @@ class TrackScorer(
             scoreListen(listen, input, parameters, djWindows, browsingWindows, listens)
         }
 
-        // 6. The daily caps, then the skip streak (change D), then decay.
-        contributions += applySkipStreak(applyDailyCap(scored, parameters), parameters)
-            .map { contribution -> withDecay(contribution, parameters, nowMs) }
+        val order = EventOrder(input.segments)
+
+        // 6. The daily caps, then the skip streak (change D).
+        val listened = applySkipStreak(applyDailyCap(scored, parameters, order), parameters)
 
         // 8. Likes.
-        input.likeEvents.sortedBy { it.atMs }.forEach { event ->
-            contributions += likeContribution(event, parameters, nowMs)
-        }
+        val liked = input.likeEvents.sortedBy { it.atMs }.map { event -> likeContribution(event, parameters, nowMs) }
 
-        contributions.sortBy { it.atMs }
+        if (parameters.scoreCeilingOn) {
+            // 7b. The saturating walk (change A), over listens and likes
+            //     together in one order that every device agrees on, then
+            //     decay to now. Commentary and phantoms are worth nothing and
+            //     stay out of the walk.
+            contributions += applyCeiling((listened + liked).sortedWith(order), parameters)
+                .map { contribution -> withDecay(contribution, parameters, nowMs) }
+            contributions.sortWith(order)
+        } else {
+            // 7. Decay. Kept as the path it always was, list order included,
+            //    so that with the ceiling off every sum is taken in the same
+            //    order and comes out the same to the last bit.
+            contributions += listened.map { contribution -> withDecay(contribution, parameters, nowMs) }
+            contributions += liked
+            contributions.sortBy { it.atMs }
+        }
 
         // 9. Sum.
         return ScoreBreakdown(
@@ -304,13 +318,22 @@ class TrackScorer(
     private fun applyDailyCap(
         listens: List<ScoreContribution>,
         parameters: ScoringParameters,
+        order: EventOrder,
     ): List<ScoreContribution> {
         val usedPerDay = mutableMapOf<Long, Double>()
         // Skip-equivalents to play-equivalents: one skip is the negative weight.
         val skipAllowance = parameters.dailyCapSkips * -parameters.negativeWeight
         val lostPerDay = mutableMapOf<Long, Double>()
 
-        return listens.sortedBy { it.atMs }.map { contribution ->
+        // With the ceiling on, in the order every device agrees on: two
+        // listens ending on the same millisecond that both cross the cap
+        // would otherwise share it out according to whichever came back from
+        // the database first, and the walk would then value them differently.
+        // With it off, by time alone, exactly as before, because the old
+        // order of tied rows shows in the breakdown and `FreshnessBaselineTest`
+        // pins that "off" changes nothing at all.
+        val sorted = if (parameters.scoreCeilingOn) listens.sortedWith(order) else listens.sortedBy { it.atMs }
+        return sorted.map { contribution ->
             var value = contribution.playEquivalents
             var note = contribution.note
             var adjustments = contribution.adjustments
@@ -404,6 +427,80 @@ class TrackScorer(
                 ),
             )
         }
+    }
+
+    /**
+     * Change A: the higher a track's score already is, the less a new play
+     * adds.
+     *
+     * Walks the events oldest first, keeping a running score that decays
+     * between them on the ordinary half-life. A positive event worth `v`
+     * adds `v × clamp(1 − running / ceiling, 0, 1)`; a negative one subtracts
+     * in full. So a song sitting near the ceiling gains almost nothing from
+     * another play and loses a skip at full price, while a song near zero
+     * gains a play at full price: what a play is worth depends on what the
+     * song has already banked.
+     *
+     * The running score may go below zero; the clamp stops that making a play
+     * worth more than `v`.
+     *
+     * **Still a pure function of the facts** (decision 1a). The walk is
+     * recomputed from the start every time, never stored, and the final score
+     * is still each contribution's value times its decay to now, so the
+     * breakdown keeps its shape. What is new is that an old event changes what
+     * a later one is worth, which is why the load window's truncation bound is
+     * re-measured in `RecomputeTest` with this on.
+     *
+     * @param events listens and likes, in [EventOrder].
+     */
+    private fun applyCeiling(events: List<ScoreContribution>, parameters: ScoringParameters): List<ScoreContribution> {
+        val ceiling = parameters.scoreCeiling
+        var running = 0.0
+        var previousAt: Long? = null
+
+        return events.map { event ->
+            previousAt?.let { running *= Decay.weightForAge(event.atMs - it, parameters.halfLifeMs) }
+            previousAt = event.atMs
+
+            val value = event.playEquivalents
+            val gain = if (value > 0.0) value * (1.0 - running / ceiling).coerceIn(0.0, 1.0) else value
+            running += gain
+            if (gain == value) {
+                event
+            } else {
+                event.copy(
+                    playEquivalents = gain,
+                    adjustments = event.adjustments + ScoreAdjustment(AdjustmentKind.CEILING, value, gain),
+                )
+            }
+        }
+    }
+
+    /**
+     * The one order of events every device agrees on.
+     *
+     * Time first. Ties are real — the same listen recorded on two phones, a
+     * like landing on the millisecond a listen ended — and with the ceiling on
+     * the order of two tied events changes what each is worth. So ties are
+     * broken on things that are the same on every device: a listen before a
+     * like, then the listen's **global name**, `(deviceId, originRowId ?: id)`,
+     * which is the origin device's own row id wherever the row now lives.
+     * Never on the local row id alone, which differs between devices.
+     */
+    private class EventOrder(segments: List<ListeningSegmentEntity>) : Comparator<ScoreContribution> {
+        private val rowsById = segments.associateBy { it.id }
+
+        override fun compare(a: ScoreContribution, b: ScoreContribution): Int {
+            compareValues(a.atMs, b.atMs).let { if (it != 0) return it }
+            compareValues(a.kind.ordinal, b.kind.ordinal).let { if (it != 0) return it }
+            compareValues(timeline(a), timeline(b)).let { if (it != 0) return it }
+            compareValues(originId(a), originId(b)).let { if (it != 0) return it }
+            return compareValues(a.note.ordinal, b.note.ordinal)
+        }
+
+        private fun row(c: ScoreContribution) = c.segmentIds.firstOrNull()?.let { rowsById[it] }
+        private fun timeline(c: ScoreContribution): String = row(c)?.deviceId.orEmpty()
+        private fun originId(c: ScoreContribution): Long = row(c)?.let { it.originRowId ?: it.id } ?: 0L
     }
 
     /** Step 7: what a contribution is worth today. */

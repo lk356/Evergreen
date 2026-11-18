@@ -151,6 +151,9 @@ enum class AdjustmentKind {
 
     /** Multiplied because this is one of several skip days in a row. Change D. */
     SKIP_STREAK,
+
+    /** Reduced because the track's score was already near `scoreCeiling`. Change A. */
+    CEILING,
 }
 
 /**
