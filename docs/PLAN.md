@@ -215,6 +215,28 @@ pins "all off = identical" to the bit. Three findings from building it:
   With everything on the worst truncation error is **0.00071** at a 45-day
   half-life and **0.00079** at 35, against 0.00082 with everything off.
 
+**Steps 3 and 4 done, 2026-11-17; waiting on the user to choose values.**
+Step 3: nine new controls on the settings screen (four hidden until their
+feature is on), the new notes and modifiers on the track screen, and a timing
+under the score-over-time line. Step 4: a report comparing today's settings
+against four candidates on a copy of the Walkman's database, kept outside the
+repository with the backups (it names songs). A throwaway runner, never
+committed, ran the app's real scorer; it reproduced all 406 of the Walkman's
+cached scores to 2e-16 with no rank differences. Aggregate findings:
+
+- The starting candidate changes **9 of the top 100**; the others 6 to 10.
+- **The ceiling is the piece that matters most**, contrary to the prompt's
+  guess: removing it moves 6 songs, every other single piece 3 or fewer.
+  Ceilings of 6 and 10 differ from 8 by 1–2 songs. It cuts the time a
+  top-10 song takes to leave in silence from 52–116 days to 58–75.
+- **The skip streak moves nothing in the top 100** on current data (12 songs
+  reach a streak of 3+, none near the line), and nor does whether it forgets.
+- Flick weight 0% vs 25% moves nothing; runs off moves one song. The half-life
+  alone (35 vs 45) moves 2; DJ weight 0/50/100% moves 2.
+
+**Next:** the user reads the report and picks values; then step 5 (verify on
+the devices, measure the recompute on the Walkman against 2,309 ms).
+
 **Scoring freshness, 2026-11-17: in progress, step 3 of 5.** On branch
 `scoring-freshness`, from `phase5c-merge`. The prompt is
 `docs/SCORING_FRESHNESS_PROMPT.md`. Four new scoring settings (saturating
