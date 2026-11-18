@@ -196,48 +196,34 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-**Step 2 done, 2026-11-17: all four changes built**, one commit each, 376
-unit tests passing. Every setting is off by default and `FreshnessBaselineTest`
-pins "all off = identical" to the bit. Three findings from building it:
+**Scoring freshness is done and running on both devices, 2026-11-18.** All
+five steps of `docs/SCORING_FRESHNESS_PROMPT.md`, on branch
+`scoring-freshness` (from `phase5c-merge`, not yet merged anywhere). Results,
+including the values chosen and why, under "Scoring freshness results" below.
 
-- **Tied events keep their old order while the ceiling is off.** The new
-  device-independent tie-break (time, listen before like, then
-  `(deviceId, originRowId ?: id)`) is used only when the ceiling is on. The
-  baseline showed that even reordering two tied rows is a change.
-- **The ceiling also squeezes the middle of the ranking.** The brake is
-  linear: at a ceiling of 8, a song played once a fortnight scores a fifth
-  less (3.74 → 2.98). Worth seeing in the step 4 report before choosing.
-- **The skip streak had to forget.** As first written, a day without the
-  song left the streak unchanged, so skips years apart compounded into
-  today's multiplier and broke the load-window bound (0.0137). A new visible
-  setting, `skipStreakResetDays` (45), starts a fresh streak after that long
-  without hearing the song; 0 keeps the old rule. Decided with the user.
-  With everything on the worst truncation error is **0.00071** at a 45-day
-  half-life and **0.00079** at 35, against 0.00082 with everything off.
+- **In force on the Walkman, and mirrored to the Pixel:** half-life 45 (unchanged),
+  score ceiling 20, skip streak ×2 up to ×4 and forgotten after 45 days, at most
+  one skip lost per day, flicking runs of 3 or more listens of 5 s or less at
+  25%, DJ skips at 50%. Entered through the settings screen, so
+  `parameter_history` records the change and the joined/left notification
+  stayed quiet.
+- **382 unit and 271 instrumented tests pass**, the instrumented ones on the
+  Pixel with the Walkman unplugged.
+- **A full recompute on the Walkman is 2,611 ms with the settings on**, against
+  2,061 ms with them off on the same build and the 2,309 ms baseline. About half
+  a second more, which the user accepted. Pixel: 432 ms.
+- **The two devices agree:** same settings, same top 100, no rank differences
+  over 406 tracks, scores within 0.0005 (the six minutes between recomputes).
+- **Next:** live with it. To watch: whether new favourites still rise too fast
+  (a higher ceiling or a longer half-life slows them), and whether songs the
+  user is tired of now fall as they are skipped. Merging waits for 5c, which
+  waits for the phantom-fix rebuild.
+- **Left alone, for the user:** the uncommitted Gradle plugin bump (the Walkman
+  build was made without it, from committed code only), and the throwaway
+  report runner, which is excluded from git on this computer only
+  (`.git/info/exclude`) and never committed.
 
-**Steps 3 and 4 done, 2026-11-17; waiting on the user to choose values.**
-Step 3: nine new controls on the settings screen (four hidden until their
-feature is on), the new notes and modifiers on the track screen, and a timing
-under the score-over-time line. Step 4: a report comparing today's settings
-against four candidates on a copy of the Walkman's database, kept outside the
-repository with the backups (it names songs). A throwaway runner, never
-committed, ran the app's real scorer; it reproduced all 406 of the Walkman's
-cached scores to 2e-16 with no rank differences. Aggregate findings:
-
-- The starting candidate changes **9 of the top 100**; the others 6 to 10.
-- **The ceiling is the piece that matters most**, contrary to the prompt's
-  guess: removing it moves 6 songs, every other single piece 3 or fewer.
-  Ceilings of 6 and 10 differ from 8 by 1–2 songs. It cuts the time a
-  top-10 song takes to leave in silence from 52–116 days to 58–75.
-- **The skip streak moves nothing in the top 100** on current data (12 songs
-  reach a streak of 3+, none near the line), and nor does whether it forgets.
-- Flick weight 0% vs 25% moves nothing; runs off moves one song. The half-life
-  alone (35 vs 45) moves 2; DJ weight 0/50/100% moves 2.
-
-**Next:** the user reads the report and picks values; then step 5 (verify on
-the devices, measure the recompute on the Walkman against 2,309 ms).
-
-**Scoring freshness, 2026-11-17: in progress, step 3 of 5.** On branch
+**Scoring freshness — what it is.** On branch
 `scoring-freshness`, from `phase5c-merge`. The prompt is
 `docs/SCORING_FRESHNESS_PROMPT.md`. Four new scoring settings (saturating
 gains, browsing runs, DJ skips that count, skip streaks with a daily skip
@@ -665,6 +651,123 @@ Follow-ups after review (branch `phase1-followups`, no schema change):
 follow-ups are merged into `main`. Before designing the merge rule, verify
 against the live Spotify Web API reference that track responses still return
 ISRC — see "Phase 2 questions" under Open questions.
+
+## Scoring freshness results (2026-11-18)
+
+Why it was done is under "How volatile should a score be?"; the prompt is
+`docs/SCORING_FRESHNESS_PROMPT.md`. Built in one day over 15 commits on
+`scoring-freshness`. No schema change, `capture/` untouched, sync and the
+mirror guards untouched.
+
+### What was built
+
+- **Four changes, nine settings, every one off by default.** Off reproduces the
+  old formula to the bit, pinned by `FreshnessBaselineTest`, written before the
+  scorer was touched. New keys are written to the settings JSON only when
+  their feature is on, so unchanged settings keep their hash: no spurious
+  cache rebuild, and old `parameter_history` rows and snapshots still match.
+  - **A. Score ceiling** (`scoreCeiling`): a soft brake, not a cap. Each play
+    adds `1 − score ÷ ceiling` of itself, so a score approaches the ceiling and
+    never reaches it. Skips cost in full.
+  - **B. Flicking runs** (`rapidRunMinSkips`, `rapidRunMaxListenMs`,
+    `rapidRunSkipWeight`): a discount, not a verdict, as decided with the user
+    (Status, 2026-11-17). Revisits, songs passed while going back, cost
+    nothing.
+  - **C. DJ skips** (`djSkipWeight`): revises decision 2g.
+  - **D. Skip streaks** (`skipStreakGrowth`, `skipStreakMaxMultiplier`,
+    `skipStreakResetDays`) and a daily skip limit (`dailyCapSkips`), lever 2
+    of the volatility question.
+- **Screens.** The settings, in words, with secondary ones hidden until their
+  feature is on. The track screen shows each modifier under the event it
+  changed, with before and after, but only when the change is visible at the
+  precision shown: the ceiling trims nearly every play a little, and the first
+  build showed "1 → 1" on most rows of the Walkman's screen.
+- **One new query, no new table:** the narrow whole-timeline read that flicking
+  runs need, 17,597 rows against 5,065 for ranking, made only while runs are
+  on.
+
+### Choosing the values, and what that taught
+
+The step 4 report compared four candidates on a copy of the Walkman's
+database, using the app's real scorer, which reproduced all 406 of the
+Walkman's cached scores to 2e-16. The full report names songs and stays with
+the backups, outside the repository. The user found it too long to use. What
+worked instead was **turning the user's own sentences into a handful of
+measured targets** and scanning settings against them:
+
+- *"Stale songs should drop."* The two songs the user named fell under every
+  ceiling, hardest at 8.
+- *"New songs on repeat should not overtake long favourites so quickly."* A
+  ceiling of 8 put both named spikes at #1 and #2. The brake lets a new song
+  climb fast while holding back everything that has banked a score, long
+  favourites included.
+- **The finding that decided it:** by the listening data, the two "stale"
+  songs are indistinguishable from long favourites. Both are played through
+  across many weeks and still this month, and neither is skipped. A setting
+  strong enough to sink them sinks long favourites with them. So the chosen
+  ceiling is moderate (20, where 8 was the starting candidate), the calibrated
+  45-day half-life stays, and the real lever for a song the user is tired of is
+  to **skip it**, which with these settings now costs something (DJ skips 50%,
+  then the streak).
+- Under the chosen values the user's long favourites keep #1 and #4, the named
+  spikes sit at #2 and #7 rather than #1 and #2, and the named stale songs
+  slip from #3 and #9 to #6 and #17.
+
+### Found while building
+
+**Building the four changes, 2026-11-17.** Every setting is off by default and `FreshnessBaselineTest`
+pins "all off = identical" to the bit. Three findings from building it:
+
+- **Tied events keep their old order while the ceiling is off.** The new
+  device-independent tie-break (time, listen before like, then
+  `(deviceId, originRowId ?: id)`) is used only when the ceiling is on. The
+  baseline showed that even reordering two tied rows is a change.
+- **The ceiling also squeezes the middle of the ranking.** The brake is
+  linear: at a ceiling of 8, a song played once a fortnight scores a fifth
+  less (3.74 → 2.98). Worth seeing in the step 4 report before choosing.
+- **The skip streak had to forget.** As first written, a day without the
+  song left the streak unchanged, so skips years apart compounded into
+  today's multiplier and broke the load-window bound (0.0137). A new visible
+  setting, `skipStreakResetDays` (45), starts a fresh streak after that long
+  without hearing the song; 0 keeps the old rule. Decided with the user.
+  With everything on the worst truncation error is **0.00071** at a 45-day
+  half-life and **0.00079** at 35, against 0.00082 with everything off.
+
+**Screens and report, 2026-11-17.**
+Step 3: nine new controls on the settings screen (four hidden until their
+feature is on), the new notes and modifiers on the track screen, and a timing
+under the score-over-time line. Step 4: a report comparing today's settings
+against four candidates on a copy of the Walkman's database, kept outside the
+repository with the backups (it names songs). A throwaway runner, never
+committed, ran the app's real scorer; it reproduced all 406 of the Walkman's
+cached scores to 2e-16 with no rank differences. Aggregate findings:
+
+- The starting candidate changes **9 of the top 100**; the others 6 to 10.
+- **The ceiling is the piece that matters most**, contrary to the prompt's
+  guess: removing it moves 6 songs, every other single piece 3 or fewer.
+  Ceilings of 6 and 10 differ from 8 by 1–2 songs. It cuts the time a
+  top-10 song takes to leave in silence from 52–116 days to 58–75.
+- **The skip streak moves nothing in the top 100** on current data (12 songs
+  reach a streak of 3+, none near the line), and nor does whether it forgets.
+- Flick weight 0% vs 25% moves nothing; runs off moves one song. The half-life
+  alone (35 vs 45) moves 2; DJ weight 0/50/100% moves 2.
+
+### Device verification (2026-11-18)
+
+- Walkman backed up over adb first (integrity ok, v8, 85,424 rows), then the
+  build installed as an upgrade. It was built from committed code only, without
+  the uncommitted Gradle bump.
+- Recompute on the Walkman: 2,061 ms with everything off, 2,611 ms on (second
+  press; the first, 2,875 and 2,908, includes warm-up). Score over time on a
+  track: 1,551 ms. There is no earlier figure to compare, since the timing is
+  new.
+- Values entered on the settings screen. Reading them back caught one tap too
+  many on the ceiling (21), corrected to 20. The joined/left notification did
+  not fire for the settings change.
+- **Pixel:** installed and mirrored from a fresh Walkman backup. **Back up
+  database and Import a mirror are on the Settings screen**, not Home (the
+  user corrected a wrong instruction). Settings identical, top 100 identical,
+  no rank differences, 432 ms recompute.
 
 ## Phase 0 results (2026-09-17)
 
