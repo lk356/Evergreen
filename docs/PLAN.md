@@ -196,7 +196,26 @@ So the architectural instruction is narrower than it first read:
 ## Status
 _Update at the end of each task: what was done, what's next, any blockers._
 
-**Scoring freshness, 2026-11-17: in progress, step 0 of 5.** On branch
+**Step 2 done, 2026-11-17: all four changes built**, one commit each, 376
+unit tests passing. Every setting is off by default and `FreshnessBaselineTest`
+pins "all off = identical" to the bit. Three findings from building it:
+
+- **Tied events keep their old order while the ceiling is off.** The new
+  device-independent tie-break (time, listen before like, then
+  `(deviceId, originRowId ?: id)`) is used only when the ceiling is on. The
+  baseline showed that even reordering two tied rows is a change.
+- **The ceiling also squeezes the middle of the ranking.** The brake is
+  linear: at a ceiling of 8, a song played once a fortnight scores a fifth
+  less (3.74 → 2.98). Worth seeing in the step 4 report before choosing.
+- **The skip streak had to forget.** As first written, a day without the
+  song left the streak unchanged, so skips years apart compounded into
+  today's multiplier and broke the load-window bound (0.0137). A new visible
+  setting, `skipStreakResetDays` (45), starts a fresh streak after that long
+  without hearing the song; 0 keeps the old rule. Decided with the user.
+  With everything on the worst truncation error is **0.00071** at a 45-day
+  half-life and **0.00079** at 35, against 0.00082 with everything off.
+
+**Scoring freshness, 2026-11-17: in progress, step 3 of 5.** On branch
 `scoring-freshness`, from `phase5c-merge`. The prompt is
 `docs/SCORING_FRESHNESS_PROMPT.md`. Four new scoring settings (saturating
 gains, browsing runs, DJ skips that count, skip streaks with a daily skip
