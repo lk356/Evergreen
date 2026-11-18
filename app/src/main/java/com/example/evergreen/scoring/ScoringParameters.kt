@@ -66,6 +66,10 @@ import java.security.MessageDigest
  * @param rapidRunSkipWeight what a skip inside a run still counts for, from 0
  *   (pure browsing) to 1 (a full rejection, as if runs were off). Only read
  *   when runs are on. Revisits count 0 whatever this is.
+ * @param djSkipWeight what a skip during a DJ session counts for, from 0
+ *   (forgiven, decision 2g as it was) to 1 (a full rejection). 0 is off.
+ *   Revises decision 2g at the user's request, 2026-11-17: most of their
+ *   listening is DJ, so forgiving every DJ skip hid most of their real ones.
  */
 data class ScoringParameters(
     val halfLifeDays: Double = 45.0,
@@ -81,6 +85,7 @@ data class ScoringParameters(
     val rapidRunMinSkips: Int = 0,
     val rapidRunMaxListenMs: Long = DEFAULT_RAPID_RUN_MAX_LISTEN_MS,
     val rapidRunSkipWeight: Double = 0.0,
+    val djSkipWeight: Double = 0.0,
 ) {
 
     /** True when browsing runs are on. */
@@ -127,6 +132,7 @@ data class ScoringParameters(
             appendNumber(KEY_RAPID_RUN_MAX_LISTEN_MS, rapidRunMaxListenMs.toString())
             appendNumber(KEY_RAPID_RUN_SKIP_WEIGHT, rapidRunSkipWeight.toString())
         }
+        if (djSkipWeight != 0.0) appendNumber(KEY_DJ_SKIP_WEIGHT, djSkipWeight.toString())
         append('}')
     }
 
@@ -193,6 +199,9 @@ data class ScoringParameters(
         if (!rapidRunSkipWeight.isFinite() || rapidRunSkipWeight < 0.0 || rapidRunSkipWeight > 1.0) {
             add("$KEY_RAPID_RUN_SKIP_WEIGHT must be between 0 and 1, was $rapidRunSkipWeight")
         }
+        if (!djSkipWeight.isFinite() || djSkipWeight < 0.0 || djSkipWeight > 1.0) {
+            add("$KEY_DJ_SKIP_WEIGHT must be between 0 and 1, was $djSkipWeight")
+        }
         if (playlistLeaveRank < playlistJoinRank) {
             add(
                 "$KEY_PLAYLIST_LEAVE_RANK ($playlistLeaveRank) must be at least " +
@@ -239,6 +248,7 @@ data class ScoringParameters(
         const val KEY_RAPID_RUN_MIN_SKIPS = "rapidRunMinSkips"
         const val KEY_RAPID_RUN_MAX_LISTEN_MS = "rapidRunMaxListenMs"
         const val KEY_RAPID_RUN_SKIP_WEIGHT = "rapidRunSkipWeight"
+        const val KEY_DJ_SKIP_WEIGHT = "djSkipWeight"
 
         /** Only a placeholder while runs are off; written whenever they are on. */
         const val DEFAULT_RAPID_RUN_MAX_LISTEN_MS: Long = 5_000L
@@ -279,6 +289,7 @@ data class ScoringParameters(
                 rapidRunMinSkips = values.int(KEY_RAPID_RUN_MIN_SKIPS, defaults.rapidRunMinSkips),
                 rapidRunMaxListenMs = values.long(KEY_RAPID_RUN_MAX_LISTEN_MS, defaults.rapidRunMaxListenMs),
                 rapidRunSkipWeight = values.double(KEY_RAPID_RUN_SKIP_WEIGHT, defaults.rapidRunSkipWeight),
+                djSkipWeight = values.double(KEY_DJ_SKIP_WEIGHT, defaults.djSkipWeight),
             ).normalised()
             val problems = parsed.problems()
             require(problems.isEmpty()) { problems.joinToString(separator = "; ") }

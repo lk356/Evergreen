@@ -193,11 +193,18 @@ class TrackScorer(
                 note = ContributionNote.BROWSING
             }
         } else if (value < 0.0 && DjSessions.isDuringSession(djWindows, listen.startedAtMs)) {
-            // 5. DJ suppression. Negatives only: a skip during a DJ session is
-            //    browsing, but letting a DJ pick play through is still real
-            //    information about the song.
-            value = 0.0
-            note = ContributionNote.DJ_SUPPRESSED
+            // 5. DJ skips. Negatives only: letting a DJ pick play through is
+            //    real information about the song whoever chose it. A skip
+            //    was forgiven outright until scoring freshness (decision 2g);
+            //    it is now scaled by djSkipWeight, and at 0 it is forgiven
+            //    exactly as before, note and all.
+            if (parameters.djSkipWeight == 0.0) {
+                value = 0.0
+                note = ContributionNote.DJ_SUPPRESSED
+            } else {
+                value *= parameters.djSkipWeight
+                note = ContributionNote.DJ_SKIP
+            }
         }
 
         return ScoreContribution(

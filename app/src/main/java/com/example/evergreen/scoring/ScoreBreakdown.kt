@@ -47,6 +47,14 @@ enum class ContributionNote {
      */
     DJ_SUPPRESSED,
 
+    /**
+     * A skip during a DJ session that still counts, scaled by
+     * `djSkipWeight`. Only given when that weight is above 0; at 0 the skip
+     * is [DJ_SUPPRESSED], exactly as before the setting existed. Scoring
+     * freshness, change C.
+     */
+    DJ_SKIP,
+
     /** Reduced, possibly to nothing, by the per-track daily cap. */
     DAILY_CAP,
 
